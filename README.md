@@ -13,7 +13,8 @@ Windows only. Grab either download from the
 - **`PoE2 Loot Value Overlay Setup <version>.exe`** — the installer. Lets you choose an install
   directory and adds a Start Menu entry.
 - **`PoE2 Loot Value Overlay <version>.exe`** — portable. Run it where it sits; nothing is
-  installed. Settings and the loot cache still live in `%APPDATA%/PoE2 Loot Value Overlay/`.
+  installed. Settings and the loot cache still live in `%APPDATA%/poe2-loot-value-overlay/`, which
+  both downloads share.
 
 Neither is code-signed, so Windows SmartScreen will warn the first time you run one — *More info* →
 *Run anyway*. If you'd rather not trust a binary, `npm run package` (see [Development](#development))

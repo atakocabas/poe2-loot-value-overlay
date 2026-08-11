@@ -28,9 +28,16 @@ export function showSetupWindow(): Promise<void> {
   }
 
   setupWindow = new BrowserWindow({
-    width: 580,
-    height: 620,
-    resizable: false,
+    // Content size, not outer size: the title bar and borders vary with the user's Windows theme
+    // and DPI scaling, and sizing the frame instead is how a fixed-height form ends up clipping its
+    // own Save button on somebody else's machine. Resizable for the same reason — the explanatory
+    // text reflows, so there is no one height that's right everywhere.
+    useContentSize: true,
+    width: 600,
+    height: 700,
+    minWidth: 460,
+    minHeight: 420,
+    resizable: true,
     // Deliberately opposite to the overlay in every respect: framed, opaque, focusable, in the
     // taskbar, and not always-on-top.
     frame: true,
