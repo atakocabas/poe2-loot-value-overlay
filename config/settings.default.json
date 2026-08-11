@@ -1,0 +1,91 @@
+{
+  "league": "Runes of Aldur",
+  "clientTxtPath": "",
+  "setupCompleted": false,
+  "poe2ProcessNames": [
+    "PathOfExileSteam.exe",
+    "PathOfExile.exe",
+    "PathOfExileSteam_x64.exe",
+    "PathOfExile_x64.exe",
+    "PathOfExile_x64Steam.exe"
+  ],
+  "logWatch": {
+    "pollIntervalMs": 1000,
+    "backfillBytes": 65536,
+    "debugLogging": false
+  },
+  "overlay": {
+    "hideWhenGameUnfocused": true,
+    "focusPollIntervalMs": 400,
+    "hideDelayMs": 500,
+    "panel": {
+      "width": 380,
+      "maxHeightPercent": 80
+    }
+  },
+  "hotkeys": {
+    "toggleOverlay": "CommandOrControl+Shift+O",
+    "toggleSession": "CommandOrControl+Shift+M",
+    "forceCapture": "CommandOrControl+`"
+  },
+  "display": {
+    "currency": "auto"
+  },
+  "poeNinja": {
+    "baseUrl": "https://poe.ninja/poe2/api/economy",
+    "refreshIntervalMs": 600000,
+    "itemOverviewTypes": [
+      "UniqueWeapons",
+      "UniqueArmours",
+      "UniqueAccessories",
+      "UniqueFlasks",
+      "UniqueJewels",
+      "UniqueCharms",
+      "UniqueSanctumRelics",
+      "UniqueTablets",
+      "PrecursorTablets"
+    ],
+    "exchangeOverviewTypes": [
+      "Currency",
+      "Fragments",
+      "Essences",
+      "Runes",
+      "Ritual",
+      "Breach",
+      "Expedition",
+      "SoulCores",
+      "Abyss",
+      "UncutGems",
+      "LineageSupportGems",
+      "Idols",
+      "Delirium",
+      "Verisium"
+    ]
+  },
+  "currencyExchange": {
+    "enabled": true,
+    "baseUrl": "https://web.poecdn.com/api/currency-exchange",
+    "realm": "poe2",
+    "lookbackHours": 6,
+    "maxPagesPerRefresh": 6,
+    "refreshIntervalMs": 3600000,
+    "minVolume": 20,
+    "stalePoeNinjaAfterMs": 3600000,
+    "leagueOverride": ""
+  },
+  "trade2": {
+    "enabled": true,
+    "contactEmail": "",
+    "maxSearchesPerWindow": 10,
+    "windowMs": 300000,
+    "minSearchIntervalMs": 5000,
+    "maxListings": 10,
+    "listingStatus": "online",
+    "maxModLadderSearches": 3,
+    "minListingsForMatch": 10,
+    "minModMatchRatio": 0.5,
+    "useDefenceFilters": true,
+    "defenceMinRatio": 0.9,
+    "maxTransientRetries": 1
+  }
+}

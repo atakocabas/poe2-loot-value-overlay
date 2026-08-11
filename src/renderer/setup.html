@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>PoE2 Loot Value Overlay — Setup</title>
+    <!--
+      Styled inline rather than through style.css: that sheet describes a transparent, click-through
+      overlay panel and shares nothing with an ordinary opaque form. Keeping them apart also means
+      resizing the panel can never disturb this window.
+    -->
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-family: "Segoe UI", sans-serif;
+        color: #eee;
+      }
+
+      body {
+        background: #14161c;
+        padding: 22px 24px;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      h1 {
+        font-size: 17px;
+        font-weight: 600;
+      }
+
+      #intro {
+        margin: 6px 0 20px;
+        color: #a8adba;
+      }
+
+      .field {
+        margin-bottom: 18px;
+      }
+
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 3px;
+      }
+
+      .hint {
+        color: #a8adba;
+        margin-bottom: 6px;
+      }
+
+      input[type="text"] {
+        width: 100%;
+        padding: 7px 9px;
+        background: #1d2029;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        font-size: 13px;
+      }
+
+      input[type="text"]:focus {
+        outline: none;
+        border-color: rgba(143, 211, 160, 0.7);
+      }
+
+      /* The path field and its Browse button share a row; the field takes whatever is left. */
+      .path-row {
+        display: flex;
+        gap: 8px;
+      }
+
+      button {
+        padding: 7px 14px;
+        background: #262a35;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 4px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #2f3440;
+      }
+
+      #save {
+        background: rgba(143, 211, 160, 0.18);
+        border-color: rgba(143, 211, 160, 0.7);
+        font-weight: 600;
+      }
+
+      #detect-note {
+        margin-top: 5px;
+        color: #8fd3a0;
+      }
+
+      #detect-note.missing {
+        color: #d9a441;
+      }
+
+      #actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 24px;
+      }
+
+      #disclaimer {
+        margin-top: 20px;
+        color: #6f7480;
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Set up the overlay</h1>
+    <p id="intro">
+      Three things this install needs to know. You can change them later from the tray icon.
+    </p>
+
+    <div class="field">
+      <label for="league">League</label>
+      <div class="hint">
+        Prices are looked up against this league on poe.ninja, the currency exchange and the trade
+        site. A name that doesn't match the one you're playing leaves everything unpriced.
+      </div>
+      <input id="league" type="text" spellcheck="false" />
+    </div>
+
+    <div class="field">
+      <label for="client-txt">Path to Client.txt</label>
+      <div class="hint">
+        PoE2's log, read to detect which map you're in so drops are grouped per map. Leave it empty
+        to run without map detection.
+      </div>
+      <div class="path-row">
+        <input id="client-txt" type="text" spellcheck="false" />
+        <button id="browse" type="button">Browse…</button>
+      </div>
+      <div id="detect-note"></div>
+    </div>
+
+    <div class="field">
+      <label for="contact-email">Contact email <span style="font-weight: 400">(optional)</span></label>
+      <div class="hint">
+        Sent to GGG in the User-Agent when pricing rare items, so they can reach you about the
+        requests your machine makes. Leave it blank and no contact address is sent at all.
+      </div>
+      <input id="contact-email" type="text" spellcheck="false" />
+    </div>
+
+    <div id="actions">
+      <button id="save" type="button">Save</button>
+    </div>
+
+    <div id="disclaimer">
+      This product isn't affiliated with or endorsed by Grinding Gear Games in any way.
+    </div>
+
+    <!-- Only setup.js: common.js/index.js are the overlay panel and have nothing to do with this. -->
+    <script src="setup.js"></script>
+  </body>
+</html>

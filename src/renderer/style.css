@@ -1,0 +1,356 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", sans-serif;
+  color: #eee;
+}
+
+body {
+  background: transparent;
+}
+
+/*
+ * width/max-height are overwritten inline from `overlay.panel` on the first OVERLAY_STATUS; these
+ * are the fallback for the gap before it arrives. The panel itself never scrolls — #item-list is
+ * the one scrolling region, so the header and footer stay put while the list moves under them.
+ */
+#panel {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  max-height: 80vh;
+  overflow: hidden;
+  background: rgba(15, 15, 20, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 13px;
+}
+
+/*
+ * Click-through and interactive mode looked identical, so a user pressing a button in click-through
+ * mode just saw nothing happen. The accent border is the only cue that the panel is listening.
+ */
+#panel.interactive {
+  border-color: rgba(143, 211, 160, 0.7);
+  box-shadow: 0 0 0 1px rgba(143, 211, 160, 0.25);
+}
+
+#panel-header {
+  flex: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+}
+
+#panel-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 600;
+}
+
+#session-status {
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: normal;
+  opacity: 0.7;
+}
+
+#session-status.active {
+  color: #8fd3a0;
+  opacity: 1;
+}
+
+#session-status.hideout {
+  color: #8fb8d3;
+  opacity: 1;
+}
+
+#price-status {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: normal;
+  opacity: 0.5;
+}
+
+#price-status.stale {
+  color: #d3b98f;
+  opacity: 0.9;
+}
+
+/* Slightly stronger than #price-status: these are numbers to read, not a footnote about them. */
+#rate-status {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: normal;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* Armed state of a two-step destructive action. */
+button.danger {
+  background: rgba(180, 50, 50, 0.35);
+  border-color: rgba(255, 120, 120, 0.6);
+  color: #ffdede;
+}
+
+button.danger:hover {
+  background: rgba(200, 60, 60, 0.5);
+}
+
+input[type="search"],
+input[type="number"],
+select {
+  font: inherit;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  color: inherit;
+  padding: 2px 4px;
+}
+
+select option {
+  background: #15151a;
+}
+
+/* The one scrolling region. */
+#item-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+#item-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+#item-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+}
+
+.item-row-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* Long rare names must not push the price off the row. */
+.item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.item-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.item-sub {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feed-time {
+  white-space: nowrap;
+}
+
+.badge {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.badge-manual {
+  border-color: rgba(143, 184, 211, 0.5);
+  color: #8fb8d3;
+}
+
+.badge-unpriced {
+  border-color: rgba(211, 185, 143, 0.4);
+  color: #d3b98f;
+}
+
+/* A trade2 price found on fewer than all of the item's mods — same warm hue as unpriced, since it
+   means the same thing to the reader: don't lean on this number. */
+.badge-partial {
+  border-color: rgba(211, 185, 143, 0.4);
+  color: #d3b98f;
+}
+
+.reprice-warning {
+  color: #d3b98f;
+}
+
+.corrupted-mark {
+  color: #d20000;
+}
+
+.rarity-Currency { color: #aa9e82; }
+.rarity-Magic { color: #8888ff; }
+.rarity-Rare { color: #ffff77; }
+.rarity-Unique { color: #af6025; }
+.rarity-Normal { color: #c8c8c8; }
+.rarity-Gem { color: #1ba29b; }
+
+.hidden {
+  display: none;
+}
+
+.empty-note {
+  flex: none;
+  opacity: 0.6;
+  padding: 8px 4px;
+  font-size: 12px;
+}
+
+#panel-footer {
+  flex: none;
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+#list-filters {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 11px;
+}
+
+#list-filters input[type="search"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.item-row {
+  padding: 5px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.item-row-top .item-value {
+  white-space: nowrap;
+}
+
+.item-value.unpriced {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.item-edit {
+  margin-top: 6px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.mod-list {
+  list-style: none;
+  margin-bottom: 6px;
+}
+
+.mod-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 1px 0;
+}
+
+.mod-list li input {
+  margin-top: 3px;
+}
+
+.item-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.item-edit-row input[type="number"] {
+  width: 70px;
+}
+
+.status-note {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/*
+ * The raw clipboard text, shown on hover. It sits outside #panel so it isn't clipped by the list's
+ * scroll container, and is positioned in script against the hovered row.
+ */
+#item-tooltip {
+  position: fixed;
+  z-index: 10;
+  max-width: 360px;
+  max-height: 70vh;
+  overflow: hidden;
+  padding: 8px 10px;
+  background: rgba(8, 8, 12, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  pointer-events: none;
+}
+
+#disclaimer {
+  flex: none;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  opacity: 0.55;
+}

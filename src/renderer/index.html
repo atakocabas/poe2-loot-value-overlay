@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>PoE2 Loot Value Overlay</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="panel">
+      <div id="panel-header">
+        <div id="panel-header-top">
+          <span id="session-total-line">Map total: <strong id="session-total">?</strong></span>
+        </div>
+        <div id="session-status">No active map</div>
+        <div id="price-status"></div>
+        <!-- Starts hidden so the header doesn't reserve a blank row before poe.ninja first answers. -->
+        <div id="rate-status" class="hidden"></div>
+      </div>
+      <!--
+        Static rather than rebuilt per render: these used to be recreated on every keystroke, which
+        blew away focus and the caret position and needed restoring by hand.
+      -->
+      <div id="list-filters">
+        <input id="list-search" type="search" placeholder="Search name or base…" />
+        <select id="list-sort">
+          <option value="time" selected>Newest</option>
+          <option value="value">Value</option>
+          <option value="name">Name</option>
+        </select>
+        <label class="filter-toggle"><input id="list-unpriced" type="checkbox" />Unpriced</label>
+      </div>
+      <!-- The one list, and the only scrolling region. -->
+      <div id="item-list"></div>
+      <div id="list-empty" class="empty-note">No drops captured yet — Ctrl+C an item in game.</div>
+      <div id="panel-footer">
+        <button id="export-csv" type="button">Export CSV</button>
+        <button id="clear-history" type="button">Clear all</button>
+      </div>
+      <div id="disclaimer">This product isn't affiliated with or endorsed by Grinding Gear Games in any way.</div>
+    </div>
+    <div id="item-tooltip" class="hidden"></div>
+    <!-- common.js first: it declares the value/format/row helpers index.js calls. -->
+    <script src="common.js"></script>
+    <script src="index.js"></script>
+  </body>
+</html>

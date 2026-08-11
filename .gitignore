@@ -1,0 +1,12 @@
+node_modules/
+
+# Build output: `npm run build` and `npm run package` regenerate both.
+dist/
+release/
+
+# Per-machine Claude Code permission state, not project configuration.
+.claude/settings.local.json
+
+*.log
+Thumbs.db
+.DS_Store
