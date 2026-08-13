@@ -42,6 +42,13 @@ Packaging on Windows requires Developer Mode enabled (electron-builder's `winCod
 symlink privileges); if it fails with a symlink/privilege error, that's the cause. The hosted Windows
 runner in CI has those privileges, so this is a local-only obstacle.
 
+`.github/workflows/ci.yml` runs `npm test` (which compiles first, so it covers type errors too) on
+every PR into `main` and on `main` itself. The push half is **not** redundant with the release
+workflow below: that one skips its whole body, tests included, whenever the version has already been
+released — the common case — so without it a merge that doesn't bump the version would run nothing.
+Both workflows are on `windows-latest`, because `poe2-install.test.ts` and `settings.test.ts` assert
+against Windows paths that the code under test builds with `path.join`.
+
 **Releases are cut by bumping the version, not by merging.** `.github/workflows/release.yml` runs on
 every push to `main`, but its first step asks GitHub whether `v{package.json version}` has already
 been released and stops there if it has — so ordinary merges pass through silently, and a merge that
