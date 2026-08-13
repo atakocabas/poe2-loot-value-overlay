@@ -1,0 +1,96 @@
+name: Release
+
+# A merged PR arrives here as an ordinary push to main, so this covers both that and a direct push.
+# It does *not* release on every merge: the gate below is whether `package.json`'s version has
+# already been released, so routine merges pass through silently and bumping the version is what
+# cuts a release. Without that gate every doc-typo merge would try to reuse an existing tag and fail.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Creating a release and its tag is a write. Workflows get a read-only token by default in repos
+# configured that way, and a missing block here shows up as a 403 on the last step only — after a
+# full Windows build has run.
+permissions:
+  contents: write
+
+# A second merge landing while a release build is still running would race it to the same tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    # electron-builder is invoked as `--win` and produces NSIS + portable exes, so this has to be a
+    # Windows runner. Its winCodeSign step needs symlink privileges, which is the one thing that
+    # fails locally without Developer Mode — the hosted Windows runner has them.
+    runs-on: windows-latest
+
+    steps:
+      # v5 on both: the v4 pins target Node 20, which the runners now force onto 24 and warn about.
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # `@types/node` tracks 22, so the build and the test runner see the API surface they were
+          # written against. `npm ci` needs the tracked package-lock.json, not `npm install`.
+          node-version: 22
+          cache: npm
+
+      - name: Decide whether this version still needs releasing
+        id: check
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          # Asking what has been released, rather than diffing package.json against the previous
+          # commit: this reads the same whether it ran from a merge, a re-run or workflow_dispatch,
+          # and a squashed merge doesn't change the answer.
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released — nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "v$version has no release yet — building one."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        if: steps.check.outputs.release == 'true'
+        run: npm ci
+
+      # Everything the app is: the parsers, the pricing clients, the store and the settings merge.
+      # A release that fails these is worse than no release, so it gates the build rather than
+      # running alongside it.
+      - name: Test
+        if: steps.check.outputs.release == 'true'
+        run: npm test
+
+      - name: Package
+        if: steps.check.outputs.release == 'true'
+        run: npm run package
+
+      - name: Create the release
+        if: steps.check.outputs.release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.check.outputs.version }}"
+
+          # Listed before the glob is used, so a rename in electron-builder's artifact naming reads
+          # as "here is what was actually built" rather than as an unexplained glob failure.
+          ls -l release/
+
+          # `gh release create` makes the tag itself, at this exact commit — there is no separate
+          # tagging step to keep in sync. The glob picks up both targets from `directories.output`
+          # ("… Setup <version>.exe" and the portable "… <version>.exe"); their names contain spaces,
+          # which survives because pathname expansion isn't re-split into words.
+          gh release create "$tag" \
+            --title "$tag" \
+            --target "$GITHUB_SHA" \
+            --generate-notes \
+            release/*.exe

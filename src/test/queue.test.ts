@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import { PricingQueue } from "../pricing/queue";
 import type { PriceResolver } from "../pricing/price-resolver";
-import type { ParsedItem, PricedItem } from "../shared/types";
+import type { ParsedItem, PendingCapture, PricedItem } from "../shared/types";
 
 function makeItem(name: string): ParsedItem {
   return {
@@ -18,6 +18,14 @@ function makeItem(name: string): ParsedItem {
     waystoneTier: null,
     socketCount: null,
     defences: { armour: null, evasion: null, energyShield: null, ward: null },
+    mapStats: {
+      itemRarity: null,
+      packSize: null,
+      monsterRarity: null,
+      dropChance: null,
+      monsterEffectiveness: null,
+      revives: null
+    },
     identified: true,
     corrupted: false,
     mods: [],
@@ -69,4 +77,127 @@ test("a failure does not stall the items queued behind it", async () => {
       ["Chaos Orb", "poeninja"]
     ]
   );
+});
+
+describe("pending captures", () => {
+  /** Each pushed snapshot as `[name, stage]` pairs, which is all the assertions below care about. */
+  function stagesOf(pushes: PendingCapture[][]): Array<Array<[string, string]>> {
+    return pushes.map((pending) => pending.map((p): [string, string] => [p.item.name, p.stage]));
+  }
+
+  function priceable(): PriceResolver {
+    return {
+      resolve: async (item: ParsedItem, sessionId: string) => ({
+        ...item,
+        sessionId,
+        chaosValue: 5,
+        priceSource: "poeninja",
+        ignoredMods: [],
+        manualChaosValue: null
+      })
+    } as unknown as PriceResolver;
+  }
+
+  test("an item is announced as queued the moment it is enqueued", () => {
+    const pushes: PendingCapture[][] = [];
+    const queue = new PricingQueue(priceable(), () => "s1", () => {}, (p) => pushes.push(p));
+
+    queue.enqueue(makeItem("Doom Grip"));
+
+    // Synchronously, before any await — the whole point is that the panel reacts to the keypress.
+    assert.deepEqual(stagesOf(pushes)[0], [["Doom Grip", "queued"]]);
+  });
+
+  test("the in-flight item leads the list, with the backlog behind it in order", async () => {
+    const pushes: PendingCapture[][] = [];
+    let release: (() => void) | null = null;
+    const resolver = {
+      resolve: async (item: ParsedItem, sessionId: string) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return {
+          ...item, sessionId, chaosValue: 5, priceSource: "poeninja",
+          ignoredMods: [], manualChaosValue: null
+        };
+      }
+    } as unknown as PriceResolver;
+
+    const queue = new PricingQueue(resolver, () => "s1", () => {}, (p) => pushes.push(p));
+    queue.enqueue(makeItem("Doom Grip"));
+    queue.enqueue(makeItem("Chaos Orb"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepEqual(stagesOf(pushes).at(-1), [
+      ["Doom Grip", "pricing"],
+      ["Chaos Orb", "queued"]
+    ]);
+
+    release!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The finished item is gone before its priced row is announced, so it is never on screen twice.
+    assert.deepEqual(stagesOf(pushes).at(-1), [["Chaos Orb", "queued"]]);
+  });
+
+  test("the stage becomes trade2 when the resolver says the search has started", async () => {
+    const pushes: PendingCapture[][] = [];
+    const resolver = {
+      resolve: async (item: ParsedItem, sessionId: string, onTradeSearch?: () => void) => {
+        onTradeSearch?.();
+        return {
+          ...item, sessionId, chaosValue: 5, priceSource: "trade2",
+          ignoredMods: [], manualChaosValue: null
+        };
+      }
+    } as unknown as PriceResolver;
+
+    const queue = new PricingQueue(resolver, () => "s1", () => {}, (p) => pushes.push(p));
+    queue.enqueue(makeItem("Doom Grip"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.deepEqual(stagesOf(pushes), [
+      [["Doom Grip", "queued"]],
+      [["Doom Grip", "pricing"]],
+      [["Doom Grip", "trade2"]],
+      []
+    ]);
+  });
+
+  test("a thrown resolver still clears the pending row", async () => {
+    const pushes: PendingCapture[][] = [];
+    const resolver = {
+      resolve: async () => {
+        throw new Error("poe.ninja unreachable");
+      }
+    } as unknown as PriceResolver;
+
+    const queue = new PricingQueue(resolver, () => "s1", () => {}, (p) => pushes.push(p));
+    queue.enqueue(makeItem("Doom Grip"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Without this the row stays up forever, describing work that stopped.
+    assert.deepEqual(pushes.at(-1), []);
+  });
+
+  test("every pending id is distinct, so the rows can't collide as DOM keys", async () => {
+    const pushes: PendingCapture[][] = [];
+    const queue = new PricingQueue(priceable(), () => "s1", () => {}, (p) => pushes.push(p));
+
+    queue.enqueue(makeItem("Doom Grip"));
+    queue.enqueue(makeItem("Doom Grip"));
+
+    const ids = pushes.at(-1)!.map((p) => p.id);
+    assert.equal(ids.length, 2);
+    assert.notEqual(ids[0], ids[1], "two copies of one item must still be two rows");
+  });
+
+  test("constructing without the callback still prices normally", async () => {
+    const priced: Array<Omit<PricedItem, "id">> = [];
+    const queue = new PricingQueue(priceable(), () => "s1", (item) => priced.push(item));
+
+    queue.enqueue(makeItem("Chaos Orb"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(priced.length, 1);
+  });
 });

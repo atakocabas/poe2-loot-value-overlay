@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 import { foldLegacyProcessName, mergeWithDefaults, unionPoeNinjaCategories } from "../main/settings";
 import type { Settings } from "../shared/settings";
@@ -18,10 +20,11 @@ function makeDefaults(): Settings {
       hideWhenGameUnfocused: true,
       focusPollIntervalMs: 400,
       hideDelayMs: 500,
-      panel: { width: 380, maxHeightPercent: 80 }
+      panel: { width: 380, maxHeightPercent: 80, position: "right" as const }
     },
     hotkeys: {
       toggleOverlay: "CommandOrControl+Shift+O",
+      toggleList: "CommandOrControl+Shift+L",
       toggleSession: "CommandOrControl+Shift+M",
       forceCapture: "CommandOrControl+`"
     },
@@ -51,13 +54,17 @@ function makeDefaults(): Settings {
       maxSearchesPerWindow: 10,
       windowMs: 300000,
       minSearchIntervalMs: 5000,
-      maxListings: 10,
+      maxListings: 5,
       listingStatus: "online" as const,
       maxModLadderSearches: 3,
       minListingsForMatch: 10,
       minModMatchRatio: 0.5,
       useDefenceFilters: true,
       defenceMinRatio: 0.9,
+      usePseudoFilters: true,
+      pseudoMinRatio: 0.9,
+      useMapFilters: true,
+      mapMinRatio: 0.9,
       maxTransientRetries: 1
     }
   };
@@ -79,15 +86,47 @@ test("fills in a nested field missing from an older settings.json while keeping 
     hotkeys: {
       toggleOverlay: "CommandOrControl+Shift+X",
       toggleSession: defaults.hotkeys.toggleSession
-      // forceCapture missing, as if written before that field existed
+      // forceCapture and toggleList missing, as if written before those fields existed. This is the
+      // real upgrade path: every install predates `toggleList`, and gains it on the next load.
     }
   };
 
   const merged = mergeWithDefaults(defaults, loaded);
 
   assert.equal(merged.hotkeys.forceCapture, defaults.hotkeys.forceCapture);
+  assert.equal(merged.hotkeys.toggleList, defaults.hotkeys.toggleList);
   assert.equal(merged.hotkeys.toggleOverlay, "CommandOrControl+Shift+X");
   assert.equal(merged.hotkeys.toggleSession, defaults.hotkeys.toggleSession);
+});
+
+test("the shipped panel side is one the renderer knows how to place", () => {
+  // Read from the file rather than restated here, as accelerator.test.ts does with the hotkeys:
+  // `mergeWithDefaults` hands this string straight through to `OverlayStatus`, and the renderer
+  // only ever tests it against "left". A typo would place the panel right while the form read left.
+  const defaults = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  ) as { overlay: { panel: { position: string } } };
+
+  assert.equal(defaults.overlay.panel.position, "right");
+});
+
+test("fills in the panel's side for a settings.json written before it was configurable", () => {
+  const defaults = makeDefaults();
+  const loaded = {
+    ...defaults,
+    overlay: {
+      ...defaults.overlay,
+      // Sized by hand, as any existing install may well be, and predating `position` entirely —
+      // nothing migrates settings.json, so the merge is the whole upgrade path.
+      panel: { width: 520, maxHeightPercent: 60 }
+    }
+  };
+
+  const merged = mergeWithDefaults(defaults, loaded);
+
+  assert.equal(merged.overlay.panel.position, "right");
+  assert.equal(merged.overlay.panel.width, 520);
+  assert.equal(merged.overlay.panel.maxHeightPercent, 60);
 });
 
 test("preserves a user's customized value instead of overwriting it with the default", () => {

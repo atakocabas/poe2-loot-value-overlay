@@ -1,4 +1,11 @@
-import type { ItemDefences, ItemRarity, ModKind, ParsedItem, ParsedMod } from "../shared/types";
+import type {
+  ItemDefences,
+  ItemMapStats,
+  ItemRarity,
+  ModKind,
+  ParsedItem,
+  ParsedMod
+} from "../shared/types";
 
 const SECTION_SEPARATOR = /\r?\n-{5,}\r?\n/;
 const PROPERTY_LINE = /^[A-Za-z][A-Za-z .]*:\s*.+$/;
@@ -126,6 +133,27 @@ function parseDefences(sections: string[]): ItemDefences {
   };
 }
 
+/**
+ * A waystone's reward totals from the property block. Read for the same reason `parseDefences` is:
+ * `PROPERTY_LINE` already keeps these lines out of the mod list, and they are the numbers GGG's
+ * `map_filters` group indexes — produced by the affix set as a whole, not by any single mod.
+ *
+ * Printed as `Item Rarity: +24% (augmented)`, so the pattern has to allow a leading `+`; the `%` and
+ * the `(augmented)` suffix both sit after the digits and need no handling. The wording is the
+ * clipboard's, taken from a real capture — note `Pack Size:`, which the trade site calls
+ * "Waystone Packsize", and `Revives Available:` rather than "Waystone Revives".
+ */
+function parseMapStats(sections: string[]): ItemMapStats {
+  return {
+    itemRarity: findNumber(sections, /^Item Rarity:\s*\+?([\d,]+)/m),
+    packSize: findNumber(sections, /^Pack Size:\s*\+?([\d,]+)/m),
+    monsterRarity: findNumber(sections, /^Monster Rarity:\s*\+?([\d,]+)/m),
+    dropChance: findNumber(sections, /^Waystone Drop Chance:\s*\+?([\d,]+)/m),
+    monsterEffectiveness: findNumber(sections, /^Monster Effectiveness:\s*\+?([\d,]+)/m),
+    revives: findNumber(sections, /^Revives Available:\s*\+?([\d,]+)/m)
+  };
+}
+
 /** Rune/soul-core sockets, written as `Sockets: S S`. Counts the slot tokens. */
 function parseSocketCount(sections: string[]): number | null {
   for (const section of sections) {
@@ -198,7 +226,12 @@ function isKnownNonModLine(line: string): boolean {
     // Usage instructions ("Right click to add this to your map device."). These sit in their own
     // section on waystones and tablets, and per-line classification would otherwise take them
     // for affixes now that the section no longer has to be uniformly mod-like.
-    /^(Right|Left|Shift) click/i.test(line)
+    /^(Right|Left|Shift) click/i.test(line) ||
+    // The other wording of the same thing, and it has no colon either, so PROPERTY_LINE misses it
+    // too: "Can be used in a Map Device, allowing you to enter a Map. Waystones can only be used
+    // once." was being stored as an explicit mod on every waystone and offered in the row editor as
+    // something to untick.
+    /^Can be used in a Map Device/i.test(line)
   );
 }
 
@@ -222,6 +255,7 @@ export function parseItemText(rawText: string): ParsedItem | null {
     waystoneTier: findNumber(sections, /^Waystone Tier:\s*(\d+)/m),
     socketCount: parseSocketCount(sections),
     defences: parseDefences(sections),
+    mapStats: parseMapStats(sections),
     identified: isIdentified(rawText),
     corrupted: isCorrupted(sections),
     mods,

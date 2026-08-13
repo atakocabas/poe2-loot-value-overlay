@@ -31,8 +31,33 @@ Tests live in `src/test/*.test.ts` and run against compiled JS in `dist/test/`, 
 built-in `node:test` runner (not Jest/Vitest) — `describe`/`test`/`assert` from `node:test` and
 `node:assert`.
 
+**Renderer functions are testable despite exporting nothing**, which `item-groups.test.ts` is the
+pattern for: it reads `dist/renderer/common.js`, runs it as a script in a `node:vm` context with a
+stub `document` (that file's one top-level DOM read is `#item-tooltip`), and picks the function off
+the context's global — which is how the page itself gets it. Use this rather than moving renderer
+logic into `shared/` to make it importable: the plain-`<script>` constraint below is why it lives
+there, and a second copy in `shared/` would drift from the one the panel actually runs.
+
 Packaging on Windows requires Developer Mode enabled (electron-builder's `winCodeSign` step needs
-symlink privileges); if it fails with a symlink/privilege error, that's the cause.
+symlink privileges); if it fails with a symlink/privilege error, that's the cause. The hosted Windows
+runner in CI has those privileges, so this is a local-only obstacle.
+
+`.github/workflows/ci.yml` runs `npm test` (which compiles first, so it covers type errors too) on
+every PR into `main` and on `main` itself. The push half is **not** redundant with the release
+workflow below: that one skips its whole body, tests included, whenever the version has already been
+released — the common case — so without it a merge that doesn't bump the version would run nothing.
+Both workflows are on `windows-latest`, because `poe2-install.test.ts` and `settings.test.ts` assert
+against Windows paths that the code under test builds with `path.join`.
+
+**Releases are cut by bumping the version, not by merging.** `.github/workflows/release.yml` runs on
+every push to `main`, but its first step asks GitHub whether `v{package.json version}` has already
+been released and stops there if it has — so ordinary merges pass through silently, and a merge that
+changes the version runs `npm ci && npm test && npm run package` and publishes the NSIS installer and
+the portable exe to a new release. The gate is deliberately "is this version released" rather than
+"did this commit change package.json": it reads the same from a squashed merge, a re-run or a manual
+`workflow_dispatch`. `gh release create` makes the tag itself, so there is no separate tagging step
+that could disagree with it. Bump `package.json` **and** `package-lock.json` together (`npm version
+<v> --no-git-tag-version`, which touches both — but check its diff, it reformats the `build` block).
 
 ## Architecture
 
@@ -51,11 +76,12 @@ are plain scripts rather than modules, **tsc treats them as one global scope**: 
 declared in both is a compile error (TS2451/TS2393), not a silent clash. Adding a page means adding
 it to `scripts/copy-assets.js` too.
 
-`setup.html`/`setup.ts` is the only other page (see the setup window below) and it is deliberately
-**wrapped in an IIFE, declaring no top-level names at all** — that shared global scope spans every
-renderer file, so a `const load = …` here would collide with the panel's the day it grows one. It
-carries its own styles inline rather than through `style.css`, which describes a transparent
-click-through panel and shares nothing with an ordinary form.
+`setup.html`/`setup.ts` and `settings.html`/`settings.ts` are the other two pages (see the two
+windows below), and both are deliberately **wrapped in an IIFE, declaring no top-level names at
+all** — that shared global scope spans every renderer file, so a `const load = …` on either would
+collide with the panel's, and with each other. They share `form.css` and neither uses `style.css`,
+which describes a transparent click-through panel and has nothing to say about an opaque form; the
+handful of rules unique to one page stay inline on that page.
 
 **The single list is the point, not an accident of layout.** It replaced three views of one dataset
 — a 2-row live feed, a History browser of per-map drill-downs, and a second always-on-top window
@@ -66,6 +92,82 @@ two rows long: `itemListEl.scrollTop` (a pickup mid-read would otherwise yank th
 and the open row editor, which is kept as a **live DOM node** in `openEditor` and re-appended rather
 than rebuilt — a fresh editor each render would reset the mod checkboxes the user was unticking and
 wipe the reprice status they were reading.
+
+**The panel has two forms, and the resting one is the heads-up display.** Which is showing is the
+single biggest thing to know about the renderer:
+
+- **Minimal — the default, everywhere.** The **last drop** (`MINIMAL_ROWS`, currently 1), anything
+  still being priced, and the map total *if* a map is running. Everything you can't use while playing
+  is hidden by the `#panel.minimal` block in style.css — filters, Export/Clear, the disclaimer, the
+  per-row Edit button — along with what you already know: which map you're in, and how old the prices
+  are. Roughly 70-90px tall against ~390px expanded. `#panel` **ships with the class**, because this
+  is the resting state and `setMinimalMode` starts from `true` and early-returns when unchanged.
+- **Expanded — the `toggleList` hotkey, and nothing else.** The whole scrolling history, filters,
+  footer, Edit. The handler in `index.ts` also flips `overlayInteractive`, because the point of the
+  key is reaching those Edit buttons and leaving the two separate made it two keypresses every time.
+  **Nothing else in the app changes the panel's form** — entering a map briefly did, via a
+  `collapsePanel()` helper, and it was removed. The size is the user's business.
+
+**Two things that used to be one.** `minimalMode` and the map total were both driven by
+`applyMapState()`; they came apart when the form became a keypress:
+
+- `applyMapState()` now owns **only** `#session-total-line`, and keeps `MAP_END_GRACE_MS` — it reacts
+  to events, and chaining maps arrives as `SESSION_UPDATE(ended)` then `SESSION_UPDATE(new)` with
+  real awaits between them, so without the grace the total blinks on every transition.
+- `setMinimalMode()` is called from `applyStatus()` off `OverlayStatus.expanded`, with **no grace and
+  no re-check** — a keypress is deliberate and should land immediately.
+
+`#list-empty` is deliberately *not* in the `#panel.minimal` hide list. Minimal is now what a fresh
+install opens in, and hiding it left an empty bordered box with nothing to say Ctrl+C is what fills
+it; `syncEmptyNote()` already hides the note whenever there is a row.
+
+The map test is `isMapSession()` (`shared/session.ts`), duplicated inline in the renderer as
+`isInMap()` for the usual plain-`<script>` reason. It governs the total only. Rules:
+
+- **An active session is not the same thing as a map**, and conflating them was a real bug. Every
+  capture calls `ensureActiveSession()`, which opens a session so the item has somewhere to be filed
+  — including when you Ctrl+C in a hideout. Testing `endedAt` alone therefore collapsed the panel to
+  its one-row in-map form on any capture outside a map, until the next zone change closed it. A
+  session counts as a map when it has a `zoneName` (it came from entering one) **or** `manual` is set
+  (the toggle-session hotkey, i.e. the user saying so). `Session.manual` is optional because nothing
+  migrates `loot-cache.json`; absent reads as false, which is the safe direction.
+- **Minimal mode bypasses the filters entirely** (`minimalGroups()`, not `visibleGroups()`).
+  `searchText`, `unpricedOnly` and `sortMode` persist while their controls are hidden, so a search
+  left over from the last time the list was open would silently filter the one row away with nothing
+  on screen to explain why. Minimal always means "the newest drop"; the filter state is untouched and
+  returns with the full panel.
+- **The hideout flag is not part of it.** A session opened by the toggle-session hotkey has
+  `zoneName: null` and can be running while the player stands in their hideout, so folding
+  `lastZoneIsHideout` in would close a map the user opened by hand. It refines the *label* for the
+  inactive case — hideout versus atlas — and that is all.
+- **`applyMapState()` shows immediately and hides on a delay**, re-checking the condition when the
+  timer fires, exactly like `applyOverlayVisibility()` in the main process. See the grace note above
+  for why the *form* deliberately has no equivalent.
+- **`#session-total-line` ships `class="hidden"` and is revealed**, like `#rate-status`. Out of a map
+  the first session the renderer sees is the *previous, ended* one, so shipping it visible would
+  flash a finished map's total on every launch. Its visibility is toggled with `.hidden`, a bare
+  `display: none` at specificity 0-1-0 — giving that element a `display` property in an id-keyed
+  rule would silently disable the whole thing.
+
+This also fixed a real disagreement: `renderSessionTotal` tested only that a session *existed* while
+`renderSessionStatus` tested `endedAt`, so a finished map's final figure sat in the header
+indefinitely, reading as a total that was still climbing.
+
+**Pending captures are the one thing rendered outside that list**, in `#pending-list` directly above
+it, from `pendingCaptures` — and they are deliberately **not** folded into `allItems`. Four things
+assume everything in that array is a real stored item: `groupItems` keys stackables on
+`name|priceSource`, so a pending row would form its own group and then *migrate* on completion,
+reading as a row vanishing while another's count jumps; `renderList` restores `scrollTop` around a
+wholesale rebuild, which rows appearing on their own schedule would misalign; the CSV export writes
+the lot; and `priceSource` is a closed union the store persists. Keeping them apart also removes the
+correlation problem entirely — main pushes the whole list, so the renderer never matches a pending
+row against the `PricedItem` that replaces it.
+
+Two numbers there are load-bearing. A **300ms grace period** before a row is drawn, because
+poe.ninja and the currency exchange are synchronous cache lookups and without it every currency drop
+strobes a placeholder for one frame. And a **250ms tick that runs only while something is pending**,
+which advances the elapsed count and lets a row cross the grace threshold without another push —
+`setInterval`, not rAF, for the same reason `scheduleRender` avoids it.
 
 `useAsciiConsoleOnWindows()` (`src/main/console-encoding.ts`) is called first thing in
 `src/main/index.ts`, before anything can log. Windows consoles run a legacy OEM codepage while Node
@@ -89,28 +191,52 @@ always-on-top windows can't both be interactive, because whichever sits higher s
 across the display and leaves the other's buttons dead. Don't reintroduce a second window without
 reading that.
 
-**The setup window** (`src/main/setup-window.ts`) is the one exception, and it is not the thing that
-rule forbids. It is an ordinary framed, opaque, focusable, *not* always-on-top window, open only
-while the user is configuring the app and never while they're playing, showing none of the loot
-data — so it can't shadow the overlay's clicks the way a second full-screen sheet would. It exists
-because `league`, `clientTxtPath` and `trade2.contactEmail` **cannot ship as working defaults**: the
-league rotates every few months, and the other two belong to the machine and the person running it.
-Before it existed the app shipped one contributor's email in the `User-Agent` of every user's GGG
-requests. The overlay panel has nowhere sensible to ask for any of that, and `settings.json` in
-`userData` is hand-edited JSON most users will never open.
+**The setup and settings windows** (`src/main/setup-window.ts`, `src/main/settings-window.ts`) are
+the exception, and they are not the thing that rule forbids. Both are ordinary framed, opaque,
+focusable, *not* always-on-top windows, open only while the user is configuring the app and never
+while they're playing, showing none of the loot data — so neither can shadow the overlay's clicks
+the way a second full-screen sheet would.
 
-Its three IPC channels are registered by `registerSetupIpcHandlers()`, **separately from and earlier
-than** `registerIpcHandlers()`. That split is load-bearing: on first run setup has to run to
+**They are two windows because the two halves of the configuration are applied in opposite ways**,
+and that line is the whole reason for the split:
+
+- **Setup** (`league`, `clientTxtPath`, `trade2.contactEmail`) **cannot ship as working defaults** —
+  the league rotates every few months, and the other two belong to the machine and the person
+  running it. Before it existed the app shipped one contributor's email in the `User-Agent` of every
+  user's GGG requests. Saving **relaunches the app**, because the league is captured in closures in
+  `index.ts` and again in each of `PoeNinjaClient`/`Trade2Client`/`CurrencyExchangeClient`, so
+  applying it live would take in some places and not others.
+- **Settings** (`hotkeys`, the `overlay` block, `display.currency`) all ship with working defaults
+  and are **applied in place** — nothing downstream captured any of them. `onSettingsSaved` in
+  `index.ts` **mutates the live `settings` object rather than rebinding it**, since `statusDeps`,
+  `registerIpcHandlers` and the clipboard closure all hold that same object. Don't widen it to keys
+  the clients captured; that's what the setup window is for.
+
+The overlay panel has nowhere sensible to ask for any of this, and `settings.json` in `userData` is
+hand-edited JSON most users will never open.
+
+Setup's three IPC channels are registered by `registerSetupIpcHandlers()`, **separately from and
+earlier than** `registerIpcHandlers()`. That split is load-bearing: on first run setup has to run to
 completion *before* the pricing clients are constructed, because they capture the league at
-construction — and those clients are what `registerIpcHandlers` needs.
+construction — and those clients are what `registerIpcHandlers` needs. The settings window's two
+channels have no such constraint and are registered alongside the overlay's. During first-run setup
+`onSetupSaved` does nothing and boot simply continues with the saved values. Note also that
+`window-all-closed` returns early while `bootCompleted` is false — during first-run setup that window
+is the only one there is, and letting it quit the app would kill the first launch every time.
 
-Saving from the tray's `Settings…` **relaunches the app** (`onSetupSaved` in `index.ts`, gated on
-`bootCompleted`). The league is captured in closures in `index.ts` and again in each of
-`PoeNinjaClient`/`Trade2Client`/`CurrencyExchangeClient`, so applying it live would take in some
-places and not others. During first-run setup the same callback does nothing and boot simply
-continues with the saved values. Note also that `window-all-closed` returns early while
-`bootCompleted` is false — during first-run setup that window is the only one there is, and letting
-it quit the app would kill the first launch every time.
+**The global hotkeys are suspended for as long as the settings window is open** — `onOpenSettings`
+in `index.ts` calls `unregisterAllHotkeys()` before opening it and `applyHotkeys()` when it closes.
+This is not tidiness. `globalShortcut` takes a combo from the OS system-wide, so a *bound*
+accelerator never reaches any renderer and the key recorder simply cannot see it — the same
+mechanism that rules out Ctrl+C as a capture hotkey. It also makes `probeAccelerator()` honest,
+which would otherwise report every one of this app's own bindings as already taken. `onSettingsSaved`
+therefore deliberately does **not** re-register: the window is still open at that point.
+
+Two things in `index.ts` are restartable units for this, both shaped like `startLogWatcher()` (stop
+first, take the fresh `settings`, tolerate the not-configured case): `applyHotkeys()` and
+`startForegroundWatcher()`. The latter has to catch itself up — if `hideWhenGameUnfocused` is
+switched on while PoE2 is already running, `ProcessWatcher`'s `started` event has long since fired
+and won't start the new watcher for it.
 
 **Overlay visibility** has several inputs (is PoE2 running, is PoE2 the foreground window, is the
 overlay in interactive mode, did the user force it up from the tray), so the decision is factored out
@@ -232,6 +358,16 @@ Data flow, item capture to UI:
 5. `PricingQueue` (`src/pricing/queue.ts`) throttles resolution to one item per 250ms and persists
    the result via `db/store.ts`, then pushes it to the renderer over IPC.
 
+   It also **owns the pending list** — everything captured but not yet priced — and pushes it whole
+   on `PRICING_STATUS` at every transition, because until this existed the renderer had no idea an
+   item existed until it was fully priced. That gap is long and silent: most of a rare's wall clock
+   is `spendBudgetSlot()`'s bare `await sleep()` inside `TradeSearchBudget` spacing, which logs
+   nothing and can run five times at `minSearchIntervalMs`. The stage comes from two places — the
+   queue itself for `queued`/`pricing`, and the optional `onTradeSearch` callback on
+   `PriceResolver.resolve()` for `trade2`, fired at the one point the work stops being a cache
+   lookup. Retiring an entry happens **before** `onPriced`, so an item is never on screen twice, and
+   it sits outside the try/catch: a thrown resolver that skipped it would leave a row up forever.
+
 **Persistence** (`src/db/store.ts`) is a hand-rolled JSON file store (`loot-cache.json` in
 `app.getPath("userData")`) — not sqlite or lowdb. Both were tried and abandoned: `better-sqlite3`
 needs native build tools the dev environment doesn't have, and `lowdb` is pure ESM which can't be
@@ -245,23 +381,42 @@ truth for "what is this item actually worth" — always read through it, never `
 **IPC surface** (`src/shared/ipc-channels.ts`, `src/main/ipc.ts`, `src/preload/index.ts`): pushes
 (`PRICED_ITEM`, `SESSION_UPDATE`, `ZONE_STATUS`, `OVERLAY_STATUS`) go main -> renderer as items
 resolve and totals change; pulls (`GET_STATUS`, `GET_HISTORY`, `GET_ALL_ITEMS`, `CLEAR_HISTORY`,
-`REPRICE_ITEM`, `SET_MANUAL_PRICE`) are renderer-invoked `ipcMain.handle` calls. `REPRICE_ITEM`
-always persists the caller's `ignoredMods` selection even if trade2 is unavailable or finds nothing,
-so the user's mod-exclusion choices survive across repeated attempts. Both editing handlers return
+`GET_EDITOR_ROWS`, `REPRICE_ITEM`, `SET_MANUAL_PRICE`) are renderer-invoked `ipcMain.handle` calls.
+`REPRICE_ITEM` always persists the caller's `ignoredMods`, `modFilters`, `pseudoFilters` and
+`mapFilters` even if trade2 is unavailable or finds nothing, so the tuning the user just did survives
+across repeated attempts. `GET_EDITOR_ROWS` supplies the editor rows that aren't mod lines — derived
+aggregates and a waystone's reward totals — because both classifiers are tables of anchored regexes
+and the renderer is a plain `<script>` that can't import shared modules at runtime. Each aggregate
+carries its contributors' individual amounts so unticking one updates the total live, and the two
+`minRatio` settings ride along rather than being duplicated as renderer constants that would
+silently disagree once tuned. Both editing handlers return
 the stored item *and* its recomputed session, which is what lets the renderer fold the result back
 into `allItems` instead of re-fetching the list.
 
 The setup window's three pulls (`GET_SETUP_CONFIG`, `BROWSE_CLIENT_TXT`, `SAVE_SETUP_CONFIG`) are
 registered by `registerSetupIpcHandlers()` in `src/main/setup-window.ts`, not by `registerIpcHandlers`
-— see the setup window above for why they can't share a call. They ride the **same preload**, which
-exposes them as `window.poe2Setup` alongside the overlay's `window.poe2Overlay`; a second preload
-would duplicate the wiring for three calls the panel never makes. `SAVE_SETUP_CONFIG` takes an
-`onSetupSaved` callback for the same reason `CLEAR_HISTORY` takes `onHistoryCleared`: the handler
-must not reach back into `index.ts`.
+— see the setup window above for why they can't share a call. The settings window's two
+(`GET_SETTINGS_CONFIG`, `SAVE_SETTINGS_CONFIG`) come from `registerSettingsIpcHandlers()` in
+`src/main/settings-window.ts`. All five ride the **same preload**, which exposes them as
+`window.poe2Setup` and `window.poe2Settings` alongside the overlay's `window.poe2Overlay`; a second
+preload would duplicate the wiring for five calls the panel never makes. They stay two bridges rather
+than one because the windows apply their values in opposite ways, and one object offering both would
+invite calling them together. Both save handlers take a callback — `onSetupSaved`, `onSettingsSaved`
+— for the same reason `CLEAR_HISTORY` takes `onHistoryCleared`: the handler must not reach back into
+`index.ts`.
+
+`SAVE_SETTINGS_CONFIG` **validates and probes before it writes anything**. `validateAccelerator` and
+`findDuplicateAccelerators` (`shared/accelerator.ts`, pure and unit-tested) reject a combo that could
+never work, and nothing is persisted in that case — a half-written settings.json where three of four
+hotkeys changed is harder to reason about than a form that visibly didn't take. `probeAccelerator`
+then reports what the OS won't hand over, which *is* saved: the user may well want it once whatever
+holds it is closed. An empty accelerator is valid everywhere and means **disabled**.
 
 `GET_ALL_ITEMS` returns every item, unfiltered — the panel does its own grouping, sorting and
-filtering client-side. `GET_HISTORY` survives solely so the header can name the current map on load;
-nothing else is scoped to a session any more.
+filtering client-side. `GET_HISTORY` survives solely so the header can name the current map on load
+and decide which of the panel's two states to open in; nothing else is scoped to a session any more.
+Note what it returns out of a map: the newest session, which is an **ended** one — the out-of-map
+state has to be right from that, not only after a transition.
 
 `OVERLAY_STATUS` carries the panel-wide state that isn't per-item — poe.ninja conversion rates, how
 old the prices are, whether the overlay currently accepts clicks, and the panel's size — so the
@@ -333,8 +488,10 @@ Practically:
   up in its own `ModKind` group first**, then `explicit`, then `implicit`. That routing is
   load-bearing, not tidiness: by display text alone `crafted`, `fractured` and `desecrated` are
   100% subsets of `explicit` and `enchant` is 99%, so one pooled list would hand back an explicit
-  stat id for a crafted mod almost every time — a filter for a different item. `pseudo` is
-  deliberately not loaded (synthetic aggregates that never appear verbatim on an item).
+  stat id for a crafted mod almost every time — a filter for a different item. `pseudo` is still
+  **not** loaded into the matcher and must stay out of `searchOrder()` — its templates never appear
+  verbatim on an item, and its text overlaps explicit text closely enough to out-match real mods.
+  Pseudo aggregates are *derived* instead, in `shared/pseudo-stats.ts` — see below.
 - A stat GGG indexes **without a `#`** (1418 of the live reference's 3097 explicit templates, e.g.
   "Cannot be Frozen") is asked for by presence — `{ id }` with no `value`. Its compiled regex has no
   capture group, so reading a number gives `NaN`, which `JSON.stringify` writes as `"min": null`;
@@ -342,6 +499,23 @@ Practically:
 - Stat filters are **summed per stat id**, not one per mod line. An item can carry the same stat on
   several affixes (a real body armour had +144 and +49 Evasion Rating from two prefixes) and GGG
   indexes the total, so two filters for one id ask for an item that has 144 *and separately* 49.
+- The row editor can **override the roll each mod is searched at** (`PricedItem.modFilters`, and
+  `pseudoFilters` for the aggregates). Without it every stat is pinned to the item's own number,
+  which is the main reason a good item finds only items strictly better than itself. Three rules:
+  a bound is never sent as `null` (the bare `{ id }` presence form is the only correct "no floor");
+  a `max` is emitted **only when every mod feeding that stat id supplies one**, since a ceiling
+  summed from fewer affixes lands below the item's own total and excludes it from its own
+  comparables; and a presence-only stat ignores bounds entirely. An empty box means different things
+  on the two row kinds — a mod's min is prefilled with its roll, so clearing it is a decision, while
+  an aggregate's is a placeholder showing the default floor, so an untouched one is not sent at all.
+- **`extended.hashes` on each fetched listing names the stat ids that listing carries**, which is the
+  only thing in GGG's response saying *which* filters a given listing satisfied. `countCoverage()`
+  turns it into `PricedItem.statCoverage` — how many of the sampled listings held each mod — shown as
+  a `9/10` chip per row in the editor. It costs no extra requests: the fetch already happens.
+  **It is not "the mods the search used", and must never be presented as one.** A `count` search asks
+  for at least N of M and different listings satisfy different subsets, so no such set exists; a row
+  of ticks would assert otherwise. Groups are flattened before lookup, since a listing may carry the
+  same stat as a crafted or fractured mod where this item has it as an explicit one.
 - A **transient** failure (5xx or a thrown fetch) is retried `trade2.maxTransientRetries` times,
   each retry spending another budget slot; `4xx` and `429` never are. Without this a one-second GGG
   blip — a real capture caught `502` from trade2 *and* the currency exchange in the same second —
@@ -373,8 +547,43 @@ Practically:
   - **The defence floors are not part of the ladder** — they're always on, like base type. If every
     rung comes back empty the floor rung is retried **once** without them (`defencesDropped`), which
     is exactly the query this sent before the feature existed, so it can never invent a market.
-  There is no `pseudo_total_armour`, so `equipment_filters` is the only route to this; the `pseudo`
-  stat group stays unloaded (see `trade-stats.ts`).
+  There is no `pseudo_total_armour`, no evasion and no ward — energy shield is the only defence GGG
+  publishes a pseudo for — so `equipment_filters` is the only route to this and the pseudo
+  aggregates below do not replace it.
+- **A waystone is searched on the reward totals it prints, and on nothing else**
+  (`shared/map-stats.ts`, `trade2.useMapFilters`). `Item Rarity`, `Pack Size`, `Monster Rarity` and
+  `Waystone Drop Chance` go into GGG's `map_filters` group ("Endgame Filters"); **every affix stat
+  filter is dropped**, not folded mod-by-mod. Unlike armour there is no per-mod mapping to compute:
+  a waystone's affixes are monster-difficulty mods and the reward block is what they produce
+  *collectively*. Measured on a real T15 (`Ghost Frontier`) — its six affixes matched **0** listings,
+  three of them matched 118, and its reward totals matched **3453**. Three things not to "fix":
+  - **`map_tier` is not sent.** The base type is per-tier (`Waystone (Tier 15)`) and already pins it:
+    that type plus `map_tier: { min: 16 }` returns zero listings.
+  - **Monster Effectiveness and Revives are parsed but never filtered.** They are difficulty, which
+    is a cost to the buyer, so a `min` floor on them excludes the easier maps that are worth *more*.
+  - **The affix rows in the editor are disabled, not merely unticked.** The backend sends no stat
+    group for a waystone at all, so an enabled checkbox would promise a filter that never ships.
+- **Resistances, life, mana, attributes and global energy shield are searched as GGG's `pseudo`
+  aggregates** (`shared/pseudo-stats.ts`, `trade2.usePseudoFilters`). Same argument as the defence
+  filters, for the stats with no property line: three rolls pinned at +38 cold, +25 fire and +20
+  lightning ask for a listing nobody has, while "83% total elemental resistance" is what GGG indexes
+  and what the market prices. The contributing mods stop being individual stat filters, which
+  shortens the ladder too. Five rules are load-bearing:
+  - **Derived, never matched.** A pseudo template is never on an item, so it cannot come from
+    `TradeStatsMatcher` — the classifier is a table of anchored regexes over mod text, built from
+    explicit name alternations rather than `.*` for the same reason `isLocalDefenceMod` is.
+  - **An aggregate needs at least two contributing mods.** Folding a lone `+38% to Fire Resistance`
+    into a total would match an item whose 38 is all cold — looser without being more accurate.
+  - **`to all Elemental Resistances` counts 3×**, and `to all Attributes` likewise. Counting it once
+    understates a very common mod by two thirds.
+  - **Energy shield is a pseudo only when the item displays no ES total.** Identical text is local on
+    a body armour (already inside `equipment_filters.es`) and global on a ring; the property line is
+    the only thing that separates them, exactly as in `isLocalDefenceMod`.
+  - **The pseudo group is a second `stats` entry of type `and`, never part of the `count` group** —
+    confirmed live that GGG accepts both side by side (HTTP 200). It is always required, so it must
+    not enter `modLadder()`'s arithmetic or the reported `matchedMods`/`totalMods`, which go on
+    counting real mod filters. The `count` group stays at index 0. If every rung comes back empty the
+    aggregates are dropped and retried once (`pseudoDropped`), before the defence retry.
 - Searches use `stats` type **`count`** with a minimum, never `"and"` — see `requiredModMatches()`
   for the live measurements. Requiring every mod returns 0 listings for an ordinary four-to-six-mod
   rare, so `"and"` alone leaves essentially every rare unpriced.
@@ -386,8 +595,8 @@ Practically:
   - **A rung must describe a market, not just match.** The Ruby jewel this came from had 1 listing
     matching all 4 mods (30 chaos), 9 matching 3 (1 divine), and 263 matching 2 (25 exalted — what
     sellers were actually asking). "Strictest rung that matched anything" would have reported one
-    stranger's asking price. The default bar is `maxListings`, i.e. enough to fill the sample the
-    median is taken over.
+    stranger's asking price. The bar is deliberately higher than `maxListings`: the sample only has
+    to be fillable, but the rung has to describe a market before it is worth sampling at all.
   - **The floor rung is never dropped**, whatever caps apply, since it's the query that priced
     things before the ladder existed. If no rung clears the bar, the loosest non-empty one is used.
   - **Searches default to `status: online`, and every message wording follows the setting.** Two
@@ -401,13 +610,24 @@ Practically:
   (optional — nothing migrates `loot-cache.json`), so the log, the reprice status text and the row
   badge can all say a price came from fewer than every mod. Don't drop that: the number looks
   equally confident either way.
-- The median is taken over the **middle** of the price-ascending results (`medianWindow()`), not
-  their cheap end. Taking the cheapest ten reports the *market floor*, not a price: PoE2's cheap end
-  is a wall of 1-exalted dump listings, so every item with more than ten listings came back as
-  1 exalted. Measured on a real Ruby jewel with 236 matching listings, ids 0-9 were ten straight
-  `1 exalted` while ids 45-54 ran 29-40 exalted, which is what that jewel was actually selling for.
-  `TradeEstimate.matches` carries the full match count next to the sample size so the log line and
-  the reprice status both say which slice the number came from.
+- **The price is the market floor, on purpose.** `priceSample()` takes the **cheapest**
+  `trade2.maxListings` (default 5) of the price-ascending results and medians those, so the number is
+  what undercutters are currently asking rather than what the item is nominally worth. Measured on a
+  real Ruby jewel with 236 matching listings: ids 0-4 are `1 exalted` straight through, while ids
+  45-54 run 29-40 exalted, which is what that jewel was actually selling for.
+
+  **Both numbers are real, and this deliberately reports the lower one** — a floor is what you can
+  sell into today. This reverses an earlier decision that took the middle of the window; don't move
+  it back on the strength of "the prices look too low", because low is the specification. That would
+  change what the number means, not just its accuracy, so it needs asking first.
+
+  `TradeEstimate.matches` carries the full match count next to the sample size, so the log line and
+  the reprice status both say which slice the number came from. The median still earns its keep over
+  five listings: one unconverted-currency or misplaced outlier would drag a mean, and the cheap end
+  is exactly where those live.
+
+  The bias compounds with two others pointing the same way — the ladder settling on a rung looser
+  than every mod, and GGG's search returning at most the 100 cheapest ids however many matched.
 - Trade listings name currencies by GGG's **trade id** (`"exalted"`), not poe.ninja's display name
   (`"Exalted Orb"`). `currency-convert.ts` converts the three hub currencies from poe.ninja's
   `core.rates` block rather than by item lookup — exact, and unaffected by which categories were
@@ -434,21 +654,59 @@ commit a working value for any of them. `setupCompleted` defaults to `false`, wh
 the setup window appear once — including for installs upgrading past the key, since
 `mergeWithDefaults` fills it in.
 
+**Which keys the settings window may edit is a rule, not a list.** `SettingsConfig`
+(`shared/types.ts`) is `hotkeys`, the editable part of `overlay`, and `display.currency` — everything
+nothing downstream captured, which is exactly what can be applied without a relaunch. Adding a key
+there means checking that no client, closure or watcher read it at construction; if one did, it
+belongs to the setup window and its restart instead. `loadDefaultSettings()` backs the per-field
+Reset buttons, so "default" in the window means the same thing it means to `mergeWithDefaults`
+rather than a second set of constants in the renderer.
+
 ## Known non-goals / do not "fix"
 
 - No global hotkey for item capture (see ClipboardWatcher above) — this is deliberate, not missing.
 - **One list, one window, one Clear.** There is no live feed, no History view, no session panel and
   no per-map drill-down; all of that was removed on purpose, because the same drop showed up in
   three places at once. Don't add a second list, a second view mode, or a second **overlay** window —
-  grow the filters on the one list instead. Size it with `overlay.panel` if it's too small. The
-  setup window is not a counterexample: it's framed, opaque and never on top, shows no loot data,
-  and is closed while you play (see the setup window above).
+  grow the filters on the one list instead. Size and place it with `overlay.panel` if it's too small
+  or in the way — which the settings window now does, so "make the panel bigger" and "move it off my
+  minimap" are user actions rather than code changes. `panel.position` is horizontal only (`left`
+  applies a `#panel.left` class that flips the base rule's `right: 24px`); the panel stays
+  bottom-anchored because that's the direction `maxHeightPercent` grows in. The setup and settings windows are not counterexamples: both are framed, opaque and never
+  on top, show no loot data, and are closed while you play (see those windows above).
+- Pending rows living outside `#item-list`, and outside `allItems`, is not a layout accident — see
+  the note above. They are also **not filtered or sorted**: they're transient, few, and ordered by
+  the queue they're actually in. Don't "fix" that by routing them through `visibleGroups()`.
 - The list spans **every map ever recorded**, not the current one. A new map resets the header's
   running total and leaves the list alone; that's the design, not a failure to clear. It grows
   without bound until the user presses Clear.
+- The map total **disappearing** the moment a map ends is the feature, not a lost figure — there are
+  two panel states and that line belongs to one of them. Don't "improve" it by keeping the finished
+  map's total up as "Last map: N": the total would then be on screen almost always, which is the
+  behaviour this replaced.
+- The heads-up form showing **one** drop is the chosen number, not a placeholder. `MINIMAL_ROWS` is a
+  renderer constant precisely so it stays cheap to retune; `overlay.minimalRows` in the settings
+  window is the obvious home if it ever needs to be per-user.
+- **Edit is hidden in minimal mode, not omitted.** The row stays single-shaped in `renderItemRow`
+  and CSS hides the button, so there is no second row builder to keep in sync. The hover tooltip
+  still works, so the item is still readable at a glance; the `toggleList` hotkey is how you reach it.
+- **The panel's form is the hotkey's business and nothing else's.** It is never opened *or* closed
+  for you: leaving a map doesn't expand it, and entering one doesn't collapse it. Both of those
+  existed and were removed in turn — auto-expanding in the hideout first, then `collapsePanel()` on
+  map entry. Don't reintroduce either; a panel that resizes itself while you play is the thing this
+  arrived at.
+- **`toggleList` flipping `overlayInteractive` too is the feature.** Expanding the list to press Edit
+  is useless while the panel still passes clicks through, and `toggleOverlay` remains for the times
+  you want click-through toggled without resizing anything.
 - `groupItems` folding identical stackables across the whole list — so one row reads
   `Exalted Orb x214` — is what "one instance per item" means here. It deliberately refuses to fold
   anything with mods or a manual price, since those aren't interchangeable even when the names match.
+  **A group carries its newest member**, which is load-bearing rather than arbitrary: `group.item` is
+  what `minimalGroups()` sorts the heads-up form by, what `visibleGroups()` sorts by under sort=time,
+  and what the row prints as "Ns ago". Keeping the first one seen meant a repeat pickup folded into a
+  group still dated from the original drop, so re-picking up a currency you already had left the
+  heads-up showing an *older* item as the last drop. `count` and `total` were right the whole time,
+  which is what made it look like a pricing fault instead of a sorting one.
 - Foreground-window detection shelling out to PowerShell instead of using `active-win` /
   `node-window-manager` / `koffi` — those are native deps, ruled out for the same reason
   `better-sqlite3` was (see Persistence above). Electron exposes no foreground-window API.
@@ -471,6 +729,17 @@ the setup window appear once — including for installs upgrading past the key, 
   the ladder can reach would have priced it, because that mod combination isn't listed by anyone.
 - `ParsedItem.mods` duplicating `implicitMods`/`explicitMods` is deliberate — see the parser notes
   above. Don't "deduplicate" it by deleting the arrays; they are the persisted shape.
+- Only a **partial** slice of GGG's 36-entry pseudo group is derived. The mod-count pseudos
+  (`pseudo_number_of_prefix_mods` and friends) describe how craftable an item is, not what it sells
+  for, and are left out on purpose rather than missed. Adding a pseudo means adding an anchored
+  pattern and a multiplier, not loading the group into the matcher.
+- Deriving a pseudo only when **two or more** mods feed it is deliberate, and so is the resulting
+  "an item with one resistance roll searches it individually". One contributor is not an aggregate.
+- A waystone's affixes never becoming stat filters is the feature, not a gap — see the trade2 notes.
+  Don't add an opt-in checkbox for them without first checking the listing count for that base, which
+  was measured at zero.
+- `statCoverage` counting per mod rather than naming "the mods that matched" is not a shortcut: the
+  set it would name doesn't exist. Don't turn it into ticks.
 - `CurrencyExchangeClient` covering only currency-exchange-traded items, and therefore never pricing
   rares, is inherent to the data source. It is a fallback for poe.ninja, not a replacement for
   trade search.
@@ -487,7 +756,18 @@ the setup window appear once — including for installs upgrading past the key, 
   module is the same call as `ProcessWatcher` using `tasklist` — see the non-goal above about native
   dependencies. One registry read also doesn't justify the long-lived PowerShell helper
   `ForegroundWatcher` needs.
-- The setup window saving via a **restart** rather than applying values live is deliberate; so is it
-  covering only three settings. Everything else in `settings.json` is a tuning knob with a working
-  default, and turning this into a full settings editor is a different feature from "the app can't
-  run correctly until you answer these".
+- The setup window saving via a **restart** rather than applying values live is deliberate, and so is
+  it covering only three settings. Don't "unify" it with the settings window: the restart is the
+  honest way to apply a league three clients captured at construction, and a single dialog would have
+  to restart for every change or lie about which ones need it.
+- The settings window covering **only** hotkeys, the overlay block and the display currency is the
+  same rule from the other side, not an unfinished job. Everything else in `settings.json` is a
+  tuning knob with a working default that no UI has to exist for. The bar for adding a field is "can
+  this be applied in place", not "is this configurable" — see the Settings section above.
+- **Hotkeys are suspended while the settings window is open, and re-registered when it closes.** Not
+  an oversight in the live-apply path: a bound accelerator is taken by the OS before any renderer
+  sees it, so the recorder could not otherwise capture a combo that is already in use. Don't
+  "improve" this by re-registering on save.
+- A refused accelerator being **saved anyway** is deliberate. `globalShortcut.register` returning
+  false means the combo is unavailable *right now*, usually because another app is running; refusing
+  to store it would make the user's choice depend on what happened to be open at the time.

@@ -20,11 +20,13 @@
     "hideDelayMs": 500,
     "panel": {
       "width": 380,
-      "maxHeightPercent": 80
+      "maxHeightPercent": 80,
+      "position": "right"
     }
   },
   "hotkeys": {
     "toggleOverlay": "CommandOrControl+Shift+O",
+    "toggleList": "CommandOrControl+Shift+L",
     "toggleSession": "CommandOrControl+Shift+M",
     "forceCapture": "CommandOrControl+`"
   },
@@ -79,13 +81,17 @@
     "maxSearchesPerWindow": 10,
     "windowMs": 300000,
     "minSearchIntervalMs": 5000,
-    "maxListings": 10,
+    "maxListings": 5,
     "listingStatus": "online",
     "maxModLadderSearches": 3,
     "minListingsForMatch": 10,
     "minModMatchRatio": 0.5,
     "useDefenceFilters": true,
     "defenceMinRatio": 0.9,
+    "usePseudoFilters": true,
+    "pseudoMinRatio": 0.9,
+    "useMapFilters": true,
+    "mapMinRatio": 0.9,
     "maxTransientRetries": 1
   }
 }

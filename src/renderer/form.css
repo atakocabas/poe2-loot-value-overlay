@@ -1,0 +1,206 @@
+/*
+ * The shared look of the two ordinary windows — setup.html and settings.html.
+ *
+ * Deliberately *not* style.css, which describes a transparent, click-through overlay panel and
+ * shares nothing with an opaque form. Shared between these two rather than inlined in each, because
+ * they sit one above the other in the same tray menu and two hand-maintained copies of a palette
+ * drift the first time either is touched.
+ *
+ * Anything only one page has — the setup window's path row, the recorder's states — stays with that
+ * page or in the block at the bottom here, whichever keeps it findable.
+ */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", sans-serif;
+  color: #eee;
+}
+
+body {
+  background: #14161c;
+  padding: 22px 24px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+h1 {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+/* Section heading within a form. Ruled off rather than boxed, so sections read as one column. */
+h2 {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #a8adba;
+  margin: 22px 0 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+#intro {
+  margin: 6px 0 20px;
+  color: #a8adba;
+}
+
+.field {
+  margin-bottom: 18px;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 3px;
+}
+
+.hint {
+  color: #a8adba;
+  margin-bottom: 6px;
+}
+
+input[type="text"] {
+  width: 100%;
+  padding: 7px 9px;
+  background: #1d2029;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+input[type="number"],
+select {
+  padding: 7px 9px;
+  background: #1d2029;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+select option {
+  background: #1d2029;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
+  outline: none;
+  border-color: rgba(143, 211, 160, 0.7);
+}
+
+input[type="checkbox"] {
+  accent-color: #8fd3a0;
+}
+
+button {
+  padding: 7px 14px;
+  background: #262a35;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2f3440;
+}
+
+/* The one primary action on the page. Both windows call it #save. */
+#save {
+  background: rgba(143, 211, 160, 0.18);
+  border-color: rgba(143, 211, 160, 0.7);
+  font-weight: 600;
+}
+
+#actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+#disclaimer {
+  margin-top: 20px;
+  color: #6f7480;
+  font-size: 11px;
+}
+
+/*
+ * The key recorder. A button rather than a text input: its value is never typed, and a caret
+ * blinking in a field that ignores typing is a promise the control doesn't keep.
+ */
+.hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recorder {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 9px;
+  background: #1d2029;
+  font-variant: small-caps;
+  letter-spacing: 0.03em;
+  text-align: left;
+}
+
+/* Listening for the combo. The accent is the only cue that the next keypress goes somewhere. */
+.recorder.recording {
+  background: rgba(143, 211, 160, 0.12);
+  border-color: rgba(143, 211, 160, 0.7);
+  color: #8fd3a0;
+}
+
+/* Bound to nothing. Reads as absent rather than as a combo named "Not set". */
+.recorder.unbound {
+  color: #6f7480;
+  font-style: italic;
+  font-variant: normal;
+}
+
+/* Save feedback, next to the button. Silent until there is something to say. */
+.status {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.status.ok {
+  color: #8fd3a0;
+}
+
+.status.warn {
+  color: #d9a441;
+}
+
+/* A number with its unit, so "px" and "%" aren't part of the value the user has to retype. */
+.measure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.measure input[type="number"] {
+  width: 90px;
+}
+
+.measure .unit {
+  color: #a8adba;
+}
+
+/* A checkbox and its label on one line — the label block above would leave the box orphaned. */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.check-row label {
+  margin-bottom: 0;
+  font-weight: 400;
+}

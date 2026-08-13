@@ -38,14 +38,20 @@ export async function initStore(userDataDir: string): Promise<void> {
   }
 }
 
-export async function startSession(league: string, zoneName: string | null): Promise<Session> {
+export async function startSession(
+  league: string,
+  zoneName: string | null,
+  /** Set only by the toggle-session hotkey. See `Session.manual` and `isMapSession`. */
+  manual = false
+): Promise<Session> {
   const session: Session = {
     id: randomUUID(),
     league,
     startedAt: Date.now(),
     endedAt: null,
     zoneName,
-    totalChaosValue: 0
+    totalChaosValue: 0,
+    manual
   };
   data.sessions.push(session);
   persist();
@@ -85,7 +91,19 @@ export async function updateItem(
   patch: Partial<
     Pick<
       PricedItem,
-      "chaosValue" | "priceSource" | "ignoredMods" | "manualChaosValue" | "modMatch" | "defencesDropped"
+      | "chaosValue"
+      | "priceSource"
+      | "ignoredMods"
+      | "modFilters"
+      | "pseudoFilters"
+      | "mapFilters"
+      | "manualChaosValue"
+      | "modMatch"
+      | "defencesDropped"
+      | "pseudoDropped"
+      | "mapDropped"
+      | "statCoverage"
+      | "coverageSample"
     >
   >
 ): Promise<PricedItem | null> {

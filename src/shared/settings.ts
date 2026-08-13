@@ -57,16 +57,27 @@ export interface Settings {
      */
     hideDelayMs: number;
     /**
-     * Size of the panel itself, which holds the one item list. Configurable because that list is
-     * now the whole app — it holds every drop ever recorded rather than the two-row feed the panel
-     * was originally sized for, and the separate, draggable list window it replaced is gone.
+     * Size and side of the panel itself, which holds the one item list. Configurable because that
+     * list is now the whole app — it holds every drop ever recorded rather than the two-row feed the
+     * panel was originally sized for, and the separate, draggable list window it replaced is gone.
      * `maxHeightPercent` is a share of the display height, so a value that fits one monitor doesn't
      * run off the bottom of another.
+     *
+     * `position` is horizontal only, because the bottom-right corner the panel has always used is
+     * also where PoE2 puts the minimap, the buff bar and the flask row — how much they collide
+     * depends on UI scale and resolution, so which side is clear is the player's to say. It stays
+     * bottom-anchored either way: the panel grows upward into `maxHeightPercent`.
      */
-    panel: { width: number; maxHeightPercent: number };
+    panel: { width: number; maxHeightPercent: number; position: "left" | "right" };
   };
   hotkeys: {
+    /** Click-through vs interactive, without changing the panel's size. */
     toggleOverlay: string;
+    /**
+     * Opens the full list and makes the overlay clickable, so Edit can be pressed; again closes both.
+     * The panel is otherwise always its minimal form — see `OverlayStatus.expanded`.
+     */
+    toggleList: string;
     toggleSession: string;
     forceCapture: string;
   };
@@ -162,8 +173,12 @@ export interface Settings {
      */
     minSearchIntervalMs: number;
     /**
-     * Listings sampled from the middle of the price-sorted results for the median (see
-     * `medianWindow`). Capped at 10 by GGG's fetch endpoint, which rejects longer id lists outright.
+     * How many of the **cheapest** price-sorted listings the median is taken over (see
+     * `priceSample`). Capped at 10 by GGG's fetch endpoint, which rejects longer id lists outright.
+     *
+     * The price this yields is the market floor — what undercutters are currently asking — not what
+     * the item is nominally worth. Raising this widens the slice but keeps it anchored to the cheap
+     * end; it does not move the sample up the market.
      */
     maxListings: number;
     /**
@@ -187,8 +202,9 @@ export interface Settings {
     maxModLadderSearches: number;
     /**
      * Listings a mod threshold must match before its price is taken at face value; below it the
-     * ladder keeps loosening. Default is `maxListings`, so a rung must be able to fill the sample
-     * the median is taken over — under that the "median" is a handful of asking prices.
+     * ladder keeps loosening. Deliberately larger than `maxListings`: the sample only needs to be
+     * fillable, but the *rung* has to describe a market before it's worth sampling at all — under
+     * that the "median" is a handful of asking prices whichever end you take it from.
      *
      * Measured on a real Ruby jewel: matching all 4 mods found 1 listing, 3 of 4 found 9 (median
      * 1 divine), and 2 of 4 found 236 (median ~30 exalted, which is what sellers of that jewel were
@@ -231,6 +247,53 @@ export interface Settings {
      * anything worth pricing — the printed number is already exact.
      */
     defenceMinRatio: number;
+    /**
+     * Search resistances, life, mana, attributes and global energy shield as GGG's *pseudo*
+     * aggregates — one "83% total Elemental Resistance" filter in place of the three resistance rolls
+     * that add up to it.
+     *
+     * Same argument as `useDefenceFilters`, for the stats that have no property line: GGG indexes the
+     * total and the market prices the total, so three filters pinned to +38 cold, +25 fire and +20
+     * lightning ask for a listing nobody has. The contributing mods stop being individual stat
+     * filters when this is on, which shortens the ladder as well.
+     *
+     * An aggregate is only derived when at least **two** mods feed it — folding a single resistance
+     * roll would match an item whose total is all one other element. `false` restores the old payload
+     * exactly. Note GGG publishes no pseudo for armour, evasion or ward; those stay on
+     * `equipment_filters` either way.
+     */
+    usePseudoFilters: boolean;
+    /**
+     * The aggregate floor to search on, as a fraction of the item's own total: 0.9 turns 83% total
+     * elemental resistance into `{ "min": 74 }`. Below 1 for the same reason as `defenceMinRatio` —
+     * at parity the only matches are items strictly better than this one, and a median over those
+     * prices something the item isn't. No maximum, for the same reason either.
+     */
+    pseudoMinRatio: number;
+    /**
+     * Search a waystone on the reward totals it prints — Item Rarity, Pack Size, Monster Rarity and
+     * Waystone Drop Chance — through GGG's `map_filters`, instead of on its affixes.
+     *
+     * The strongest case of the three folds. A waystone's affixes are monster-difficulty mods, and
+     * the reward block is what the whole affix set produces *collectively*, so there is no per-mod
+     * mapping the way there is for armour: the affixes are simply the part nobody else has in the
+     * same combination. Measured on a real T15 capture — its six affixes matched 0 listings, three of
+     * them matched 118, and its reward totals matched 3453.
+     *
+     * All affix stat filters are dropped when this is on. `false` restores the old payload exactly.
+     *
+     * Monster Effectiveness and Revives are parsed but never filtered: they describe difficulty,
+     * which is a cost to the buyer, so a floor on them would exclude the easier maps worth *more*.
+     * Waystone Tier isn't filtered either — the base type is per-tier ("Waystone (Tier 15)"), which
+     * already pins it. Measured: that type plus `map_tier: { min: 16 }` returns zero listings.
+     */
+    useMapFilters: boolean;
+    /**
+     * The reward floor to search on, as a fraction of the waystone's own total: 0.9 turns
+     * `Item Rarity: +24%` into `"map_iir": { "min": 21 }`. Below 1 for the same reason as
+     * `defenceMinRatio` — at parity the only matches are waystones strictly better than this one.
+     */
+    mapMinRatio: number;
     /**
      * Extra attempts after a **transient** failure — GGG 5xx or a dead socket. Without this, one
      * blip (a real capture caught `HTTP 502` from trade2 and the currency exchange in the same

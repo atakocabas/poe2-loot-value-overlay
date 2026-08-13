@@ -9,6 +9,7 @@
 //   effectiveValue/totalValue  <- shared/effective-value.ts
 //   formatNumber/formatValue   <- shared/format-value.ts  (tested in test/format-value.test.ts)
 //   formatHubRates             <- shared/format-value.ts  (tested in test/format-value.test.ts)
+//   itemMods                   <- shared/mods.ts  (modsOf; tested in test/mods.test.ts)
 // Keep them in sync with those modules.
 
 type Rates = { chaosPerDivine: number; exaltedPerDivine: number };
@@ -84,7 +85,7 @@ const tooltipEl = document.getElementById("item-tooltip")!;
  * free. It's the only way to see mods, item level, sockets and quality — the row itself has room
  * for a name and a price and nothing else.
  */
-function attachTooltip(el: HTMLElement, item: PricedItem): void {
+function attachTooltip(el: HTMLElement, item: ParsedItem): void {
   el.addEventListener("mouseenter", () => {
     if (!item.rawText) return;
     tooltipEl.textContent = item.rawText;
@@ -152,6 +153,28 @@ function sourceBadge(item: PricedItem): HTMLElement {
       "No listing matched this item's Armour/Evasion/Energy Shield totals, so the price ignores " +
       "them and compares this base and these mods at any defences.";
   }
+
+  // And again for the derived aggregates — a price found only by ignoring an 83% resistance total is
+  // a price for a much weaker item, and nothing else on the row would say so.
+  if (item.pseudoDropped) {
+    badge.textContent += " ~agg";
+    badge.classList.add("badge-partial");
+    badge.title =
+      (badge.title ? `${badge.title}\n\n` : "") +
+      "No listing matched this item's total resistance/life/attributes, so the price ignores those " +
+      "totals and compares this base and these mods at any of them.";
+  }
+
+  // Worse than the other two on a waystone, because the reward totals are the *only* thing it is
+  // searched on — dropping them leaves the tier and nothing else.
+  if (item.mapDropped) {
+    badge.textContent += " ~map";
+    badge.classList.add("badge-partial");
+    badge.title =
+      (badge.title ? `${badge.title}\n\n` : "") +
+      "No listing matched this waystone's Item Rarity / Pack Size / Monster Rarity / Drop Chance, " +
+      "so the price is off every waystone of this tier regardless of what it rolled.";
+  }
   return badge;
 }
 
@@ -162,7 +185,12 @@ function relativeTime(timestamp: number): string {
   return `${Math.round(seconds / 3600)}h ago`;
 }
 
-function itemNameEl(item: PricedItem, count?: number): HTMLElement {
+/*
+ * These three take `ParsedItem`, not `PricedItem` — they read nothing a price adds, and the wider
+ * type is what lets a pending row reuse them verbatim. `PricedItem extends ParsedItem`, so every
+ * existing caller is unaffected.
+ */
+function itemNameEl(item: ParsedItem, count?: number): HTMLElement {
   const total = count ?? item.stackSize;
   const label = document.createElement("span");
   label.className = `item-name rarity-${item.rarity}`;
@@ -181,7 +209,7 @@ function itemNameEl(item: PricedItem, count?: number): HTMLElement {
  * The base type is what identifies a rare — "Doom Grip" says nothing, "Titan Gauntlets" says what
  * dropped. Suppressed when it just repeats the name, as it does for currency and gems.
  */
-function itemSubtitle(item: PricedItem): HTMLElement | null {
+function itemSubtitle(item: ParsedItem): HTMLElement | null {
   const parts: string[] = [];
   if (item.baseType && item.baseType !== item.name) parts.push(item.baseType);
   if (item.waystoneTier !== null) parts.push(`T${item.waystoneTier}`);
@@ -195,6 +223,45 @@ function itemSubtitle(item: PricedItem): HTMLElement | null {
   return sub;
 }
 
+/**
+ * An item's mod lines with their kinds — the renderer's copy of `modsOf()` in shared/mods.ts.
+ *
+ * Duplicated rather than imported for the reason at the top of this file. It's needed because the
+ * flattened `implicitMods`/`explicitMods` arrays throw the kind away, and the row editor labels each
+ * mod with it. The fallback matters as much as the main path: `mods` postdates `loot-cache.json` and
+ * nothing migrates it, so an older item has only the arrays.
+ */
+function itemMods(item: PricedItem): ParsedMod[] {
+  if (item.mods && item.mods.length > 0) return item.mods;
+  return [
+    ...(item.implicitMods ?? []).map((text): ParsedMod => ({ text, kind: "implicit" })),
+    ...(item.explicitMods ?? []).map((text): ParsedMod => ({ text, kind: "explicit" }))
+  ];
+}
+
+/**
+ * The mod's roll split out of its text, or null for a mod that carries no number.
+ *
+ * The first number is taken deliberately: `compileTemplate` in trade-stats.ts turns GGG's `#`
+ * placeholders into `\+?(-?[0-9.]+)` and reads capture group 1, so for an ordinary single-`#` stat
+ * this is the same number the search filters on. It's an approximation of that, not a reimplementation
+ * — the matcher and its stat reference live in the main process — so a line whose first number isn't
+ * the template's `#` will show a bound the old search didn't use. That is on screen and editable,
+ * which is the point of showing it at all.
+ *
+ * A null return is what suppresses the bounds inputs, and it lands on roughly the stats GGG indexes
+ * with no `#` at all ("Cannot be Frozen") — those are matched on presence and a bound would be a lie.
+ */
+function splitModRoll(text: string): { before: string; roll: string; after: string } | null {
+  const match = text.match(/-?\d+(?:\.\d+)?/);
+  if (!match || match.index === undefined) return null;
+  return {
+    before: text.slice(0, match.index),
+    roll: match[0],
+    after: text.slice(match.index + match[0].length)
+  };
+}
+
 interface ItemGroup {
   item: PricedItem;
   count: number;
@@ -204,6 +271,14 @@ interface ItemGroup {
 /**
  * Identical stackable drops are folded into one row. Five separate Exalted Orb pickups are five
  * lines of noise; what the user wants to know is how many dropped in this map.
+ *
+ * **The group carries its newest member, not its first.** `item` is what every consumer reads the
+ * row's timestamp off — `minimalGroups()` sorts the heads-up form by it, `visibleGroups()` sorts by
+ * it under sort=time, and the row prints it as "Ns ago". Keeping the first meant a repeat pickup
+ * folded into a group still dated from the *original* drop, so re-picking up a currency you already
+ * had left the heads-up showing some other, older item as the last drop, and parked the row at its
+ * first pickup's place in the time sort. `count` and `total` were right throughout, which is what
+ * made it read as a display fault rather than a pricing one.
  */
 function groupItems(items: PricedItem[]): ItemGroup[] {
   const groups = new Map<string, ItemGroup>();
@@ -223,6 +298,9 @@ function groupItems(items: PricedItem[]): ItemGroup[] {
     if (existing) {
       existing.count += item.stackSize;
       existing.total = existing.total === null || value === null ? null : existing.total + value;
+      // Compared rather than just taking the last one seen: `allItems` happens to be in capture
+      // order today, but nothing here should quietly depend on that holding.
+      if (item.capturedAt > existing.item.capturedAt) existing.item = item;
     } else {
       groups.set(key, { item, count: item.stackSize, total: value });
     }

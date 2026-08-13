@@ -1,0 +1,39 @@
+name: CI
+
+# Every PR into main, plus main itself. The push half is not redundant with release.yml: that
+# workflow skips its whole body — tests included — when the version has already been released, which
+# is the common case, so without this a merge that doesn't bump the version would run nothing at all.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    # Windows to match release.yml and the only platform this ships for. `poe2-install.test.ts` and
+    # `settings.test.ts` assert against Windows paths, and the code under test builds them with
+    # `path.join`, so a Linux runner would report failures that say nothing about the change.
+    # The repo is public, so the runner costs nothing either way.
+    runs-on: windows-latest
+
+    steps:
+      # v5 on both: the v4 pins target Node 20, which the runners now force onto 24 and warn about.
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # `npm test` compiles first (tsc src -> dist) and runs node:test over the output, so this
+      # covers type errors and the suite in one step — there is no separate build to add.
+      - run: npm test
+
+# A force-push to a PR branch supersedes the run already going; main's runs are left alone, since
+# each merge commit is its own thing worth a verdict.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}

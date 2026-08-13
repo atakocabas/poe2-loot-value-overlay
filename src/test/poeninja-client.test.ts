@@ -19,6 +19,14 @@ function makeParsedItem(name: string, overrides: Partial<ParsedItem> = {}): Pars
     waystoneTier: null,
     socketCount: null,
     defences: { armour: null, evasion: null, energyShield: null, ward: null },
+    mapStats: {
+      itemRarity: null,
+      packSize: null,
+      monsterRarity: null,
+      dropChance: null,
+      monsterEffectiveness: null,
+      revives: null
+    },
     identified: true,
     corrupted: false,
     mods: [],

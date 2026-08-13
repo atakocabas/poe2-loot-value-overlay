@@ -1,8 +1,10 @@
 import type { Settings } from "../shared/settings";
-import type { ItemDefences, ParsedItem } from "../shared/types";
+import type { ItemDefences, ModFilter, ParsedItem, PseudoStat } from "../shared/types";
 import { createPublicGggFetch, type GggFetch } from "./ggg-fetch";
 import { modsOf } from "../shared/mods";
 import { defencesOf, isLocalDefenceMod } from "../shared/defences";
+import { mapFilterLabel, mapRowsOf } from "../shared/map-stats";
+import { derivePseudoStatsFromMods, pseudoTotal } from "../shared/pseudo-stats";
 import { TradeStatsMatcher } from "./trade-stats";
 import { TradeSearchBudget } from "./trade-budget";
 
@@ -15,16 +17,62 @@ interface TradeListing {
   listing: {
     price: { amount: number; currency: string } | null;
   };
+  /**
+   * `extended.hashes` names the exact stat ids this listing carries, grouped by kind. It is the only
+   * thing in the response that says *which* of a `count` search's filters a given listing satisfied.
+   */
+  item?: {
+    extended?: {
+      hashes?: Record<string, Array<[string, number[]]>>;
+    };
+  };
 }
 
 interface GggErrorBody {
   error?: { code: number; message: string };
 }
 
-/** One mod as trade2 asks for it. `value` is omitted for stats GGG indexes without a number. */
+/**
+ * One mod as trade2 asks for it. `value` is omitted entirely for stats GGG indexes without a number,
+ * and either bound inside it is omitted when it doesn't apply — never sent as null. See
+ * `buildStatFilters` for why a null bound is worse than no bound.
+ */
 interface StatFilter {
   id: string;
-  value?: { min: number };
+  value?: { min?: number; max?: number };
+}
+
+/**
+ * Bounds the user set for a mod line in the row editor, keyed by that mod's exact display text.
+ * Empty on the automatic pricing path, where every mod is searched at its own roll.
+ */
+export type ModFilterMap = ReadonlyMap<string, { min: number | null; max: number | null }>;
+
+/** null for anything that can't go in a search body — NaN and Infinity both serialise to `null`. */
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * The row editor's per-mod bounds as `buildStatFilters` wants them.
+ *
+ * Sanitised rather than trusted, and here rather than at the IPC boundary because this file owns
+ * what may reach GGG: these round-trip through `loot-cache.json`, so a hand-edited or half-written
+ * cache arrives by exactly the same route a live click does. Negative bounds are *kept* — plenty of
+ * mods roll negative and the stat templates match a leading minus.
+ */
+export function toModFilterMap(modFilters: readonly ModFilter[] | undefined): ModFilterMap {
+  const map = new Map<string, { min: number | null; max: number | null }>();
+  for (const entry of modFilters ?? []) {
+    if (!entry || typeof entry.text !== "string" || entry.text === "") continue;
+    const min = finiteOrNull(entry.min);
+    let max = finiteOrNull(entry.max);
+    // An inverted range matches nothing, and "no listings" for it is indistinguishable from "this
+    // item has no market". Drop the ceiling and search the floor alone.
+    if (max !== null && min !== null && max < min) max = null;
+    map.set(entry.text, { min, max });
+  }
+  return map;
 }
 
 /**
@@ -38,6 +86,7 @@ const DEFENCE_FILTER_IDS: Record<keyof ItemDefences, string> = {
   energyShield: "es",
   ward: "ward"
 };
+
 
 /** One defence as trade2 asks for it: `{ id: "ar", min: 973 }` -> `"ar": { "min": 973 }`. */
 interface DefenceFilter {
@@ -85,6 +134,35 @@ export interface TradeEstimate {
    * of this base sharing these mods, at *any* armour.
    */
   defencesDropped: boolean;
+  /**
+   * The aggregates the search was constrained to, and the mods that fed each. Empty when the item has
+   * none, when `trade2.usePseudoFilters` is off, or when they were dropped by the retry below.
+   *
+   * Carried rather than folded into `totalMods` on purpose: three resistance rolls searched as one
+   * total is why five mods produced three filters, and that is worth saying out loud rather than
+   * leaving as an unexplained discrepancy in the counts.
+   */
+  pseudoStats: PseudoStat[];
+  /**
+   * Every rung came back empty with the aggregates applied, so the search was retried once without
+   * them — the price ignores this item's resistance/life totals entirely.
+   */
+  pseudoDropped: boolean;
+  /**
+   * A waystone's reward floors matched nothing, so the search fell back to base type alone — which
+   * for a waystone means "every other waystone of this tier", since its affixes are never searched.
+   */
+  mapDropped: boolean;
+  /**
+   * How many of the sampled listings carried each of the item's mods.
+   *
+   * Not "the mods that were used" — a `count` search asks for at least N of M, and different
+   * listings satisfy different subsets, so no such set exists. This is the honest version of that
+   * question: how often each mod turned up among the listings the price came from.
+   */
+  statCoverage: Array<{ text: string; listings: number }>;
+  /** The listings `statCoverage` was counted over — the denominator of every count above. */
+  coverageSample: number;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -101,14 +179,41 @@ function noPrice(reason: string): TradeEstimate {
     totalMods: 0,
     rungs: [],
     defences: [],
-    defencesDropped: false
+    defencesDropped: false,
+    pseudoStats: [],
+    pseudoDropped: false,
+    mapDropped: false,
+    statCoverage: [],
+    coverageSample: 0
   };
+}
+
+/** "21+ Item Rarity, 76+ Waystone Drop Chance" — how a waystone's reward floors are named. */
+export function describeMapFilters(filters: DefenceFilter[]): string {
+  return filters.map((filter) => `${filter.min}+ ${mapFilterLabel(filter.id)}`).join(", ");
 }
 
 /** "973+ Armour, 216+ Evasion" — how a defence constraint is named in a message. */
 export function describeDefences(defences: DefenceFilter[]): string {
   const labels: Record<string, string> = { ar: "Armour", ev: "Evasion", es: "Energy Shield", ward: "Ward" };
   return defences.map((filter) => `${filter.min}+ ${labels[filter.id] ?? filter.id}`).join(", ");
+}
+
+/**
+ * "74+ total Elemental Resistance (from 3 mods)" — how an aggregate constraint is named.
+ *
+ * The mod count is the part that explains itself: it says which of the item's mods stopped being
+ * searched individually, so a reader can reconcile "5 mods" with the smaller filter count.
+ */
+export function describePseudo(stats: PseudoStat[], filters: StatFilter[]): string {
+  const minById = new Map(filters.map((filter) => [filter.id, filter.value?.min]));
+  return stats
+    .map((stat) => {
+      const min = minById.get(stat.id);
+      const floor = min === undefined ? "any" : `${min}+`;
+      return `${floor} ${stat.label} (from ${stat.contributors.length} mods)`;
+    })
+    .join(", ");
 }
 
 /** A settled "no price" - retrying would produce the same answer. */
@@ -172,32 +277,31 @@ export function modLadder(count: number, ratio: number, maxSteps: number): numbe
 }
 
 /**
- * Which slice of the price-ascending search results to actually fetch a price from.
+ * Which slice of the price-ascending search results to actually fetch a price from: the **cheapest
+ * `size`**.
  *
- * The obvious slice — the first `size`, the cheapest listings — is the one this used to take, and it
- * reports the *market floor* rather than a price. PoE2 trade's cheap end is a wall of 1-exalted dump
- * listings, so for anything with more than `size` listings the answer came back as 1 exalted no
- * matter what the item was. Measured on a real four-mod Ruby jewel (236 matching online listings,
- * search returned the 100 cheapest ids):
+ * This reports the *market floor* — what the current undercutters are asking — rather than what the
+ * item is worth. That is a deliberate choice and the number it produces is genuinely lower, often by
+ * a lot. Measured on a real four-mod Ruby jewel (236 matching online listings; GGG's search returns
+ * at most the 100 cheapest ids however many matched):
  *
  * | ids taken | prices seen |
  * |---|---|
- * | 0-9 (what this used to do) | ten straight `1 exalted` |
- * | 45-54 (the middle) | 29, 29, 30, 30, 30, 30, 30, 33, 40, 40 exalted |
+ * | 0-4 (what this does) | `1 exalted`, straight through |
+ * | 45-54 (the middle, which this used to take) | 29, 29, 30, 30, 30, 30, 30, 33, 40, 40 exalted |
  * | 90-99 (the top) | 5 chaos, 500 exalted, seven `1 divine` |
  *
- * The item was priced at 1 exalted; sellers of the same jewel were asking ~30. Taking the middle of
- * the window and the median of that lands on the same ~30 without being dragged by either the dump
- * listings below or the fantasy asking prices above.
+ * Sellers of that jewel were asking ~30 exalted; this prices it at 1. **Both numbers are real** —
+ * PoE2's cheap end is a wall of dump listings, and this is now measuring that wall on purpose,
+ * because a floor is what you can actually sell into today rather than what the item is nominally
+ * worth. Don't "fix" the low readings by moving the window back to the middle without asking: that
+ * changes what the number means, not just its accuracy.
  *
- * GGG returns at most 100 ids however many listings matched, so for a heavily-traded base this is
- * the median of the 100 cheapest rather than of the whole market — still biased low, deliberately,
- * and in the same direction as the loose mod matching above.
+ * The bias compounds with two others in the same direction — the ladder settling on a rung looser
+ * than every mod, and the 100-id search cap.
  */
-export function medianWindow<T>(results: T[], size: number): T[] {
-  if (results.length <= size) return results;
-  const start = Math.floor((results.length - size) / 2);
-  return results.slice(start, start + size);
+export function priceSample<T>(results: T[], size: number): T[] {
+  return results.slice(0, size);
 }
 
 /**
@@ -259,11 +363,19 @@ export class Trade2Client {
    * GGG's public stat reference and searched as "at least this roll" filters. If none of the mods
    * can be matched, this falls back to a base-type-only search rather than failing outright.
    * `toChaos` converts a listing's currency (e.g. "divine") into chaos.
+   *
+   * `modFilters` overrides the roll a given mod is searched at, and `pseudoBounds` does the same for
+   * a derived aggregate, keyed by pseudo stat id. Both default to empty, which is the automatic
+   * pricing path — every mod at its own number and every aggregate at `pseudoMinRatio` of the item's
+   * own total, exactly as this behaves with nobody editing anything.
    */
   async estimateRareValue(
     item: ParsedItem,
     ignoredMods: Set<string>,
-    toChaos: (amount: number, currency: string) => number | null
+    toChaos: (amount: number, currency: string) => number | null,
+    modFilters: ModFilterMap = new Map(),
+    pseudoBounds: ModFilterMap = new Map(),
+    mapBounds: ModFilterMap = new Map()
   ): Promise<TradeEstimate> {
     if (!this.settings.trade2.enabled) {
       return noPrice("trade2 lookups are switched off (trade2.enabled is false in settings)");
@@ -294,7 +406,14 @@ export class Trade2Client {
       // Doubles as the retry backoff: the budget already spaces searches by minSearchIntervalMs.
       if (waitMs > 0) await sleep(waitMs);
 
-      const { estimate, transient } = await this.attempt(item, ignoredMods, toChaos);
+      const { estimate, transient } = await this.attempt(
+        item,
+        ignoredMods,
+        toChaos,
+        modFilters,
+        pseudoBounds,
+        mapBounds
+      );
       if (!transient) return estimate;
 
       lastTransient = estimate.reason;
@@ -313,10 +432,13 @@ export class Trade2Client {
   private async attempt(
     item: ParsedItem,
     ignoredMods: Set<string>,
-    toChaos: (amount: number, currency: string) => number | null
+    toChaos: (amount: number, currency: string) => number | null,
+    modFilters: ModFilterMap,
+    pseudoBounds: ModFilterMap,
+    mapBounds: ModFilterMap
   ): Promise<{ estimate: TradeEstimate; transient: boolean }> {
     try {
-      return await this.search(item, ignoredMods, toChaos);
+      return await this.search(item, ignoredMods, toChaos, modFilters, pseudoBounds, mapBounds);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A thrown fetch is DNS/socket/TLS — the network, not a rejected query.
@@ -344,10 +466,37 @@ export class Trade2Client {
   private async search(
     item: ParsedItem,
     ignoredMods: Set<string>,
-    toChaos: (amount: number, currency: string) => number | null
+    toChaos: (amount: number, currency: string) => number | null,
+    modFilters: ModFilterMap,
+    pseudoBounds: ModFilterMap,
+    mapBounds: ModFilterMap
   ): Promise<{ estimate: TradeEstimate; transient: boolean }> {
     const defenceFilters = this.buildDefenceFilters(item);
-    const statFilters = await this.buildStatFilters(item, ignoredMods, defenceFilters.length > 0);
+    const mapFilters = this.buildMapFilters(item, mapBounds);
+
+    // A waystone is searched on its reward block alone — see buildMapFilters for the measurements.
+    // The affixes and any aggregate derived from them are dropped wholesale rather than folded
+    // mod-by-mod, because collectively they *are* the reward block: there is nothing left over that
+    // a stat filter could ask for without re-pinning rolls nobody else has.
+    const searchOnRewards = mapFilters.length > 0;
+    const pseudoStats = searchOnRewards ? [] : this.buildPseudoStats(item, ignoredMods);
+    const pseudoFilters = this.buildPseudoFilters(pseudoStats, pseudoBounds);
+    const foldedIntoPseudo = new Set(
+      pseudoStats.flatMap((stat) => stat.contributors.map((contributor) => contributor.text))
+    );
+    const built = searchOnRewards
+      ? { filters: [], modsByStat: new Map<string, string[]>() }
+      : await this.buildStatFilters(
+          item,
+          ignoredMods,
+          defenceFilters.length > 0,
+          modFilters,
+          foldedIntoPseudo
+        );
+    const statFilters = built.filters;
+    // Deliberately over `statFilters` alone. The pseudo group is always required rather than being
+    // one more thing a listing may or may not share, so it must not shift the thresholds the ladder
+    // relaxes through — nor the counts reported from them.
     const ladder = modLadder(
       statFilters.length,
       this.settings.trade2.minModMatchRatio,
@@ -372,7 +521,14 @@ export class Trade2Client {
       }
       tried.push(required);
 
-      const rung = await this.searchRung(item, statFilters, required, defenceFilters);
+      const rung = await this.searchRung(
+        item,
+        statFilters,
+        required,
+        defenceFilters,
+        pseudoFilters,
+        mapFilters
+      );
       if ("failure" in rung) return rung.failure;
       rungs.push({ required, total: rung.total });
 
@@ -380,23 +536,78 @@ export class Trade2Client {
       if (rung.total >= this.settings.trade2.minListingsForMatch) break;
     }
 
-    // Nothing at any threshold *with* the defence floors. Retry the loosest rung once without them
-    // before giving up: that query is exactly what this sent before defence filters existed, so it
-    // can only find listings the old code would also have found — it can never invent a market. The
-    // extra request is only ever spent on an item that was otherwise about to be stored unpriced.
+    // Nothing at any threshold with the derived aggregates applied. They're the newer and more
+    // speculative constraint of the two, so they come off first — and unlike the mod filters, the
+    // ladder can't loosen them, since the pseudo group is always required.
+    const looseRung = rungsToTry[rungsToTry.length - 1];
+    let pseudoDropped = false;
+    if (!best && !budgetStopped && pseudoFilters.length > 0) {
+      if (await this.spendBudgetSlot()) {
+        console.log(
+          `[trade2] "${item.baseType}" no listings with ${describePseudo(pseudoStats, pseudoFilters)} - ` +
+            "retrying without the aggregate constraint"
+        );
+        const rung = await this.searchRung(
+          item,
+          statFilters,
+          looseRung,
+          defenceFilters,
+          [],
+          mapFilters
+        );
+        if ("failure" in rung) return rung.failure;
+        if (rung.total > 0) {
+          best = rung;
+          pseudoDropped = true;
+        }
+      } else {
+        budgetStopped = true;
+      }
+    }
+
+    // Nothing at any threshold *with* the defence floors either. Retry the loosest rung once without
+    // them before giving up: that query is exactly what this sent before defence filters existed, so
+    // it can only find listings the old code would also have found — it can never invent a market.
+    // The extra request is only ever spent on an item that was otherwise about to be stored unpriced.
+    //
+    // The aggregates stay off here rather than coming back: the rung above already established they
+    // find nothing alongside the defence floors, so re-sending them would spend the request on a
+    // query that is a subset of one that just failed.
     let defencesDropped = false;
     if (!best && !budgetStopped && defenceFilters.length > 0) {
       if (await this.spendBudgetSlot()) {
-        const required = rungsToTry[rungsToTry.length - 1];
         console.log(
           `[trade2] "${item.baseType}" no listings with ${describeDefences(defenceFilters)} - ` +
             "retrying without the defence constraint"
         );
-        const rung = await this.searchRung(item, statFilters, required, []);
+        const rung = await this.searchRung(item, statFilters, looseRung, [], [], mapFilters);
         if ("failure" in rung) return rung.failure;
         if (rung.total > 0) {
           best = rung;
           defencesDropped = true;
+          pseudoDropped = pseudoFilters.length > 0;
+        }
+      } else {
+        budgetStopped = true;
+      }
+    }
+
+    // And the same one more time for a waystone's reward floors. Last of the three because it is the
+    // only constraint such an item has — with the affixes deliberately not searched, dropping this
+    // leaves nothing but the base type, which prices a T15 against every other T15 regardless of what
+    // it rolls. Worth doing rather than storing unpriced, but the caller has to be told.
+    let mapDropped = false;
+    if (!best && !budgetStopped && mapFilters.length > 0) {
+      if (await this.spendBudgetSlot()) {
+        console.log(
+          `[trade2] "${item.baseType}" no listings with ${describeMapFilters(mapFilters)} - ` +
+            "retrying on base type alone"
+        );
+        const rung = await this.searchRung(item, statFilters, looseRung, defenceFilters, [], []);
+        if ("failure" in rung) return rung.failure;
+        if (rung.total > 0) {
+          best = rung;
+          mapDropped = true;
         }
       } else {
         budgetStopped = true;
@@ -404,8 +615,14 @@ export class Trade2Client {
     }
 
     // Named in every no-match message: without it the text blames the mods for a miss the armour
-    // floor may well have caused, and points the user at unticking mods that were never the problem.
-    const withDefences = defenceFilters.length > 0 ? ` with ${describeDefences(defenceFilters)}` : "";
+    // floor or an aggregate may well have caused, and points the user at unticking mods that were
+    // never the problem.
+    const constraints = [
+      ...(defenceFilters.length > 0 ? [describeDefences(defenceFilters)] : []),
+      ...(pseudoFilters.length > 0 ? [describePseudo(pseudoStats, pseudoFilters)] : []),
+      ...(mapFilters.length > 0 ? [describeMapFilters(mapFilters)] : [])
+    ];
+    const withDefences = constraints.length > 0 ? ` with ${constraints.join(" and ")}` : "";
 
     if (!best && budgetStopped) {
       // Distinct from "nothing matches": the looser rungs that would have priced this were never
@@ -440,7 +657,11 @@ export class Trade2Client {
       rungs,
       defencesDropped ? [] : defenceFilters,
       defencesDropped,
-      toChaos
+      toChaos,
+      pseudoDropped ? [] : pseudoStats,
+      pseudoDropped,
+      mapDropped,
+      built.modsByStat
     );
   }
 
@@ -468,6 +689,30 @@ export class Trade2Client {
    * while the clipboard prints them at the item's *current* quality, and separating the base value
    * from `increased%` to correct that needs a base-item table this app doesn't have.
    */
+  /**
+   * A waystone's printed reward totals as `map_filters`, each floored to a fraction of its own value.
+   * Empty for anything that isn't a waystone, or when the feature is switched off.
+   *
+   * This is what makes a rare waystone priceable at all, and more starkly than the defence filters
+   * did for armour. On the capture that prompted it, `Ghost Frontier`, the six affixes are all
+   * monster-difficulty mods — Poison chance, Stun Buildup, Extra Fire — and no listing carried that
+   * combination: 0 at six of six, 0 at five, 118 at three. Its reward block matched **3453**. The
+   * rewards are what a buyer is choosing between; the affixes are just how the game got there, which
+   * is why `buildStatFilters` is skipped entirely rather than having mods folded out of it.
+   */
+  private buildMapFilters(item: ParsedItem, bounds: ModFilterMap): DefenceFilter[] {
+    if (!this.settings.trade2.useMapFilters) return [];
+
+    const ratio = this.settings.trade2.mapMinRatio;
+
+    return mapRowsOf(item)
+      .map((row) => {
+        const override = bounds.get(row.id);
+        return { id: row.id, min: override?.min ?? Math.floor(row.value * ratio) };
+      })
+      .filter((filter) => filter.min > 0);
+  }
+
   private buildDefenceFilters(item: ParsedItem): DefenceFilter[] {
     if (!this.settings.trade2.useDefenceFilters) return [];
 
@@ -480,16 +725,65 @@ export class Trade2Client {
       .filter((filter) => filter.min > 0);
   }
 
+  /**
+   * The aggregate stats this item's mods add up to, as GGG's pseudo group indexes them.
+   *
+   * Empty when switched off, and an aggregate is skipped when its id is in `ignoredMods` — the row
+   * editor's pseudo rows untick into the same list the mod rows do, which is safe because a pseudo id
+   * (`pseudo.pseudo_total_life`) can never collide with a mod line. Unticking a *contributor* needs
+   * no special handling: it simply isn't passed in here, and an aggregate left with fewer than two
+   * contributors stops being derived at all, handing its mods back to the ordinary stat filters.
+   */
+  private buildPseudoStats(item: ParsedItem, ignoredMods: Set<string>): PseudoStat[] {
+    if (!this.settings.trade2.usePseudoFilters) return [];
+
+    return derivePseudoStatsFromMods(
+      modsOf(item).filter((mod) => !ignoredMods.has(mod.text)),
+      defencesOf(item)
+    ).filter((stat) => !ignoredMods.has(stat.id));
+  }
+
+  /**
+   * The derived aggregates as trade2 stat filters, floored below the item's own total.
+   *
+   * `pseudoMinRatio` is below 1 for the reason `defenceMinRatio` is: at parity the only matches are
+   * items strictly better than this one, and a median over those prices something the item isn't.
+   */
+  private buildPseudoFilters(stats: PseudoStat[], bounds: ModFilterMap): StatFilter[] {
+    const ratio = this.settings.trade2.pseudoMinRatio;
+
+    return stats
+      .map((stat) => {
+        const override = bounds.get(stat.id);
+        const min = override ? override.min : Math.floor(pseudoTotal(stat) * ratio);
+        const max = override ? override.max : null;
+
+        const value: { min?: number; max?: number } = {};
+        if (min !== null && min > 0) value.min = min;
+        if (max !== null) value.max = max;
+        return Object.keys(value).length > 0 ? { id: stat.id, value } : { id: stat.id };
+      })
+      // A floor that rounded to nothing is not a constraint; the bare id it becomes still asks for an
+      // item carrying the stat at all, which is a real thing to want and what a cleared box means.
+      .filter((filter) => filter.value !== undefined || bounds.has(filter.id));
+  }
+
   /** The item's mods as trade2 stat filters, summed per stat id. */
   private async buildStatFilters(
     item: ParsedItem,
     ignoredMods: Set<string>,
-    defenceFiltersActive: boolean
-  ): Promise<StatFilter[]> {
+    defenceFiltersActive: boolean,
+    modFilters: ModFilterMap,
+    foldedIntoPseudo: Set<string>
+  ): Promise<{ filters: StatFilter[]; modsByStat: Map<string, string[]> }> {
     const defences = defencesOf(item);
     const { matched } = await this.statsMatcher.matchMods(
       modsOf(item)
         .filter((mod) => !ignoredMods.has(mod.text))
+        // Folded into a pseudo aggregate above, so searching it individually as well would pin the
+        // exact roll the aggregate exists to get away from — the same mistake `isLocalDefenceMod`
+        // avoids for armour, and it would undo the widening entirely.
+        .filter((mod) => !foldedIntoPseudo.has(mod.text))
         // A mod already inside a defence total must not *also* be a stat filter, or the exact roll
         // it contributed is pinned all over again and the equipment filter buys nothing. Dropping
         // it is the entire point: it's what shortens the ladder and lets the remaining mods relax.
@@ -500,17 +794,78 @@ export class Trade2Client {
     // and +49) and two granting increased Evasion/ES (42% and 108%) — and GGG indexes the *total*,
     // so emitting two filters for one id asks for an item that has 144 and separately 49 rather
     // than the 193 the item actually has. That matches nothing.
-    const summed = new Map<string, number | null>();
-    for (const { statId, value } of matched.values()) {
-      if (value === null) {
-        if (!summed.has(statId)) summed.set(statId, null);
-        continue;
-      }
-      summed.set(statId, (summed.get(statId) ?? 0) + value);
+    //
+    // Iterated by entry rather than by value because the key is the mod's display text, which is
+    // what a user-set bound is keyed by too. (Two byte-identical mod lines already collapse into one
+    // entry here, so a bound inherits exactly the blind spot `ignoredMods` has.)
+    const summed = new Map<string, { min: number | null; max: number | null; maxComplete: boolean }>();
+    // Which mod lines produced each stat id, kept so the coverage counted off the returned listings
+    // can be reported against the rows the user actually sees. It is one-to-many in both directions'
+    // worth of care: two affixes summing into one id must both be credited when a listing carries it.
+    const modsByStat = new Map<string, string[]>();
+    for (const [text, { statId, value }] of matched) {
+      modsByStat.set(statId, [...(modsByStat.get(statId) ?? []), text]);
+      // A null value means the *template* carries no `#` at all, so this stat is only ever matched on
+      // presence and no number belongs on it — whatever a bound says. The editor already renders no
+      // boxes for a line with no number in it; this covers the same entry arriving from an older
+      // `loot-cache.json`, where the mod text or GGG's reference has since changed under it.
+      const override = value === null ? undefined : modFilters.get(text);
+      const min = override ? override.min : value;
+      const max = override ? override.max : null;
+
+      const running = summed.get(statId) ?? { min: null, max: null, maxComplete: true };
+      if (min !== null) running.min = (running.min ?? 0) + min;
+      // A ceiling summed from only *some* of the affixes feeding a stat lands below the total the
+      // item itself has, which excludes the item from its own comparables. So a max survives only
+      // when every mod contributing to this id supplied one.
+      if (max === null) running.maxComplete = false;
+      else running.max = (running.max ?? 0) + max;
+      summed.set(statId, running);
     }
-    // A null threshold is asked for by presence alone. Sending `{"min": null}` instead — which is
-    // what a NaN serialises to — matches nothing and takes the entire search to zero results with it.
-    return [...summed].map(([id, value]) => (value === null ? { id } : { id, value: { min: value } }));
+    // A stat with no surviving bound is asked for by presence alone — a bare `{ id }`. Sending
+    // `{"min": null}` instead, which is also what a NaN serialises to, matches nothing and takes the
+    // entire search to zero results with it.
+    const filters = [...summed].map(([id, bounds]) => {
+      const value: { min?: number; max?: number } = {};
+      if (bounds.min !== null) value.min = bounds.min;
+      if (bounds.maxComplete && bounds.max !== null) value.max = bounds.max;
+      return Object.keys(value).length > 0 ? { id, value } : { id };
+    });
+    return { filters, modsByStat };
+  }
+
+  /**
+   * How many of the sampled listings carried each of the item's mods.
+   *
+   * The ladder asks for "at least N of these M", so a rung that matched does **not** mean the same N
+   * everywhere — one listing may carry mods 1/2/4 and the next 2/5/6. There is no "the mods that were
+   * used"; there is only how often each one turned up, which is what this counts.
+   *
+   * Free: `extended.hashes` rides along on the fetch that was happening anyway. Groups are flattened
+   * rather than read per kind, because a listing can carry the same stat as a crafted or fractured
+   * mod where this item has it as an explicit one — matching only the same group would undercount.
+   */
+  private countCoverage(
+    listings: TradeListing[],
+    modsByStat: Map<string, string[]>
+  ): Array<{ text: string; listings: number }> {
+    const counts = new Map<string, number>();
+    for (const mods of modsByStat.values()) {
+      for (const text of mods) counts.set(text, 0);
+    }
+
+    for (const entry of listings) {
+      const present = new Set<string>();
+      for (const group of Object.values(entry.item?.extended?.hashes ?? {})) {
+        for (const [statId] of group) present.add(statId);
+      }
+      for (const [statId, mods] of modsByStat) {
+        if (!present.has(statId)) continue;
+        for (const text of mods) counts.set(text, (counts.get(text) ?? 0) + 1);
+      }
+    }
+
+    return [...counts].map(([text, listings]) => ({ text, listings }));
   }
 
   /** One search at a single mod threshold. No fetch — only the winning rung is worth spending on. */
@@ -518,7 +873,9 @@ export class Trade2Client {
     item: ParsedItem,
     statFilters: StatFilter[],
     required: number,
-    defenceFilters: DefenceFilter[]
+    defenceFilters: DefenceFilter[],
+    pseudoFilters: StatFilter[],
+    mapFilters: DefenceFilter[]
   ): Promise<RungResult | { failure: { estimate: TradeEstimate; transient: boolean } }> {
     // Both filter groups live under one `query.filters` key, so they have to be assembled together
     // rather than each conditionally spreading its own — the second would replace the first.
@@ -530,6 +887,27 @@ export class Trade2Client {
       queryFilters.equipment_filters = {
         filters: Object.fromEntries(defenceFilters.map(({ id, min }) => [id, { min }]))
       };
+    }
+    // GGG titles this group "Endgame Filters". Same shape as the equipment one, and it sits under the
+    // same `query.filters` key, which is why all three are assembled into one object here.
+    if (mapFilters.length > 0) {
+      queryFilters.map_filters = {
+        filters: Object.fromEntries(mapFilters.map(({ id, min }) => [id, { min }]))
+      };
+    }
+
+    // Two sibling groups, and the `count` one stays at index 0. The aggregates are `and` rather than
+    // more candidates in the count group because they are the item's headline numbers — an 83% total
+    // resistance ring is not comparable to one without it, whatever else matched — and because a
+    // count group that included them would shift every ladder threshold and every reported mod
+    // count. Confirmed against the live API: a count group and an and group side by side answer 200.
+    const statGroups: unknown[] = [];
+    if (statFilters.length > 0) {
+      // `count` with a minimum, never `and`. See requiredModMatches() for why.
+      statGroups.push({ type: "count", value: { min: required }, filters: statFilters });
+    }
+    if (pseudoFilters.length > 0) {
+      statGroups.push({ type: "and", filters: pseudoFilters });
     }
 
     const searchResponse = await this.gggFetch(
@@ -552,13 +930,13 @@ export class Trade2Client {
             // Omitted entirely when neither group applies, so an item this doesn't touch sends
             // exactly the payload it always did.
             ...(Object.keys(queryFilters).length > 0 ? { filters: queryFilters } : {}),
-            // `count` with a minimum, never `and`. See requiredModMatches() for why.
-            ...(statFilters.length > 0
-              ? { stats: [{ type: "count", value: { min: required }, filters: statFilters }] }
-              : {})
+            // Built above. Guarded on the assembled array rather than on `statFilters` alone: an item
+            // whose every mod folded into an aggregate has no count group and would otherwise have
+            // dropped its pseudo group along with it.
+            ...(statGroups.length > 0 ? { stats: statGroups } : {})
           },
-          // Ascending price, so the ids come back in a known order and `medianWindow` can take the
-          // middle of them rather than an arbitrary slice. GGG normalises across currencies for
+          // Ascending price, so the ids come back in a known order and `priceSample` can take the
+          // cheapest of them rather than an arbitrary slice. GGG normalises across currencies for
           // this sort, so a chaos-priced listing is ordered against exalted-priced ones rather than
           // grouped separately.
           sort: { price: "asc" }
@@ -582,9 +960,14 @@ export class Trade2Client {
       total: searchBody.total ?? searchBody.result.length
     };
     const defenceNote = defenceFilters.length > 0 ? ` and ${describeDefences(defenceFilters)}` : "";
+    const mapNote = mapFilters.length > 0 ? ` and ${describeMapFilters(mapFilters)}` : "";
+    const pseudoNote =
+      pseudoFilters.length > 0
+        ? ` and ${pseudoFilters.map((filter) => `${filter.value?.min ?? "any"}+ ${filter.id.replace("pseudo.pseudo_", "")}`).join(", ")}`
+        : "";
     console.log(
       `[trade2] "${item.baseType}" with ${required} of ${statFilters.length} mod filter(s)` +
-        `${defenceNote}: ${rung.total} listing(s)`
+        `${defenceNote}${pseudoNote}${mapNote}: ${rung.total} listing(s)`
     );
     return rung;
   }
@@ -596,9 +979,13 @@ export class Trade2Client {
     rungs: Array<{ required: number; total: number }>,
     defences: DefenceFilter[],
     defencesDropped: boolean,
-    toChaos: (amount: number, currency: string) => number | null
+    toChaos: (amount: number, currency: string) => number | null,
+    pseudoStats: PseudoStat[],
+    pseudoDropped: boolean,
+    mapDropped: boolean,
+    modsByStat: Map<string, string[]>
   ): Promise<{ estimate: TradeEstimate; transient: boolean }> {
-    const ids = medianWindow(rung.ids, Math.min(this.settings.trade2.maxListings, MAX_FETCH_IDS));
+    const ids = priceSample(rung.ids, Math.min(this.settings.trade2.maxListings, MAX_FETCH_IDS));
 
     const fetchResponse = await this.gggFetch(
       `${API_BASE}/fetch/${ids.join(",")}?query=${encodeURIComponent(rung.searchId)}&realm=${REALM}`
@@ -621,10 +1008,13 @@ export class Trade2Client {
       );
     }
 
-    // Median, not the mean, and of the middle of the result window rather than its cheap end — see
-    // medianWindow() for the measurements. Both halves of that matter: PoE2 trade is full of
-    // 1-exalted placeholder listings at the bottom and speculative asking prices at the top, and
-    // only ignoring both gets near what the item would actually sell for.
+    // Median rather than mean, over the cheapest listings `priceSample` selected — so this is the
+    // middle of the market floor, not the middle of the market. The median still earns its keep at
+    // this end: one mispriced or uncoverted-currency outlier among five would drag a mean noticeably,
+    // and the cheap end is exactly where those live.
+    //
+    // Re-sorted rather than trusting GGG's order, because the ids came back sorted by GGG's own
+    // cross-currency normalisation while these are this app's chaos conversions, which can disagree.
     chaosValues.sort((a, b) => a - b);
     return {
       estimate: {
@@ -636,7 +1026,14 @@ export class Trade2Client {
         totalMods,
         rungs,
         defences,
-        defencesDropped
+        defencesDropped,
+        pseudoStats,
+        pseudoDropped,
+        mapDropped,
+        // Counted over the fetched listings, not the ones with a convertible price: a listing whose
+        // currency this app can't convert still tells you which mods the market carries.
+        statCoverage: this.countCoverage(fetchBody.result, modsByStat),
+        coverageSample: fetchBody.result.length
       },
       transient: false
     };

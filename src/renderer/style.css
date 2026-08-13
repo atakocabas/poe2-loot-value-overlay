@@ -32,6 +32,18 @@ body {
 }
 
 /*
+ * The other side, from `overlay.panel.position`. Bottom-right is also where PoE2 puts the minimap,
+ * the buff bar and the flask row, and how much of that the panel covers depends on UI scale.
+ *
+ * `right: auto` is the load-bearing half: the base rule above pins `right: 24px`, and a `left`
+ * alongside it would leave the panel stretched across the whole display rather than moved.
+ */
+#panel.left {
+  left: 24px;
+  right: auto;
+}
+
+/*
  * Click-through and interactive mode looked identical, so a user pressing a button in click-through
  * mode just saw nothing happen. The accent border is the only cue that the panel is listening.
  */
@@ -47,6 +59,62 @@ body {
   margin-bottom: 6px;
 }
 
+/*
+ * The heads-up form, and the panel's resting state: the map total, anything still being priced, and
+ * the last drop.
+ *
+ * Everything hidden below is something you can't use while playing — filters, Export/Clear, the
+ * disclaimer — or something you already know: which map you're in, and how old the prices are. The
+ * toggle-list hotkey brings it all back, which is when repricing and editing actually happen.
+ *
+ * `#list-empty` is deliberately **not** hidden: this is now the state a fresh install opens in, and
+ * hiding it left an empty bordered box with nothing to say that Ctrl+C is what fills it.
+ * `syncEmptyNote()` already hides the note whenever there is a row.
+ *
+ * Purely a state class, applied by `setMinimalMode`. Nothing here is toggled per element, so the two
+ * forms can't drift apart one rule at a time.
+ */
+#panel.minimal #session-status,
+#panel.minimal #price-status,
+#panel.minimal #rate-status,
+#panel.minimal #list-filters,
+#panel.minimal #panel-footer,
+#panel.minimal #disclaimer {
+  display: none;
+}
+
+/* The header's only remaining line, so it can carry the weight the whole block used to. */
+#panel.minimal #session-total-line {
+  font-size: 15px;
+}
+
+/* Nothing below it to divide from — the rule would be the panel's bottom edge. */
+#panel.minimal #panel-header {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 4px;
+}
+
+/*
+ * The row is a readout here, not a control. Hiding the button rather than not building it keeps
+ * `renderItemRow` single-shaped; the hover tooltip still works, so the item is still readable.
+ */
+#panel.minimal .item-row button {
+  display: none;
+}
+
+/*
+ * `flex: 1` would stretch a single row to fill whatever height the panel had in the other state,
+ * which is the one thing standing between "hide the chrome" and a panel that is actually small.
+ */
+#panel.minimal #item-list {
+  flex: none;
+}
+
+/*
+ * Collapses to zero height on its own when #session-total-line is hidden, which is what makes the
+ * out-of-map state cost nothing — so there is no rule here for the empty case.
+ */
 #panel-header-top {
   display: flex;
   align-items: center;
@@ -54,6 +122,12 @@ body {
   gap: 8px;
   font-weight: 600;
 }
+
+/*
+ * #session-total-line is toggled with `.hidden`, which is a bare `display: none` at specificity
+ * 0-1-0. Do NOT give this element a `display` property in an id-keyed rule — it would win, and the
+ * in-map/out-of-map toggle would stop working with nothing to show for it.
+ */
 
 #session-status {
   margin-top: 3px;
@@ -214,6 +288,42 @@ select option {
   color: #d3b98f;
 }
 
+/* Where a mod line came from, under each mod in the row editor. Borderless because there is one on
+   every row and the list is dense — the hue alone carries it, and the frame added visual weight to
+   the thing the reader cares least about. */
+.badge-kind {
+  border: none;
+  padding: 0;
+  opacity: 0.55;
+  font-size: 8px;
+}
+
+/* Implicit reads as "part of the base, not rolled", so it takes the blue already used for the
+   manual badge; everything else is an affix and stays the body colour at low opacity. */
+.badge-kind-implicit {
+  color: #8fb8d3;
+}
+
+.badge-kind-rune,
+.badge-kind-enchant {
+  color: #8fd3a0;
+}
+
+/* Derived rather than read off the item, so it gets its own hue and full opacity — this row is the
+   one the search actually sends, and it should not read as a footnote to the mods below it. */
+.badge-kind-pseudo,
+.badge-kind-reward {
+  color: #d3b98f;
+  opacity: 0.85;
+}
+
+/* "9/10" — how many of the priced listings carried this mod. Kept to the right of the kind badge and
+   framed, unlike the kind, because it is a measurement rather than a label. */
+.badge-coverage {
+  margin-left: 4px;
+  opacity: 0.75;
+}
+
 .reprice-warning {
   color: #d3b98f;
 }
@@ -275,6 +385,42 @@ select option {
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/*
+ * A capture that hasn't got a price yet. Sits above #item-list, outside the scrolling region, so it
+ * stays visible however far down the list the user has scrolled. Ruled off along its whole bottom
+ * edge to read as a band above the list rather than as its first rows.
+ */
+#pending-list {
+  flex: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  margin-bottom: 4px;
+}
+
+.pending-row {
+  background: rgba(211, 185, 143, 0.06);
+}
+
+/*
+ * Same warm hue as the unpriced badge, which is the nearest existing meaning: no number yet. The
+ * pulse is the only thing on screen saying the app is still working — most of a trade2 lookup is
+ * spent inside rate-limit spacing that logs nothing and returns nothing until it finishes.
+ *
+ * CSS rather than a JS ticker, deliberately: this window is hidden whenever PoE2 isn't in front and
+ * a hidden window never paints, so a rAF-driven animation would simply not run. A CSS animation
+ * pauses harmlessly instead — the text is still correct, it just isn't fading.
+ */
+.pending-state {
+  white-space: nowrap;
+  font-style: italic;
+  color: #d3b98f;
+  animation: pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 .item-row-top .item-value {
   white-space: nowrap;
 }
@@ -297,15 +443,109 @@ select option {
   margin-bottom: 6px;
 }
 
+/* Checkbox | mod text + kind | bounds. The bounds wrap under the text rather than squeezing it when
+   the panel is narrow — `overlay.panel.width` decides which happens, and a truncated mod line is
+   worse than a second row. */
 .mod-list li {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  padding: 1px 0;
+  padding: 2px 0;
+  flex-wrap: wrap;
 }
 
-.mod-list li input {
+.mod-list li input[type="checkbox"] {
   margin-top: 3px;
+  /* The only rule that styles a checkbox anywhere — the global input block deliberately skips them.
+     accent-color gets the filled check without `appearance: none` and a hand-drawn tick. */
+  accent-color: #8fd3a0;
+}
+
+.mod-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Small caps is what makes this read as an item panel rather than a form. It only works because the
+   roll is a separate element: digits have no small-caps form, so the number would otherwise sit at
+   full height against shrunken letters. */
+.mod-text {
+  font-variant: small-caps;
+  letter-spacing: 0.02em;
+  line-height: 1.25;
+}
+
+.mod-roll {
+  font-weight: 600;
+  color: #fff;
+  font-variant: normal;
+}
+
+/* The kind label and the coverage count, side by side under the mod text. */
+.mod-tags {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mod-bounds {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.mod-bounds input[type="number"] {
+  width: 46px;
+  text-align: right;
+  /* Spinners in a 46px box leave no room for three digits, and the value is typed rather than
+     nudged. Scoped here so the manual-price input below keeps its own. */
+  appearance: textfield;
+}
+
+.mod-bounds input[type="number"]::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+/* An excluded mod is greyed rather than hidden: the list must not reflow under the cursor while the
+   user works down it ticking things off. */
+.mod-excluded .mod-body,
+.mod-excluded .mod-bounds {
+  opacity: 0.35;
+}
+
+/* A derived aggregate. Separated from the mods below by a rule rather than by indentation, since the
+   mods it folds are still full rows and indenting them would reflow as aggregates come and go. */
+.mod-pseudo {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 3px;
+  margin-bottom: 2px;
+}
+
+/* Folded into a live aggregate above: still readable, but not a filter of its own right now. Lighter
+   than .mod-excluded, because the mod is still very much part of the search — just not by itself. */
+/* Two ways a mod ends up not being a filter of its own: folded into an aggregate, or on a waystone,
+   where the reward totals are the whole search. Same treatment, different owners — see the note in
+   renderModRow on why the waystone case can't reuse .mod-folded. */
+.mod-folded .mod-body,
+.mod-folded .mod-bounds,
+.mod-unsearchable .mod-body,
+.mod-unsearchable .mod-bounds {
+  opacity: 0.5;
+}
+
+.mod-folded .mod-bounds,
+.mod-unsearchable .mod-bounds {
+  visibility: hidden;
+}
+
+/* An aggregate that is switched off, or has dropped below the two contributors it takes to exist. */
+.mod-inactive .mod-body,
+.mod-inactive .mod-bounds {
+  opacity: 0.35;
 }
 
 .item-edit-row {
