@@ -39,7 +39,18 @@ logic into `shared/` to make it importable: the plain-`<script>` constraint belo
 there, and a second copy in `shared/` would drift from the one the panel actually runs.
 
 Packaging on Windows requires Developer Mode enabled (electron-builder's `winCodeSign` step needs
-symlink privileges); if it fails with a symlink/privilege error, that's the cause.
+symlink privileges); if it fails with a symlink/privilege error, that's the cause. The hosted Windows
+runner in CI has those privileges, so this is a local-only obstacle.
+
+**Releases are cut by bumping the version, not by merging.** `.github/workflows/release.yml` runs on
+every push to `main`, but its first step asks GitHub whether `v{package.json version}` has already
+been released and stops there if it has — so ordinary merges pass through silently, and a merge that
+changes the version runs `npm ci && npm test && npm run package` and publishes the NSIS installer and
+the portable exe to a new release. The gate is deliberately "is this version released" rather than
+"did this commit change package.json": it reads the same from a squashed merge, a re-run or a manual
+`workflow_dispatch`. `gh release create` makes the tag itself, so there is no separate tagging step
+that could disagree with it. Bump `package.json` **and** `package-lock.json` together (`npm version
+<v> --no-git-tag-version`, which touches both — but check its diff, it reformats the `build` block).
 
 ## Architecture
 
