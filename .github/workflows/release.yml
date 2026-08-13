@@ -28,9 +28,10 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # v5 on both: the v4 pins target Node 20, which the runners now force onto 24 and warn about.
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # `@types/node` tracks 22, so the build and the test runner see the API surface they were
           # written against. `npm ci` needs the tracked package-lock.json, not `npm install`.
