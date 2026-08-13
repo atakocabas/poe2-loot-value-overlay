@@ -389,6 +389,68 @@ test("an item with no property block gets all-null defences rather than throwing
   });
 });
 
+/**
+ * A real capture, verbatim from `loot-cache.json` — the waystone whose six affixes returned 0
+ * listings while its reward block describes a market of thousands.
+ */
+const RARE_WAYSTONE = [
+  "Item Class: Waystones",
+  "Rarity: Rare",
+  "Ghost Frontier",
+  "Waystone (Tier 15)",
+  "--------",
+  "Revives Available: 0 (augmented)",
+  "Item Rarity: +24% (augmented)",
+  "Pack Size: +7% (augmented)",
+  "Monster Rarity: +18% (augmented)",
+  "Monster Effectiveness: +13% (augmented)",
+  "Waystone Drop Chance: +85% (augmented)",
+  "--------",
+  "Item Level: 82",
+  "--------",
+  '{ Prefix Modifier "Infernal" (Tier: 1) }',
+  "Monsters deal 19(15-19)% of Damage as Extra Fire",
+  '{ Suffix Modifier "of Enduring" (Tier: 1) }',
+  "Monsters are Armoured",
+  "--------",
+  "Can be used in a Map Device, allowing you to enter a Map. Waystones can only be used once."
+].join("\n");
+
+test("a waystone's reward totals are read off the property block", () => {
+  // These are what `map_filters` indexes, and what a waystone actually trades on — the affixes
+  // below produce them collectively, so no single mod maps to any one of them.
+  assert.deepEqual(parseItemText(RARE_WAYSTONE)!.mapStats, {
+    itemRarity: 24,
+    packSize: 7,
+    monsterRarity: 18,
+    dropChance: 85,
+    monsterEffectiveness: 13,
+    revives: 0
+  });
+});
+
+test("the map device usage line is not an affix", () => {
+  // It has no colon, so PROPERTY_LINE doesn't skip it, and it doesn't start with "Right click", so
+  // the existing guard missed it. It was being stored as an explicit mod on every waystone and
+  // offered in the row editor as something to untick.
+  const item = parseItemText(RARE_WAYSTONE)!;
+  assert.deepEqual(item.explicitMods, [
+    "Monsters deal 19% of Damage as Extra Fire",
+    "Monsters are Armoured"
+  ]);
+});
+
+test("an item that isn't a waystone gets all-null map stats rather than throwing", () => {
+  assert.deepEqual(parseItemText(CHAOS_ORB)!.mapStats, {
+    itemRarity: null,
+    packSize: null,
+    monsterRarity: null,
+    dropChance: null,
+    monsterEffectiveness: null,
+    revives: null
+  });
+});
+
 test("a header's kind stops at the section break, so prefixes aren't read as implicit", () => {
   const item = parseItemText(ADVANCED_BODY_ARMOUR);
 

@@ -6,10 +6,21 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div id="panel">
+    <!--
+      Ships in the minimal, heads-up form because that is the resting state — the panel shows the last
+      thing you copied and nothing else until the toggle-list hotkey opens it. `setMinimalMode` starts
+      from `true` to match and early-returns when unchanged, so without the class here the first paint
+      would be the full panel with no push to correct it.
+    -->
+    <div id="panel" class="minimal">
       <div id="panel-header">
         <div id="panel-header-top">
-          <span id="session-total-line">Map total: <strong id="session-total">?</strong></span>
+          <!--
+            Shown only while a map is running. Ships hidden and is revealed, like #rate-status below:
+            out of a map the renderer's first `latestSession` is the *previous*, ended map, so
+            shipping this visible would flash a finished map's total on every launch.
+          -->
+          <span id="session-total-line" class="hidden">Map total: <strong id="session-total">?</strong></span>
         </div>
         <div id="session-status">No active map</div>
         <div id="price-status"></div>
@@ -29,6 +40,13 @@
         </select>
         <label class="filter-toggle"><input id="list-unpriced" type="checkbox" />Unpriced</label>
       </div>
+      <!--
+        Captures that don't have a price yet. Deliberately *above* #item-list rather than inside it:
+        outside the scrolling region these stay visible wherever the list is scrolled to, and the
+        list's scrollTop save/restore never has to account for rows coming and going on their own
+        schedule. Starts hidden so nothing is reserved while there's nothing pending.
+      -->
+      <div id="pending-list" class="hidden"></div>
       <!-- The one list, and the only scrolling region. -->
       <div id="item-list"></div>
       <div id="list-empty" class="empty-note">No drops captured yet — Ctrl+C an item in game.</div>

@@ -4,8 +4,11 @@ const path = require("node:path");
 const copies = [
   ["src/renderer/index.html", "dist/renderer/index.html"],
   ["src/renderer/style.css", "dist/renderer/style.css"],
-  // The setup window's page. It carries its own styles inline, so there's no sheet to copy with it.
-  ["src/renderer/setup.html", "dist/renderer/setup.html"]
+  // The two ordinary framed windows, and the sheet they share. style.css above is the overlay's
+  // alone — it describes a transparent click-through panel and neither form uses it.
+  ["src/renderer/setup.html", "dist/renderer/setup.html"],
+  ["src/renderer/settings.html", "dist/renderer/settings.html"],
+  ["src/renderer/form.css", "dist/renderer/form.css"]
 ];
 
 for (const [from, to] of copies) {

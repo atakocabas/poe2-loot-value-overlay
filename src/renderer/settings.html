@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>PoE2 Loot Value Overlay — Settings</title>
+    <!-- Shared with setup.html. See the note in form.css for why neither uses style.css. -->
+    <link rel="stylesheet" href="form.css" />
+  </head>
+  <body>
+    <h1>Settings</h1>
+    <p id="intro">
+      These apply the moment you save — the overlay doesn't restart. The league, Client.txt path and
+      contact email live under <strong>Setup…</strong> instead, because changing those does.
+    </p>
+
+    <h2>Hotkeys</h2>
+    <p class="hint">
+      Click a combination to change it, then press the keys you want. Every hotkey needs at least one
+      of Ctrl, Alt or Shift — a bare key would be taken from Path of Exile 2 as well, including from
+      its chat box. <kbd>Esc</kbd> cancels; <kbd>Backspace</kbd> unbinds.
+    </p>
+
+    <div class="field">
+      <label>Show the full list</label>
+      <div class="hint">
+        The panel normally shows only the last item you copied. This opens the whole list — filters,
+        Export, and the per-row Edit button — and makes the overlay clickable so you can use them.
+        Press it again to go back. Nothing else ever changes the panel's size.
+      </div>
+      <div class="hotkey-row">
+        <button class="recorder" type="button" data-hotkey="toggleList"></button>
+        <button type="button" data-clear="toggleList">Clear</button>
+        <button type="button" data-reset="toggleList">Reset</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Toggle overlay</label>
+      <div class="hint">
+        Switches the panel between click-through and interactive without changing its size. Showing
+        the full list already does this for you; this is for the times you want one without the other.
+      </div>
+      <div class="hotkey-row">
+        <button class="recorder" type="button" data-hotkey="toggleOverlay"></button>
+        <button type="button" data-clear="toggleOverlay">Clear</button>
+        <button type="button" data-reset="toggleOverlay">Reset</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Start / end map</label>
+      <div class="hint">
+        Opens or closes a map session by hand, for when zone detection has the wrong idea — or when
+        Client.txt isn't being read at all.
+      </div>
+      <div class="hotkey-row">
+        <button class="recorder" type="button" data-hotkey="toggleSession"></button>
+        <button type="button" data-clear="toggleSession">Clear</button>
+        <button type="button" data-reset="toggleSession">Reset</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Capture clipboard</label>
+      <div class="hint">
+        Re-reads whatever the clipboard already holds. Copying an item with Ctrl+C is picked up on
+        its own; this is for a second look at the same item, which the automatic watcher skips.
+      </div>
+      <div class="hotkey-row">
+        <button class="recorder" type="button" data-hotkey="forceCapture"></button>
+        <button type="button" data-clear="forceCapture">Clear</button>
+        <button type="button" data-reset="forceCapture">Reset</button>
+      </div>
+    </div>
+
+    <h2>Overlay</h2>
+
+    <div class="field">
+      <div class="check-row">
+        <input id="hide-unfocused" type="checkbox" />
+        <label for="hide-unfocused">Hide when Path of Exile 2 isn't the focused window</label>
+      </div>
+      <div class="hint">
+        The panel sits above everything on the primary display, so without this it covers your
+        browser and Discord when you alt-tab. Turn it off if you play windowed on a second monitor
+        and want the panel permanently visible; that also skips a small background helper process.
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="hide-delay">Hide delay</label>
+      <div class="hint">
+        Grace period before hiding. The game briefly hands the foreground to Windows during loading
+        screens and fullscreen switches, and without a delay the panel blinks off on every zone.
+      </div>
+      <div class="measure">
+        <input id="hide-delay" type="number" min="0" max="10000" step="50" />
+        <span class="unit">ms</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="panel-width">Panel width</label>
+      <div class="hint">
+        The list holds every drop you've recorded, so a narrow panel truncates item names and wraps
+        the editor's roll boxes onto a second line.
+      </div>
+      <div class="measure">
+        <input id="panel-width" type="number" min="240" max="1200" step="10" />
+        <span class="unit">px</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="panel-height">Panel height</label>
+      <div class="hint">
+        A share of your screen height rather than a pixel count, so a size that fits one monitor
+        doesn't run off the bottom of another.
+      </div>
+      <div class="measure">
+        <input id="panel-height" type="number" min="20" max="100" step="5" />
+        <span class="unit">% of screen height</span>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="panel-position">Panel position</label>
+      <div class="hint">
+        Which side of the screen the panel sits against. The bottom-right is also where the game puts
+        the minimap and the flask row, so how much they overlap depends on your UI scale and
+        resolution. The panel stays along the bottom either way.
+      </div>
+      <select id="panel-position">
+        <option value="right">Bottom right</option>
+        <option value="left">Bottom left</option>
+      </select>
+    </div>
+
+    <h2>Display</h2>
+
+    <div class="field">
+      <label for="currency">Show prices in</label>
+      <div class="hint">
+        Only affects what you read — values are always stored in chaos, so changing this never
+        rewrites anything. <strong>Automatic</strong> uses divine for anything worth at least one and
+        exalted below that, which is how players actually quote prices.
+      </div>
+      <select id="currency">
+        <option value="auto">Automatic</option>
+        <option value="divine">Divine Orbs</option>
+        <option value="exalted">Exalted Orbs</option>
+        <option value="chaos">Chaos Orbs</option>
+      </select>
+    </div>
+
+    <div id="actions">
+      <div id="status" class="status"></div>
+      <button id="save" type="button">Save</button>
+    </div>
+
+    <div id="disclaimer">
+      This product isn't affiliated with or endorsed by Grinding Gear Games in any way.
+    </div>
+
+    <!-- Only settings.js: common.js/index.js are the overlay panel and share nothing with this. -->
+    <script src="settings.js"></script>
+  </body>
+</html>

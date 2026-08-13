@@ -5,6 +5,7 @@ import { useAsciiConsoleOnWindows } from "./console-encoding";
 import { loadSettings, saveSettings } from "./settings";
 import { detectClientTxtPath } from "./poe2-install";
 import { registerSetupIpcHandlers, showSetupWindow } from "./setup-window";
+import { registerSettingsIpcHandlers, showSettingsWindow } from "./settings-window";
 import {
   createOverlayWindow,
   hideOverlay,
@@ -13,13 +14,14 @@ import {
   setOverlayInteractive,
   showOverlay
 } from "./window";
-import { registerHotkeys, unregisterAllHotkeys } from "./hotkeys";
+import { registerHotkeys, unregisterAllHotkeys, type HotkeyHandlers } from "./hotkeys";
 import { createTray } from "./tray";
 import { ClipboardWatcher } from "./clipboard-watch";
 import { ClientLogWatcher } from "./logwatch";
 import { ProcessWatcher } from "./process-watch";
 import { ForegroundWatcher } from "./foreground-watch";
 import { shouldShowOverlay } from "./overlay-visibility";
+import { isSessionActive } from "../shared/session";
 import { registerIpcHandlers } from "./ipc";
 import { parseItemText } from "../parser/item-text-parser";
 import { PoeNinjaClient } from "../pricing/poeninja-client";
@@ -45,6 +47,14 @@ if (!app.requestSingleInstanceLock()) {
 
 let currentSession: Session | null = null;
 let overlayInteractive = false;
+/**
+ * Whether the panel is showing the full list rather than its minimal heads-up form.
+ *
+ * Held here rather than in the renderer because the `toggleList` hotkey is a global shortcut, so the
+ * keypress only ever reaches this process. It rides `OverlayStatus`, which the renderer already
+ * reapplies wholesale on every push.
+ */
+let panelExpanded = false;
 /** Set once at startup; `buildStatus()` reads through it so it can be called before construction. */
 let statusDeps: { poeNinja: PoeNinjaClient; settings: Settings } | null = null;
 let processWatcher: ProcessWatcher | null = null;
@@ -114,7 +124,8 @@ function buildStatus(): OverlayStatus {
     pricesFetchedAt: statusDeps?.poeNinja.getLastRefreshAt() ?? null,
     displayCurrency: statusDeps?.settings.display.currency ?? "auto",
     interactive: overlayInteractive,
-    panel: statusDeps?.settings.overlay.panel ?? { width: 380, maxHeightPercent: 80 }
+    expanded: panelExpanded,
+    panel: statusDeps?.settings.overlay.panel ?? { width: 380, maxHeightPercent: 80, position: "right" }
   };
 }
 
@@ -124,7 +135,7 @@ function broadcastStatus(): void {
 
 /** Closes the in-progress session, if there is one. No-op when nothing is running. */
 async function endCurrentSession(): Promise<void> {
-  if (!currentSession || currentSession.endedAt !== null) return;
+  if (!isSessionActive(currentSession)) return;
   console.log(`[map] ending session ${currentSession.id}`);
   await endSession(currentSession.id);
   await broadcastSession({ ...currentSession, endedAt: Date.now() });
@@ -199,14 +210,73 @@ function startLogWatcher(settings: Settings): void {
   logWatcher.start();
 }
 
-async function ensureActiveSession(league: string): Promise<Session> {
-  if (currentSession && currentSession.endedAt === null) return currentSession;
+/**
+ * Watches which window has the foreground, so the overlay can get out of the way when you alt-tab.
+ *
+ * Split out of the boot sequence for the same reason as `startLogWatcher` — the settings window can
+ * turn `hideWhenGameUnfocused` on and off, and that has to take effect without a restart — hence
+ * stopping whatever is already running first.
+ */
+function startForegroundWatcher(settings: Settings): void {
+  foregroundWatcher?.stop();
+  foregroundWatcher = null;
+
+  // Turned off: no helper process, and the overlay stops depending on focus at all. Clearing both
+  // inputs matters — a stale `gameFocused: false` left behind would keep hiding the panel forever.
+  if (!settings.overlay.hideWhenGameUnfocused) {
+    followFocus = false;
+    gameFocused = false;
+    applyOverlayVisibility();
+    return;
+  }
+
+  foregroundWatcher = new ForegroundWatcher(settings.poe2ProcessNames, settings.overlay.focusPollIntervalMs);
+  foregroundWatcher.on("focused", () => {
+    gameFocused = true;
+    // Back in the game: normal focus-driven visibility resumes, whichever way the tray was used.
+    trayOverride = null;
+    applyOverlayVisibility();
+  });
+  foregroundWatcher.on("unfocused", () => {
+    gameFocused = false;
+    applyOverlayVisibility();
+  });
+  // Fail open: without working focus detection the overlay stays permanently visible (the old
+  // behaviour) rather than permanently hidden.
+  foregroundWatcher.on("unavailable", (message) => {
+    console.warn(`[foreground] focus detection unavailable — overlay will stay visible: ${message}`);
+    foregroundWatcher?.stop();
+    followFocus = false;
+    gameFocused = false;
+    applyOverlayVisibility();
+  });
+
+  // The process watcher starts this on "started", but it has already fired if the game was running
+  // when the setting was switched on — so a watcher built now has to catch itself up.
+  if (gameRunning) {
+    followFocus = true;
+    foregroundWatcher.start();
+  }
+  applyOverlayVisibility();
+}
+
+/**
+ * The session to file a capture against, opening one if nothing is running.
+ *
+ * `manual` marks the session as a map the user declared, which is true of the toggle-session hotkey
+ * and false of everything else. A capture in a hideout still opens a session — the item has to be
+ * filed somewhere and its value has to count — but that session is deliberately *not* a map, or the
+ * overlay would drop into its in-map form the moment you pressed Ctrl+C outside one. See
+ * `isMapSession`.
+ */
+async function ensureActiveSession(league: string, manual = false): Promise<Session> {
+  if (isSessionActive(currentSession)) return currentSession;
   const active = await getActiveSession();
   if (active) {
     currentSession = active;
     return active;
   }
-  const session = await startSession(league, null);
+  const session = await startSession(league, null, manual);
   await broadcastSession(session);
   return session;
 }
@@ -243,7 +313,7 @@ app.whenReady().then(async () => {
   if (settings.trade2.enabled && !settings.trade2.contactEmail) {
     console.warn(
       "[startup] trade2.contactEmail is not set — GGG requests will carry no contact address. " +
-        "Set it from the tray's Settings… if you want them to be able to reach you."
+        "Set it from the tray's Setup… if you want them to be able to reach you."
     );
   }
 
@@ -272,6 +342,14 @@ app.whenReady().then(async () => {
       trayOverride = "hide";
       applyOverlayVisibility();
     },
+    onOpenSettings: () => {
+      // Suspended for as long as the window is up. A registered accelerator is taken by the OS
+      // before it reaches any renderer, so the key recorder could never capture a combo that is
+      // currently bound — the same mechanism that rules out Ctrl+C as a capture hotkey. It also
+      // makes `probeAccelerator` honest, which would otherwise report our own bindings as taken.
+      unregisterAllHotkeys();
+      void showSettingsWindow().then(() => applyHotkeys());
+    },
     onOpenSetup: () => void showSetupWindow(),
     onQuit: () => app.quit()
   });
@@ -296,11 +374,33 @@ app.whenReady().then(async () => {
   registerIpcHandlers({
     poeNinja,
     trade2,
+    settings,
     getStatus: buildStatus,
     // The cleared session is gone from the store; keeping it here would file the next captured
     // item against a dangling sessionId. Nulling it makes ensureActiveSession() open a fresh one.
     onHistoryCleared: () => {
       currentSession = null;
+    }
+  });
+
+  registerSettingsIpcHandlers({
+    onSettingsSaved: (next) => {
+      // Mutated in place, not rebound: `statusDeps`, `registerIpcHandlers` and the clipboard
+      // closure all hold *this* object, so assigning a new one would leave every one of them
+      // reading the old values. Safe only because nothing downstream captured these three blocks
+      // the way the three pricing clients each captured `league` — which is why the league lives in
+      // the setup window, where saving relaunches, instead of here.
+      settings.hotkeys = next.hotkeys;
+      settings.overlay = next.overlay;
+      settings.display = next.display;
+
+      hideDelayMs = settings.overlay.hideDelayMs;
+      startForegroundWatcher(settings);
+      // Panel size and display currency both ride OVERLAY_STATUS, and the renderer reapplies them
+      // on every one — so this is the whole of applying them.
+      broadcastStatus();
+      // The hotkeys are deliberately *not* re-registered here: they stay suspended until the
+      // settings window closes. See `onOpenSettings` above.
     }
   });
 
@@ -313,7 +413,10 @@ app.whenReady().then(async () => {
 
       const session = (await getActiveSession()) ?? currentSession;
       if (session) await broadcastSession(session);
-    }
+    },
+    // Pushed whole on every transition, so the panel can show a captured item straight away rather
+    // than staying blank through a trade2 lookup that can run for half a minute.
+    (pending) => sendToOverlay(IPC.PRICING_STATUS, pending)
   );
 
   const clipboardWatcher = new ClipboardWatcher((text) => {
@@ -329,7 +432,9 @@ app.whenReady().then(async () => {
     void ensureActiveSession(settings.league).then(() => queue.enqueue(item));
   });
 
-  registerHotkeys(settings, {
+  // Held in a const rather than written inline, because the settings window rebinds these and the
+  // re-registration has to attach the same handlers the boot path did.
+  const hotkeyHandlers: HotkeyHandlers = {
     onToggleOverlay: () => {
       overlayInteractive = !overlayInteractive;
       setOverlayInteractive(overlayInteractive);
@@ -337,44 +442,41 @@ app.whenReady().then(async () => {
       // Click-through and interactive looked identical, so the buttons silently stopped working.
       broadcastStatus();
     },
+    // The only thing that ever changes the panel's form. Nothing else collapses or expands it —
+    // entering a map used to, and that was removed: the panel's size is the user's business.
+    onToggleList: () => {
+      panelExpanded = !panelExpanded;
+      // Opening unlocks clicks and closing locks them again, because the point of this key is to
+      // reach the rows' Edit buttons — with the two separate that is two keypresses every time.
+      // `toggleOverlay` still switches click-through on its own without changing the panel's size.
+      overlayInteractive = panelExpanded;
+      setOverlayInteractive(overlayInteractive);
+      applyOverlayVisibility();
+      broadcastStatus();
+    },
     onToggleSession: async () => {
-      if (currentSession && currentSession.endedAt === null) {
+      if (isSessionActive(currentSession)) {
         console.log("[map] manual hotkey: ending session");
         await endCurrentSession();
       } else {
         console.log("[map] manual hotkey: starting new session");
-        await ensureActiveSession(settings.league);
+        // Marked as a map: this is the user saying so when zone detection can't.
+        await ensureActiveSession(settings.league, true);
       }
     },
     onForceCapture: () => clipboardWatcher.forceCapture()
-  });
+  };
+
+  /** Drops every binding and reinstates them from the current `settings`. */
+  const applyHotkeys = (): void => {
+    unregisterAllHotkeys();
+    registerHotkeys(settings, hotkeyHandlers);
+  };
+
+  applyHotkeys();
 
   startLogWatcher(settings);
-
-  // Focus following only runs while the game does — no need for a helper process (or for hiding the
-  // overlay at all) when PoE2 isn't open.
-  if (settings.overlay.hideWhenGameUnfocused) {
-    foregroundWatcher = new ForegroundWatcher(settings.poe2ProcessNames, settings.overlay.focusPollIntervalMs);
-    foregroundWatcher.on("focused", () => {
-      gameFocused = true;
-      // Back in the game: normal focus-driven visibility resumes, whichever way the tray was used.
-      trayOverride = null;
-      applyOverlayVisibility();
-    });
-    foregroundWatcher.on("unfocused", () => {
-      gameFocused = false;
-      applyOverlayVisibility();
-    });
-    // Fail open: without working focus detection the overlay stays permanently visible (the old
-    // behaviour) rather than permanently hidden.
-    foregroundWatcher.on("unavailable", (message) => {
-      console.warn(`[foreground] focus detection unavailable — overlay will stay visible: ${message}`);
-      foregroundWatcher?.stop();
-      followFocus = false;
-      gameFocused = false;
-      applyOverlayVisibility();
-    });
-  }
+  startForegroundWatcher(settings);
 
   // The overlay stays hidden and the clipboard poll stays idle until PoE2 is detected running —
   // no point watching the clipboard (or sitting visible on the desktop) when the game isn't open.

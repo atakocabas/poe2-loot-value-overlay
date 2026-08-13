@@ -115,7 +115,16 @@ export class PriceResolver {
     return lastRefreshAt === null || Date.now() - lastRefreshAt >= this.stalePoeNinjaAfterMs;
   }
 
-  async resolve(item: ParsedItem, sessionId: string): Promise<Omit<PricedItem, "id">> {
+  /**
+   * `onTradeSearch` fires at the moment this stops being a cache lookup and becomes a network call —
+   * the only branch here that takes long enough to be worth telling the user about. Optional, since
+   * nothing but the pending indicator cares.
+   */
+  async resolve(
+    item: ParsedItem,
+    sessionId: string,
+    onTradeSearch?: () => void
+  ): Promise<Omit<PricedItem, "id">> {
     const base = { ...item, sessionId, ignoredMods: [], manualChaosValue: null };
 
     const direct = this.poeNinja.getChaosValueForItem(item);
@@ -150,6 +159,7 @@ export class PriceResolver {
     let tradeReason: string | null = null;
     if (item.rarity === "Rare") {
       console.log(`[pricing] "${item.name}" not in poe.ninja — querying trade2...`);
+      onTradeSearch?.();
       const estimate = await this.trade2.estimateRareValue(item, new Set(), (amount, currency) =>
         toChaos(this.poeNinja, amount, currency)
       );

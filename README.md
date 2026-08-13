@@ -23,7 +23,7 @@ builds exactly these two files from this source.
 ## First run
 
 The app asks for three things once, in a small setup window, because none of them can ship as a
-working default. You can reopen it any time from the tray icon's **Settings…**.
+working default. You can reopen it any time from the tray icon's **Setup…**.
 
 - **League** — every price source is queried per league, and leagues rotate every few months. A name
   that doesn't match the one you're playing isn't an error anywhere; it just leaves everything
@@ -74,33 +74,59 @@ Nothing in this app modifies game files, reads game memory, or automates any inp
 
 ## The panel
 
-One panel, bottom-right, holding one list:
+One panel, bottom-right, holding one list — and **two forms**.
 
-- **The header**: the current map's running total, the zone, and how old the poe.ninja prices are.
+**It rests as a heads-up display**: the last thing you pressed Ctrl+C on, anything still being
+priced, and the map's running total while a map is going. Nothing else — no filters, no buttons, no
+zone or price lines. About 70-90px tall, and that is what you see while playing.
+
+**`Ctrl+Shift+L` opens the full panel** and makes it clickable in the same keypress, so the per-row
+Edit button works straight away. Press it again to go back. **Nothing else ever changes the panel's
+size** — entering or leaving a map doesn't, and neither does anything else. It stays exactly as you
+left it until you press the key again.
+
+The full form is what the rest of this section describes, and is where searching, repricing and
+editing happen:
+
+- **The header**: the zone you're in and how old the poe.ninja prices are. The map total shows in
+  both forms, but only while a map is actually running — see below for what counts as one.
 - **The list**: every drop ever captured, newest first. Identical stacks fold into one row
   ("Exalted Orb x10"), and it's searchable, sortable by value/time/name, and filterable to unpriced
   items. It scrolls; the header and the buttons underneath it stay put.
 - **Export CSV / Clear all**: the whole list, and the only way to wipe it (two-step — the second
   press confirms, and there is no undo beyond the one-slot backup described below).
 
-Every row has an **Edit** control for correcting a price; see below.
+Every row has an **Edit** control for correcting a price; see below. It's hidden in the heads-up
+form, where the row is a readout rather than a control — hovering still shows the item's full text.
 
-Size it with `overlay.panel` in settings (`width`, `maxHeightPercent`). The window itself is a
-full-screen transparent click-through sheet, so the panel's position is fixed — but it only takes
-clicks at all in interactive mode (`Ctrl+Shift+O`), and passes everything straight to the game
-otherwise.
+Size it from the tray's **Settings…**, or with `overlay.panel` in settings.json (`width`,
+`maxHeightPercent`). The window itself is a full-screen transparent click-through sheet, so the
+panel's position is fixed — but it only takes clicks at all in interactive mode (`Ctrl+Shift+O`), and
+passes everything straight to the game otherwise.
 
 | hotkey | default | does |
 | --- | --- | --- |
-| `toggleOverlay` | `Ctrl+Shift+O` | Interactive mode — the overlay takes clicks instead of passing them to the game. |
+| `toggleList` | `Ctrl+Shift+L` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both. The only thing that changes the panel's size. |
+| `toggleOverlay` | `Ctrl+Shift+O` | Interactive mode on its own, without resizing the panel — the overlay takes clicks instead of passing them to the game. |
 | `toggleSession` | `Ctrl+Shift+M` | Starts/ends a map session by hand, when log detection misses one. |
 | `forceCapture` | `Ctrl+\`` | Re-reads the clipboard even if it hasn't changed. |
+
+**Rebind them from the tray's Settings…**: click a combination, press the keys you want, and Save —
+the new binding takes effect immediately, with no restart. Every hotkey needs at least one of Ctrl,
+Alt or Shift, since a global shortcut is taken from Path of Exile 2 as well. `Backspace` unbinds one
+entirely. If Windows or another app already owns a combination the app says so and saves it anyway,
+so it starts working once whatever holds it is closed.
+
+The same window holds the panel size, the display currency, and whether the overlay hides when the
+game isn't focused. The league, Client.txt path and contact email live under **Setup…** instead —
+those are read once at startup by the pricing clients, so changing them restarts the app.
 
 ## Map sessions and unpriced rares
 
 Every map is a "session", and items captured via Ctrl+C are recorded against it — that's what the
-header's running total counts. The list itself is *not* scoped to a map: entering a new one resets
-the total and leaves everything already captured in place, below the new drops.
+header's running total counts, and it is shown only while a map is actually running. The list itself
+is *not* scoped to a map: entering a new one resets the total and leaves everything already captured
+in place, below the new drops.
 
 poe.ninja publishes no rare prices at all (too mod-dependent), so rares are priced against GGG's
 trade API instead (see below). When that comes back empty — or the search budget is spent — the
@@ -146,26 +172,29 @@ the item's non-ignored mod lines against GGG's public stat reference (`/api/trad
 searches by those as "at least this roll" filters rather than by base type alone — see
 [trade-stats.ts](src/pricing/trade-stats.ts) for the text-to-stat-id matching (a documented
 heuristic: ambiguous stats sharing identical display text resolve to the first match). It then takes
-the **median of the middle of the results**, which approximates what the item would actually sell
-for; the mean is dragged around by both 1-exalted placeholder listings and speculative asking prices.
+the **median of the cheapest five listings**, which is the market floor — what you could sell the
+item into today, not what it is nominally worth.
 
-### Why it samples the middle and not the cheapest listings
+### It prices at the floor, and that is deliberate
 
-Sorting by price ascending and pricing off the first ten results sounds conservative and is in fact
-useless: PoE2's cheap end is a wall of 1-exalted dump listings, so anything with more than ten
-listings priced at the market floor rather than at its own worth. Measured on a real four-mod Ruby
-jewel — 236 matching online listings, of which GGG returns the 100 cheapest ids:
+Sorting by price ascending and taking the first five is the most conservative reading available, and
+it is the one this app uses. The number it produces is genuinely low. Measured on a real four-mod
+Ruby jewel — 236 matching online listings, of which GGG returns the 100 cheapest ids:
 
 | ids fetched | prices |
 | --- | --- |
-| 0–9 (the cheapest) | ten straight `1 exalted` |
+| 0–4 (**what it fetches**) | `1 exalted`, straight through |
 | 45–54 (the middle) | 29, 29, 30, 30, 30, 30, 30, 33, 40, 40 exalted |
 | 90–99 (the dearest) | 5 chaos, 500 exalted, seven `1 divine` |
 
-The app reported that jewel at 1 exalted while people selling the same thing were asking around 30.
-Fetching the middle ten and taking their median lands on the ~30 without being dragged by either
-end. GGG caps `result` at 100 ids however many listings matched, so on a heavily traded base this is
-the median of the 100 cheapest rather than of the whole market — still biased low, deliberately.
+So that jewel is reported at 1 exalted while people selling the same thing are asking around 30.
+Both numbers are true: PoE2's cheap end is a wall of dump listings, and this measures that wall on
+purpose. Read a trade2 price as **"I could move this quickly for about X"**, not as an appraisal.
+
+Two further biases point the same way: GGG caps `result` at 100 ids however many listings matched,
+and the mod ladder below often settles on fewer than every mod. Widening `trade2.maxListings` takes
+more of the cheap end, not a slice further up the market — there is no setting that moves the sample
+up, by design.
 
 ### How many of an item's mods it requires
 
@@ -197,8 +226,9 @@ disagrees with the trade site. Two real jewels, all of their mods required:
 An offline listing is a price nobody can buy at right now, and may be months stale — but on thin
 items it can be the only comparable there is. Set `trade2.listingStatus` to `"any"` to count them;
 the messages then stop saying "online listings", so what you read always matches what was searched.
-The default therefore requires a rung to hold at least as many listings as the median is sampled
-over. Every price says which rung produced it — the log line, the row's reprice status, and a
+The default therefore requires a rung to hold well more listings than the median is sampled over: the
+sample only has to be fillable, but the rung has to describe a market before it is worth sampling at
+all. Every price says which rung produced it — the log line, the row's reprice status, and a
 `trade 2/4` badge on the item row when it had to relax.
 
 #### Why requiring *all* of them can't be the only setting
@@ -250,10 +280,10 @@ If nothing at all is listed near your item's defences, the search is retried onc
 rather than giving up, and the row is badged `~def` to say the price compares this base and these
 mods at *any* armour.
 
-**Read the resulting number as a ballpark, not an appraisal.** Matching 3 of 5 mods finds items that
-may be worse on the other two, and the sampled window is drawn from the cheapest 100 results, so
-trade2 values skew low. That is the intended trade for a running loot total — an approximate number
-beats a blank one — but it is not what the item would fetch listed individually.
+**Read the resulting number as a floor, not an appraisal.** Matching 3 of 5 mods finds items that may
+be worse on the other two, and the price is the median of the five cheapest listings, so trade2
+values skew low by design. That is the intended trade for a running loot total — an approximate
+number beats a blank one — but it is well under what the item would fetch listed individually.
 
 Some rares will still come back unpriced, and usually the reason is liquidity rather than the
 search: an unpopular base can have literally zero online listings, in which case no filter setting
@@ -318,7 +348,7 @@ Configure it under `trade2` in settings:
 | `maxSearchesPerWindow` | `10` | Searches allowed per `windowMs`. 10 searches = 20 requests, comfortably inside GGG's 30. |
 | `windowMs` | `300000` | The rolling window, matching GGG's 300-second bucket. |
 | `minSearchIntervalMs` | `5000` | Spacing between searches, so a burst of rare drops can't trip the 5-per-10s bucket. |
-| `maxListings` | `10` | Listings sampled from the middle of the results for the median. GGG's fetch endpoint rejects more than 10 ids outright. |
+| `maxListings` | `5` | How many of the **cheapest** results the median is taken over. Raising it widens the slice but keeps it anchored to the cheap end. GGG's fetch endpoint rejects more than 10 ids outright. |
 | `listingStatus` | `"online"` | Whose listings count. `"any"` includes offline sellers — more comparables on thin items, priced against listings that may be stale and unreachable. |
 | `maxModLadderSearches` | `3` | Mod thresholds one lookup may try, strictest first. Each rung that misses costs another request. `1` disables the ladder and searches only the floor. |
 | `minListingsForMatch` | `10` | Listings a threshold needs before its price is trusted; under this the ladder keeps loosening. Lower to prefer specificity over sample depth. |
@@ -372,12 +402,13 @@ long-lived PowerShell helper that polls `GetForegroundWindow` itself and prints 
 spawning a process per poll couldn't run at focus-tracking frequency. If that helper can't run at
 all, the feature fails *open*: it logs once and the overlay reverts to being permanently visible.
 
-Configure it under `overlay` in settings:
+All of these except `focusPollIntervalMs` are in the tray's **Settings…**, and apply as soon as you
+save. They're also under `overlay` in settings.json:
 
 | key | default | meaning |
 | --- | --- | --- |
 | `hideWhenGameUnfocused` | `true` | Set `false` for the old always-visible behaviour — worth doing if you play windowed on a second monitor. Also skips the helper process entirely. |
-| `focusPollIntervalMs` | `400` | How often the foreground window is sampled. |
+| `focusPollIntervalMs` | `400` | How often the foreground window is sampled. Not in the Settings window: it trades CPU against how quickly the overlay reacts, which is a tuning knob rather than a preference. |
 | `hideDelayMs` | `500` | Grace period before hiding, so the momentary focus loss during loading screens and fullscreen mode switches doesn't flicker the overlay. |
 | `panel.width` | `380` | Panel width in pixels. |
 | `panel.maxHeightPercent` | `80` | How much of the display height the panel may take before the list starts scrolling. |

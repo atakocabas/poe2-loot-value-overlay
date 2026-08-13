@@ -72,6 +72,19 @@ export function unionPoeNinjaCategories(settings: Settings, defaults: Settings):
   };
 }
 
+/**
+ * The values as shipped, ignoring whatever the user has saved. Read fresh each call rather than
+ * cached — it is only asked for when the settings window opens, and a stale copy of the file the
+ * merge is built from would be a confusing thing to hold onto.
+ *
+ * This is what the settings window's per-field Reset buttons restore to, so "default" there means
+ * the same thing it means to `mergeWithDefaults`, rather than a second set of constants over in the
+ * renderer that would drift the first time one is retuned.
+ */
+export function loadDefaultSettings(): Settings {
+  return JSON.parse(fs.readFileSync(defaultSettingsPath(), "utf-8")) as Settings;
+}
+
 export function loadSettings(): Settings {
   if (cachedSettings) return cachedSettings;
 
