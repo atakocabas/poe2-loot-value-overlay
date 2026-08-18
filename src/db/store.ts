@@ -104,6 +104,9 @@ export async function updateItem(
       | "mapDropped"
       | "statCoverage"
       | "coverageSample"
+      | "autoDroppedMods"
+      | "tradeSearchId"
+      | "tradeMedianChaosValue"
     >
   >
 ): Promise<PricedItem | null> {

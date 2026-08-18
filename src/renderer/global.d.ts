@@ -38,6 +38,7 @@ declare global {
         pseudoFilters: ModFilter[],
         mapFilters: ModFilter[]
       ) => Promise<RepriceResult>;
+      openTradeSearch: (itemId: string) => Promise<boolean>;
       setManualPrice: (itemId: string, value: number | null) => Promise<SetManualPriceResult>;
     };
     /** Exposed by the same preload, but only ever called from setup.html. */

@@ -324,6 +324,16 @@ select option {
   opacity: 0.75;
 }
 
+/* "T3" — the affix tier the drop order is decided from. Borderless like the kind badge it sits next
+   to, since it is a property of the mod rather than a measurement of the search. */
+.badge-tier {
+  border: none;
+  padding: 0;
+  margin-left: 4px;
+  opacity: 0.55;
+  font-size: 8px;
+}
+
 .reprice-warning {
   color: #d3b98f;
 }
@@ -428,6 +438,24 @@ select option {
 .item-value.unpriced {
   opacity: 0.6;
   font-style: italic;
+}
+
+/*
+ * The median beside a trade2 price. Subordinate to the headline on purpose — it annotates the
+ * number rather than competing with it.
+ *
+ * The negative margin cancels most of `.item-row-top`'s 8px gap: that gap separates the row's three
+ * independent parts, while this reads as attached to the price it qualifies, not as a fourth column.
+ *
+ * Deliberately absent from the `#panel.minimal` hide list at the top of this file — the pair is
+ * wanted in the heads-up form too. It needs no rule there: the only thing minimal strips from a row
+ * is `.item-row button`, and this is a span.
+ */
+.item-value-median {
+  white-space: nowrap;
+  margin-left: -4px;
+  font-size: 11px;
+  opacity: 0.55;
 }
 
 .item-edit {
@@ -546,6 +574,16 @@ select option {
 .mod-inactive .mod-body,
 .mod-inactive .mod-bounds {
   opacity: 0.35;
+}
+
+/* Shed by the tier ladder to find a market, so the row arrives unticked without the user having done
+   it. A left marker rather than more opacity: .mod-excluded already dims every unticked row, and
+   dimming this one further would say "less important" when what it means is "this one is the app's
+   doing, not yours". The warm hue is the same one .badge-partial uses for a relaxed price. */
+.mod-auto-dropped {
+  border-left: 2px solid rgba(211, 185, 143, 0.45);
+  padding-left: 4px;
+  margin-left: -6px;
 }
 
 .item-edit-row {

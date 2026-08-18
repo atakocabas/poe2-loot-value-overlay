@@ -1,6 +1,7 @@
 import { BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
 import { IPC } from "../shared/ipc-channels";
+import { appIcon } from "./icon";
 import { detectClientTxtPath } from "./poe2-install";
 import { loadSettings, saveSettings } from "./settings";
 import { pipeRendererLogs } from "./window";
@@ -46,6 +47,7 @@ export function showSetupWindow(): Promise<void> {
     skipTaskbar: false,
     autoHideMenuBar: true,
     backgroundColor: "#14161c",
+    icon: appIcon(),
     title: "PoE2 Loot Value Overlay — Setup",
     // Held back until the renderer has painted, so the first thing the user sees isn't a white flash.
     show: false,

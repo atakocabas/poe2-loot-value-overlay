@@ -24,11 +24,25 @@ export type GggFetch = (url: string, init?: RequestInit) => Promise<Response>;
  * out multi-minute lockouts; it no-ops harmlessly on hosts that send no `X-Rate-Limit-*` headers.
  * It is reactive by nature — see `TradeSearchBudget` for the proactive half.
  */
+/**
+ * `AppName/version (contact: someone@example.com)`, with the contact clause dropped when no address
+ * is configured — see above for why both halves are shaped this way.
+ *
+ * Exported because `PoeNinjaClient` wants the same identification without the rest of this module:
+ * poe.ninja is not a GGG host, sends no `X-Rate-Limit-*` headers for the limiter to act on, and is
+ * under no GGG policy — but "say who you are" is worth doing for a free community API regardless,
+ * and two hand-maintained copies of this string would drift.
+ */
+export function appUserAgent(settings: Settings): string {
+  // Optional-chained rather than assumed present: an absent trade2 block is the same situation as a
+  // blank address — nobody to name — and the app is still identified either way. `PoeNinjaClient`
+  // has no other reason to depend on that block, so it must not fail to construct without one.
+  const contact = settings.trade2?.contactEmail?.trim();
+  return `PoE2LootValueOverlay/${packageJson.version}${contact ? ` (contact: ${contact})` : ""}`;
+}
+
 export function createPublicGggFetch(settings: Settings): GggFetch {
-  const contact = settings.trade2.contactEmail.trim();
-  return createThrottledFetch(
-    `PoE2LootValueOverlay/${packageJson.version}${contact ? ` (contact: ${contact})` : ""}`
-  );
+  return createThrottledFetch(appUserAgent(settings));
 }
 
 function createThrottledFetch(userAgent: string): GggFetch {

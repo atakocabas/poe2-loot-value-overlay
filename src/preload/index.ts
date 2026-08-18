@@ -83,6 +83,9 @@ contextBridge.exposeInMainWorld("poe2Overlay", {
     mapFilters: ModFilter[]
   ): Promise<RepriceResult> =>
     ipcRenderer.invoke(IPC.REPRICE_ITEM, itemId, ignoredMods, modFilters, pseudoFilters, mapFilters),
+  /** False when the item has no search to open — priced off poe.ninja, or captured before the id was. */
+  openTradeSearch: (itemId: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.OPEN_TRADE_SEARCH, itemId),
   setManualPrice: (itemId: string, value: number | null): Promise<SetManualPriceResult> =>
     ipcRenderer.invoke(IPC.SET_MANUAL_PRICE, itemId, value)
 });

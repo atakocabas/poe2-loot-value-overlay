@@ -393,6 +393,11 @@ app.whenReady().then(async () => {
       settings.hotkeys = next.hotkeys;
       settings.overlay = next.overlay;
       settings.display = next.display;
+      // One field, not the whole block: `Trade2Client` reads `saleType` when it builds a query, so
+      // this reaches the next lookup — but `createPublicGggFetch` and `TradeSearchBudget` captured
+      // their trade2 values at construction, and reassigning around them would look applied and
+      // silently not be.
+      settings.trade2.saleType = next.trade2.saleType;
 
       hideDelayMs = settings.overlay.hideDelayMs;
       startForegroundWatcher(settings);

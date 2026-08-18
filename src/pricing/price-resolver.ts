@@ -1,7 +1,12 @@
 import type { ParsedItem, PricedItem } from "../shared/types";
 import type { PoeNinjaClient } from "./poeninja-client";
 import type { CurrencyExchangeClient } from "./currency-exchange-client";
-import { describeDefences, type Trade2Client } from "./trade2-client";
+import {
+  describeDefences,
+  listingsLabelFor,
+  type ListingStatus,
+  type Trade2Client
+} from "./trade2-client";
 import { toChaos } from "./currency-convert";
 import { formatNumber } from "../shared/format-value";
 
@@ -64,23 +69,28 @@ function explainUnpriced(
 /**
  * Why the strictest threshold didn't produce the price, in the terms the user can act on.
  *
- * The two cases need different words and used to share one sentence. **Zero** means nobody online
- * has listed an item with all these mods — and "online" is the load-bearing word, since the same
- * search on the trade site with the status filter left at *any* shows offline sellers too. A real
- * Sapphire jewel matched 0 online listings on all four of its mods and 16 once offline ones were
- * counted, which is exactly the gap between what this reports and what the site appears to show.
+ * The two cases need different words and used to share one sentence. **Zero** means nobody has listed
+ * an item with all these mods *under the status filter that was searched* — and which filter that was
+ * is the load-bearing part, since the same search on the trade site with the status left at Any shows
+ * a different set. A real Sapphire jewel matched 0 on all four of its mods and 16 once offline sellers
+ * were counted, which is exactly the gap between what this reports and what the site appears to show.
  * **A handful** means someone has listed one, but a median over one or two asking prices is that
  * asking price, so the ladder went past it — the trade site is where to look at those by hand.
  */
 function explainStrictMiss(
-  rungs: Array<{ required: number; total: number }>,
+  rungs: Array<{ required: number; total: number; filters: number }>,
   totalMods: number,
-  status: "online" | "any"
+  status: ListingStatus
 ): string {
-  const label = status === "any" ? "listing(s)" : "online listing(s)";
-  const strict = rungs.find((rung) => rung.required === totalMods);
+  const label = `${listingsLabelFor(status)}`;
+  // Both halves matter now that the ladder drops mods as well as lowering the threshold: the rung
+  // that asked for everything is the one that sent every filter *and* required all of them.
+  const strict = rungs.find((rung) => rung.required === totalMods && rung.filters === totalMods);
   if (!strict || strict.total === 0) {
-    const hint = status === "any" ? "" : " (offline sellers may - see trade2.listingStatus)";
+    // Naming the setting rather than guessing which way to widen: from `securable` the useful step is
+    // `available` (add in-person sellers), from `online` it is `any` (add offline ones), and the two
+    // are different axes rather than points on one scale.
+    const hint = status === "any" ? "" : " (widening trade2.listingStatus would count more)";
     return `has no ${label} carrying all ${totalMods} of its mods${hint}`;
   }
   return (
@@ -167,10 +177,16 @@ export class PriceResolver {
         const modMatch = { matched: estimate.matchedMods, total: estimate.totalMods };
         const defenceNote =
           estimate.defences.length > 0 ? ` and ${describeDefences(estimate.defences)}` : "";
+        // Both figures, because the price is the floor of the sample and the median says how thin
+        // that floor is — a large gap between them is one cheap seller rather than a market.
+        const medianNote =
+          estimate.medianChaosValue === null
+            ? ""
+            : `, median ${formatNumber(estimate.medianChaosValue)}`;
         console.log(
           `[pricing] "${item.name}" priced via trade2: ${formatNumber(estimate.chaosValue)} chaos ` +
-            `(median of ${estimate.listings} sampled from ${estimate.matches} listings ` +
-            `matching ${describeModMatch(modMatch)}${defenceNote})`
+            `(cheapest of ${estimate.listings} sampled from ${estimate.matches} listings` +
+            `${medianNote}; matching ${describeModMatch(modMatch)}${defenceNote})`
         );
         // Warned about separately rather than folded into the line above, because a relaxed match is
         // the difference between a price for this item and a price for its base with some mods on it.
@@ -191,12 +207,26 @@ export class PriceResolver {
               "ignores them - it compares this base and these mods at any Armour/Evasion/ES"
           );
         }
+        // Everything the estimate carries is persisted here, not a subset of it. This path used to
+        // keep six fields and drop `statCoverage`, `coverageSample`, `pseudoDropped` and `mapDropped`
+        // on the floor even though the search had already paid for them, so a freshly captured rare
+        // showed none of the badges the row is built to render until the user pressed Reprice once —
+        // an asymmetry with `REPRICE_ITEM` that looked like missing data rather than a lost write.
+        // `autoDroppedMods` is the one that makes it load-bearing: without it the row editor could
+        // not show which mods produced an automatic price at all, which is the point of having it.
         return {
           ...base,
           chaosValue: estimate.chaosValue,
           priceSource: "trade2",
           modMatch,
-          defencesDropped: estimate.defencesDropped
+          tradeSearchId: estimate.searchId,
+          tradeMedianChaosValue: estimate.medianChaosValue ?? undefined,
+          defencesDropped: estimate.defencesDropped,
+          pseudoDropped: estimate.pseudoDropped,
+          mapDropped: estimate.mapDropped,
+          statCoverage: estimate.statCoverage,
+          coverageSample: estimate.coverageSample,
+          autoDroppedMods: estimate.autoDroppedMods
         };
       }
       tradeReason = estimate.reason;

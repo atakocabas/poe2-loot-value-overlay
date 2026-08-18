@@ -465,7 +465,10 @@ function renderItemRow({ item, count, total }: ItemGroup): HTMLElement {
     scheduleRender();
   });
 
-  top.append(itemNameEl(item, count), value, toggle);
+  top.append(itemNameEl(item, count), value);
+  const median = medianValueEl(item, count, total);
+  if (median) top.append(median);
+  top.append(toggle);
   row.append(top);
 
   const meta = document.createElement("div");
@@ -640,10 +643,13 @@ function renderMapRow(item: PricedItem, mapRow: MapRow, minRatio: number): ModRo
  * How many of the priced listings carried this mod, as a `9/10` chip — or null when the item has no
  * coverage recorded (never trade2-priced, or priced before this existed).
  *
- * Deliberately not a tick. The ladder asks for "at least N of M", so different listings satisfy
+ * Deliberately not a tick. A count rung asks for "at least N of M", so different listings satisfy
  * different subsets and there is no set of mods that "was used"; a tick would assert one exists.
  * What the number does answer is the question behind that — which of these mods the comparables
  * actually share, and therefore which ones are worth unticking.
+ *
+ * The tier ladder's drop rungs *do* name a set, but they name it by what they removed, which is what
+ * `autoDroppedMods` and the checkbox state carry. This stays the measurement of what remained.
  */
 function coverageBadge(item: PricedItem, text: string): HTMLElement | null {
   const sample = item.coverageSample ?? 0;
@@ -671,15 +677,27 @@ function renderModRow(item: PricedItem, mod: ParsedMod, notSearched = false): Mo
   // aggregates on every toggle: a waystone has none, so it would clear this again immediately.
   if (notSearched) el.classList.add("mod-unsearchable");
 
+  // Dropped by the tier ladder rather than by the user — the low-tier affixes the search shed to find
+  // a market at all. Marked as well as unticked because the two mean different things: `ignoredMods`
+  // is a decision the user made and will find where they left it, this one is the app's and is
+  // recomputed by every search. The row still ticks, so re-including it is one click.
+  const autoDropped = (item.autoDroppedMods ?? []).includes(mod.text);
+  if (autoDropped) el.classList.add("mod-auto-dropped");
+
   const include = document.createElement("input");
   include.type = "checkbox";
-  include.checked = !item.ignoredMods.includes(mod.text);
+  include.checked = !item.ignoredMods.includes(mod.text) && !autoDropped;
   include.disabled = notSearched;
   if (notSearched) {
     include.title =
       "A waystone is priced on the reward totals above. Its affixes produce those totals between " +
       "them, so searching them individually finds only maps with this exact combination — measured " +
       "at zero listings.";
+  } else if (autoDropped) {
+    include.title =
+      "Dropped automatically: nothing was listed carrying this item's full mod set, so the search " +
+      "shed its lowest-tier mods until it found a market. The ticked mods are the ones this price " +
+      "actually came from. Re-tick it and press Reprice to demand it again.";
   }
 
   const body = document.createElement("div");
@@ -707,6 +725,24 @@ function renderModRow(item: PricedItem, mod: ParsedMod, notSearched = false): Mo
   const tags = document.createElement("div");
   tags.className = "mod-tags";
   tags.append(kind);
+  // The tier the drop order was decided from, so an automatically dropped row explains itself rather
+  // than just appearing unticked. Absent on items captured without Advanced Item Descriptions.
+  if (typeof mod.tier === "number") {
+    const tier = document.createElement("span");
+    tier.className = "badge badge-tier";
+    tier.textContent = `T${mod.tier}`;
+    tier.title = `Affix tier ${mod.tier} — 1 is the best possible roll.`;
+    tags.append(tier);
+  }
+  if (autoDropped) {
+    const dropped = document.createElement("span");
+    dropped.className = "badge badge-partial";
+    dropped.textContent = "dropped";
+    dropped.title =
+      "This mod was left out of the search that produced the price, because nothing was listed " +
+      "carrying the item's full mod set.";
+    tags.append(dropped);
+  }
   const coverage = coverageBadge(item, mod.text);
   if (coverage) tags.append(coverage);
 
@@ -835,6 +871,27 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
     const status = document.createElement("span");
     status.className = "status-note";
 
+    // The one route from a price back to the query it came from. Main builds and opens the URL — this
+    // only decides whether there is one to offer.
+    const viewButton = document.createElement("button");
+    viewButton.type = "button";
+    viewButton.textContent = "View search";
+    viewButton.title =
+      "Opens the trade search this price was taken from. GGG expires searches, so an older one may " +
+      "no longer be there.";
+    const syncTradeLink = (searchId: string | undefined) => {
+      viewButton.hidden = !searchId;
+    };
+    syncTradeLink(item.tradeSearchId);
+
+    viewButton.addEventListener("click", async () => {
+      // Shares the reprice row's status line rather than failing silently — the id is perishable, and
+      // a button that does nothing reads as a broken button.
+      if (!(await window.poe2Overlay.openTradeSearch(item.id))) {
+        status.textContent = "That search is no longer on file.";
+      }
+    });
+
     repriceButton.addEventListener("click", async () => {
       // Read off the live DOM rather than out of `item`, which is the copy captured when the editor
       // opened and never sees an edit the user has just made. See the note on `openEditor`.
@@ -908,10 +965,14 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
           result.pseudoDropped ||
           result.mapDropped
       );
+      // Not optional: `applyUpdatedItem` re-renders the list, but the editor is moved rather than
+      // rebuilt (see `openEditor`), so this button would otherwise keep offering the previous search
+      // — a query that produced a different number from the one now on the row.
+      syncTradeLink(result.item.tradeSearchId);
       applyUpdatedItem(result.item, result.session);
     });
 
-    repriceRow.append(repriceButton, status);
+    repriceRow.append(repriceButton, viewButton, status);
     container.append(repriceRow);
   }
 

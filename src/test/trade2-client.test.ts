@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  droppableFilters,
+  searchRungs,
   Trade2Client,
   priceSample,
   modLadder,
@@ -9,6 +11,7 @@ import {
 } from "../pricing/trade2-client";
 import type { GggFetch } from "../pricing/ggg-fetch";
 import { parseItemText } from "../parser/item-text-parser";
+import { tradeSearchUrl } from "../shared/trade-link";
 import type { ModFilter, ParsedItem } from "../shared/types";
 import type { Settings } from "../shared/settings";
 
@@ -36,6 +39,11 @@ interface StubOptions {
   searchTotal?: number;
   /** Ids per successive search call, for walking the mod ladder: `[[], [], ["id-a"]]`. */
   searchIdsSequence?: string[][];
+  /**
+   * GGG's *query* id per successive search call — the `?query=` value, not the listing ids above.
+   * Only worth setting when a test needs to tell one rung's search from another's.
+   */
+  queryIds?: string[];
   searchStatus?: number;
   fetchStatus?: number;
   listings?: Array<{ amount: number; currency: string } | null>;
@@ -90,7 +98,11 @@ function stubFetch(options: StubOptions = {}): { fetch: GggFetch; calls: Call[] 
         : searchIds;
       // GGG caps `result` at 100 ids however many listings matched, so `total` is its own number.
       return new Response(
-        JSON.stringify({ id: "query-123", result, total: options.searchTotal ?? result.length }),
+        JSON.stringify({
+          id: options.queryIds?.[attempt] ?? "query-123",
+          result,
+          total: options.searchTotal ?? result.length
+        }),
         { status: 200 }
       );
     }
@@ -125,7 +137,11 @@ function makeSettings(overrides: Partial<Settings["trade2"]> = {}): Settings {
       minSearchIntervalMs: 0,
       maxListings: 5,
       listingStatus: "online",
+      saleType: "buyout",
       maxModLadderSearches: 3,
+      useModDropLadder: true,
+      maxModDropSearches: 5,
+      modDropTierThreshold: 3,
       minListingsForMatch: 3,
       minModMatchRatio: 0.5,
       useDefenceFilters: true,
@@ -173,6 +189,19 @@ const RARE = parse(
     "--------\n+80 to maximum Life\n+45% to Cold Resistance"
 );
 
+/**
+ * The same five mods, but copied with Advanced Item Descriptions on, so each carries a tier. Life is
+ * T1 and must survive; rarity is T5 and is the first thing the ladder should be willing to lose.
+ */
+const FIVE_MOD_RARE_TIERED = parse(
+  "Item Class: Rings\nRarity: Rare\nApocalypse Core\nSapphire Ring\n--------\nItem Level: 78\n--------\n" +
+    '{ Prefix Modifier "Sanguine" (Tier: 1) — Life }\n+82 to maximum Life\n' +
+    '{ Suffix Modifier "of Sighting" (Tier: 2) — Attack }\n12% increased Attack Speed\n' +
+    '{ Suffix Modifier "of Talent" (Tier: 3) — Caster }\n9% increased Cast Speed\n' +
+    '{ Prefix Modifier "of the Hawk" (Tier: 4) — Attack }\n+150 to Accuracy Rating\n' +
+    '{ Suffix Modifier "of Plunder" (Tier: 5) — Rarity }\n15% increased Rarity of Items found'
+);
+
 function parse(rawText: string): ParsedItem {
   const item = parseItemText(rawText);
   assert.ok(item);
@@ -192,18 +221,29 @@ const NO_LISTINGS: string[][] = [[], [], [], []];
 const fetchCall = (calls: Call[]): Call | undefined =>
   calls.find((call) => call.url.includes("/fetch/"));
 
-test("prices a rare from the median of the returned listings", async () => {
+test("prices a rare at the cheapest listing, and carries the median of the same sample", async () => {
   const { fetch } = stubFetch();
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
-  // 1, 5, 10 exalted -> 2, 10, 20 chaos; median is 10.
-  assert.equal(estimate.chaosValue, 10);
+  // 1, 5, 10 exalted -> 2, 10, 20 chaos. The price is the floor; the median rides along beside it,
+  // and the gap between the two is what the row's `2c (10c)` exists to show.
+  assert.equal(estimate.chaosValue, 2);
+  assert.equal(estimate.medianChaosValue, 10);
   assert.equal(estimate.reason, null);
   assert.equal(estimate.listings, 3);
   assert.equal(estimate.matches, 3);
 });
 
-test("reports the full match count alongside the sample the median came from", async () => {
+test("a one-listing sample makes both figures the same, which the row then suppresses", async () => {
+  const { fetch } = stubFetch({ listings: [{ amount: 5, currency: "exalted" }] });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
+
+  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.medianChaosValue, 10, "medianValueEl drops the parenthetical on this");
+  assert.equal(estimate.listings, 1);
+});
+
+test("reports the full match count alongside the sample the price came from", async () => {
   const { fetch } = stubFetch({
     searchIds: Array.from({ length: 100 }, (_, index) => `id-${index}`),
     searchTotal: 236
@@ -341,6 +381,42 @@ test("listingStatus decides whether offline sellers count, and the wording follo
   assert.doesNotMatch(estimate.reason!, /online/);
 });
 
+test("the status filter is sent verbatim, including the instant-buyout options", async () => {
+  // GGG's `status` is not an online/offline toggle: `securable` is Instant Buyout, `online` is
+  // In Person (Online). Confirmed against /api/trade2/data/filters, and all five are accepted live.
+  for (const status of ["securable", "available", "online", "onlineleague", "any"] as const) {
+    const { fetch, calls } = stubFetch({ searchIds: [] });
+    await new Trade2Client(makeSettings({ listingStatus: status }), fetch).estimateRareValue(
+      RARE,
+      new Set(),
+      toChaos
+    );
+
+    assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.status.option, status);
+  }
+});
+
+test("a no-match message names the listings it actually searched", async () => {
+  // The old wording said "online listings" for everything except `any`, which read as an
+  // online/offline distinction and hid the fact that instant-buyout listings were being excluded.
+  const labels: Record<string, RegExp> = {
+    securable: /no instant-buyout listings/,
+    available: /no instant-buyout or in-person listings/,
+    online: /no in-person listings from online sellers/,
+    any: /no listings/
+  };
+
+  for (const [status, pattern] of Object.entries(labels)) {
+    const { fetch } = stubFetch({ searchIds: [] });
+    const estimate = await new Trade2Client(
+      makeSettings({ listingStatus: status as "securable" }),
+      fetch
+    ).estimateRareValue(RARE, new Set(), toChaos);
+
+    assert.match(estimate.reason!, pattern, `wrong wording for status=${status}`);
+  }
+});
+
 test("an uncorrupted item doesn't demand uncorrupted listings", async () => {
   const { fetch, calls } = stubFetch();
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
@@ -362,6 +438,53 @@ test("a corrupted item is priced only against corrupted listings", async () => {
   // The asymmetry is the point: an uncorrupted item can still be modified and is worth more, so
   // pricing a corrupted drop off uncorrupted listings would overstate it.
   assert.equal(filters.misc_filters.filters.corrupted.option, "true");
+});
+
+test("buyout-only sends no sale_type at all, because that is what omitting it means", async () => {
+  // Measured against the live API on an `Alpha Talisman` search: omitting `sale_type` returned 239
+  // listings, `sale_type: unpriced` 93, and `sale_type: any` 332 — exactly 239 + 93. GGG's filter
+  // reference agrees, giving "Buyout or Fixed Price" the `null` id, i.e. "nothing sent". Sending
+  // that null explicitly is a 400, so the default *must* be expressed as an absence.
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings({ saleType: "buyout" }), fetch).estimateRareValue(
+    FIVE_MOD_RARE,
+    new Set(),
+    toChaos
+  );
+
+  const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
+  assert.equal(filters?.trade_filters, undefined);
+});
+
+test("counting any listing is the opt-out, and it is the only case that sends the filter", async () => {
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings({ saleType: "any" }), fetch).estimateRareValue(
+    FIVE_MOD_RARE,
+    new Set(),
+    toChaos
+  );
+
+  const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
+  assert.equal(filters.trade_filters.filters.sale_type.option, "any");
+});
+
+test("the sale type rides alongside the other filter groups rather than replacing them", async () => {
+  // All four groups share one `query.filters` key, which is why they are assembled into one object.
+  // A corrupted item counting any listing has to send both.
+  const corrupted = parse(
+    "Item Class: Rings\nRarity: Rare\nApocalypse Core\nSapphire Ring\n--------\nItem Level: 78\n" +
+      "--------\n+80 to maximum Life\n--------\nCorrupted"
+  );
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings({ saleType: "any" }), fetch).estimateRareValue(
+    corrupted,
+    new Set(),
+    toChaos
+  );
+
+  const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
+  assert.equal(filters.misc_filters.filters.corrupted.option, "true");
+  assert.equal(filters.trade_filters.filters.sale_type.option, "any");
 });
 
 test("two affixes granting the same stat are summed into one filter", async () => {
@@ -635,7 +758,7 @@ test("nothing at the reward floors falls back to the tier alone, and says so", a
   const searches = calls.filter((call) => call.url.includes("/search/"));
   assert.equal(searches.length, 2);
   assert.equal(JSON.parse(String(searches[1]!.init.body)).query.filters, undefined);
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
   // Matters more here than the other drops: what's left is every waystone of this tier.
   assert.equal(estimate.mapDropped, true);
 });
@@ -889,7 +1012,7 @@ test("nothing at the aggregate retries once without it and says so", async () =>
   // code would also have found — it can never invent a market.
   const retry = JSON.parse(String(searches[1]!.init.body)).query.stats;
   assert.equal(retry.length, 1, "the aggregate is gone from the retry");
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
   assert.equal(estimate.pseudoDropped, true, "the badge and the status line both key off this");
   assert.deepEqual(estimate.pseudoStats, [], "nothing aggregate constrained the price that was used");
 });
@@ -912,7 +1035,7 @@ test("an item whose every mod folded still sends its pseudo group", async () => 
   assert.equal(groups.length, 1);
   assert.equal(groups[0].type, "and");
   assert.deepEqual(groups[0].filters, [{ id: ELE_RES, value: { min: 56 } }]);
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
 });
 
 test("switched off, an item with resistances sends exactly the payload it always did", async () => {
@@ -985,7 +1108,7 @@ test("folding the armour mods shortens the ladder instead of burning requests on
   // only ever return 0 because nobody else has these armour rolls. Two filters ladder to [2].
   assert.equal(calls.filter((call) => call.url.includes("/search/")).length, 1);
   assert.equal(estimate.totalMods, 2);
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
   assert.deepEqual(estimate.defences, [{ id: "ar", min: 972 }]);
   assert.equal(estimate.defencesDropped, false);
 });
@@ -1054,7 +1177,7 @@ test("an item with nothing but defence mods still gets a search, not a false 'no
   const { query } = JSON.parse(String(searchCall(calls).init.body));
   assert.deepEqual(query.filters.equipment_filters.filters, { ar: { min: 972 } });
   assert.equal(query.stats, undefined, "no mods left to ask for");
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
 });
 
 test("nothing at this item's defences falls back to one search without them", async () => {
@@ -1078,7 +1201,7 @@ test("nothing at this item's defences falls back to one search without them", as
   assert.equal(retry.filters, undefined);
   assert.equal(retry.stats[0].value.min, 2);
 
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
   assert.equal(estimate.defencesDropped, true, "the row badge and the log both key off this");
   assert.deepEqual(estimate.defences, [], "nothing constrained the price that was actually used");
 });
@@ -1152,6 +1275,216 @@ test("the mod ladder runs strictest first and always ends on the floor", () => {
   assert.deepEqual(modLadder(5, 0.5, 0), [3]);
 });
 
+test("the drop order is worst affix first", () => {
+  assert.deepEqual(
+    droppableFilters(
+      [
+        { statId: "life", tiers: [1] },
+        { statId: "fire", tiers: [5] },
+        { statId: "lightning", tiers: [3] },
+        { statId: "cold", tiers: [4] }
+      ],
+      3
+    ),
+    ["fire", "cold", "lightning"]
+  );
+});
+
+test("a filter is ranked by its best contributor, so one good roll protects the whole filter", () => {
+  // A hybrid affix produces several mod lines summing into one stat id, and dropping the filter drops
+  // all of them. Ranking by the worst would let a T5 line carry a T1 out of the search with it.
+  assert.deepEqual(
+    droppableFilters(
+      [
+        { statId: "evasion", tiers: [1, 5] },
+        { statId: "resist", tiers: [4, 5] }
+      ],
+      3
+    ),
+    ["resist"]
+  );
+});
+
+test("an unknown tier is never droppable, at any threshold", () => {
+  // This is what makes the feature degrade to nothing without Advanced Item Descriptions: no tier
+  // data means an empty drop order means the count ladder alone.
+  assert.deepEqual(droppableFilters([{ statId: "a", tiers: [null] }], 1), []);
+  assert.deepEqual(droppableFilters([{ statId: "a", tiers: [undefined] }], 1), []);
+  // One unknown contributor is enough to protect a filter whose others are known and weak.
+  assert.deepEqual(droppableFilters([{ statId: "a", tiers: [5, null] }], 3), []);
+  // No contributors at all is unknown too, not vacuously droppable.
+  assert.deepEqual(droppableFilters([{ statId: "a", tiers: [] }], 3), []);
+});
+
+test("the tier threshold is worst-or-equal, so T1 and T2 survive at the default", () => {
+  const filters = [
+    { statId: "t1", tiers: [1] },
+    { statId: "t2", tiers: [2] },
+    { statId: "t3", tiers: [3] }
+  ];
+
+  assert.deepEqual(droppableFilters(filters, 3), ["t3"]);
+  assert.deepEqual(droppableFilters(filters, 2), ["t3", "t2"]);
+  assert.deepEqual(droppableFilters(filters, 4), []);
+});
+
+test("nothing droppable means the rung list is exactly the old count ladder", () => {
+  const filters = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }];
+  const rungs = searchRungs(filters, [], { ratio: 0.5, maxLadderSteps: 3, maxDropSteps: 5 });
+
+  // Same thresholds modLadder produces, every rung still sending all four filters.
+  assert.deepEqual(
+    rungs.map((rung) => [rung.required, rung.filters.length]),
+    [
+      [4, 4],
+      [3, 4],
+      [2, 4]
+    ]
+  );
+  assert.deepEqual(rungs.map((rung) => rung.dropped), [[], [], []]);
+});
+
+test("drop rungs shed one mod at a time and still require all the survivors", () => {
+  const filters = [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }];
+  const rungs = searchRungs(filters, ["e", "d"], { ratio: 0.5, maxLadderSteps: 3, maxDropSteps: 5 });
+
+  assert.deepEqual(rungs.map((rung) => [rung.required, rung.filters.length]), [
+    // The whole item first — the price worth having, and the same query as before.
+    [5, 5],
+    [4, 4],
+    [3, 3],
+    // Then the count tail over what survived. "3 of 3" was the rung just sent, so it isn't repeated.
+    [2, 3]
+  ]);
+  assert.deepEqual(rungs[1].dropped, ["e"]);
+  assert.deepEqual(rungs[2].dropped, ["e", "d"]);
+  // The tail keeps carrying what was dropped, so a price from it still names the surviving set.
+  assert.deepEqual(rungs[3].dropped, ["e", "d"]);
+});
+
+test("a two-filter survivor set adds no tail, because its floor is already all of them", () => {
+  // requiredModMatches never goes below 2, so there is no rung looser than "both of these two" and
+  // the ladder correctly stops rather than re-sending the query it just sent.
+  const rungs = searchRungs([{ id: "a" }, { id: "b" }, { id: "c" }], ["c"], {
+    ratio: 0.5,
+    maxLadderSteps: 3,
+    maxDropSteps: 5
+  });
+
+  assert.deepEqual(rungs.map((rung) => [rung.required, rung.filters.length]), [
+    [3, 3],
+    [2, 2]
+  ]);
+});
+
+test("the drop cap bounds the rungs, and the set is never emptied", () => {
+  const filters = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+  const capped = searchRungs(filters, ["c", "b"], { ratio: 0.5, maxLadderSteps: 1, maxDropSteps: 1 });
+  assert.deepEqual(capped.map((rung) => rung.filters.length), [3, 2]);
+
+  // Every filter droppable and a generous cap: one always survives, since a search with none left is
+  // a base-type-only query that no amount of tier information makes worth a slot.
+  const all = searchRungs(filters, ["c", "b", "a"], {
+    ratio: 0.5,
+    maxLadderSteps: 1,
+    maxDropSteps: 99
+  });
+  assert.ok(all.every((rung) => rung.filters.length >= 1));
+  assert.equal(Math.min(...all.map((rung) => rung.filters.length)), 1);
+
+  // A cap of 0 disables the axis as surely as the setting does.
+  assert.deepEqual(
+    searchRungs(filters, ["c"], { ratio: 0.5, maxLadderSteps: 3, maxDropSteps: 0 }).map(
+      (rung) => rung.filters.length
+    ),
+    [3, 3]
+  );
+});
+
+test("a tiered rare sheds its weakest mod and reports which one, so the editor can show it", async () => {
+  // Nothing carries all five; the rung without the T5 rarity roll does. That set is knowable in a way
+  // a `count` rung's never is, which is the whole reason the drop axis exists.
+  const { fetch, calls } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [[], ["id-a", "id-b", "id-c"]]
+  });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    FIVE_MOD_RARE_TIERED,
+    new Set(),
+    toChaos
+  );
+
+  assert.deepEqual(estimate.autoDroppedMods, ["15% increased Rarity of Items found"]);
+  // The T1 life roll is exactly what a threshold relaxation might have let a listing miss instead.
+  assert.ok(!estimate.autoDroppedMods.includes("+82 to maximum Life"));
+
+  // The winning rung demanded all four survivors rather than "4 of 5" — a stricter, and knowable,
+  // query. `filters` on the rungs is what tells those two apart.
+  assert.deepEqual(estimate.rungs, [
+    { required: 5, total: 0, filters: 5 },
+    { required: 4, total: 3, filters: 4 }
+  ]);
+
+  const [stats] = JSON.parse(String(lastSearchCall(calls).init.body)).query.stats;
+  assert.equal(stats.type, "count");
+  assert.equal(stats.value.min, 4);
+  assert.equal(stats.filters.length, 4, "the dropped mod is gone from the request, not just unmet");
+});
+
+test("an item whose mods carry no tier drops nothing and reports nothing", async () => {
+  // The no-Advanced-Item-Descriptions case, which is most players: the ladder must behave exactly as
+  // it did before, and must not claim a mod set it never chose.
+  const { fetch } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [[], ["id-a", "id-b", "id-c"]]
+  });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    FIVE_MOD_RARE,
+    new Set(),
+    toChaos
+  );
+
+  assert.deepEqual(estimate.autoDroppedMods, []);
+  assert.deepEqual(estimate.rungs, [
+    { required: 5, total: 0, filters: 5 },
+    { required: 4, total: 3, filters: 5 }
+  ]);
+});
+
+test("the drop axis can be switched off, leaving the threshold ladder alone", async () => {
+  const { fetch } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [[], ["id-a", "id-b", "id-c"]]
+  });
+  const estimate = await new Trade2Client(
+    makeSettings({ useModDropLadder: false }),
+    fetch
+  ).estimateRareValue(FIVE_MOD_RARE_TIERED, new Set(), toChaos);
+
+  assert.deepEqual(estimate.autoDroppedMods, []);
+  assert.deepEqual(estimate.rungs, [
+    { required: 5, total: 0, filters: 5 },
+    { required: 4, total: 3, filters: 5 }
+  ]);
+});
+
+test("a mod the user already unticked is never reported as automatically dropped", async () => {
+  // `ignoredMods` is filtered out before the filters are built, so the weakest *remaining* mod is
+  // what goes. The two lists must stay disjoint or the editor can't tell whose decision was whose.
+  const { fetch } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [[], ["id-a", "id-b", "id-c"]]
+  });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    FIVE_MOD_RARE_TIERED,
+    new Set(["15% increased Rarity of Items found"]),
+    toChaos
+  );
+
+  assert.deepEqual(estimate.autoDroppedMods, ["+150 to Accuracy Rating"]);
+});
+
 test("a rare is priced off every one of its mods when listings exist for that", async () => {
   const { fetch, calls } = stubFetch({ stats: STATS_5 });
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(
@@ -1180,7 +1513,7 @@ test("it steps down a rung at a time and reports which one paid off", async () =
     toChaos
   );
 
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
   assert.equal(estimate.matchedMods, 3);
   assert.equal(estimate.totalMods, 5);
 
@@ -1210,6 +1543,43 @@ test("one listing at the strict rung isn't a market, so the ladder keeps looseni
   assert.equal(calls.filter((call) => call.url.includes("/fetch/")).length, 1);
 });
 
+test("the estimate carries the search id of the rung the price came from", async () => {
+  // The point of the link is showing the listings the median was actually taken over. The strict
+  // rung here was searched and passed over for holding one listing, so pointing at its id would open
+  // a query that explains nothing about the number next to it.
+  const { fetch } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [["id-lonely"], ["id-a", "id-b", "id-c"]],
+    queryIds: ["query-strict", "query-priced"]
+  });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    FIVE_MOD_RARE,
+    new Set(),
+    toChaos
+  );
+
+  assert.equal(estimate.searchId, "query-priced");
+  assert.equal(
+    tradeSearchUrl("Runes of Aldur", estimate.searchId),
+    "https://www.pathofexile.com/trade2/search/poe2/Runes%20of%20Aldur/query-priced"
+  );
+});
+
+test("a search that never priced anything offers no id to link to", async () => {
+  // Nothing matched at any rung, so there is no query worth opening — and `tradeSearchUrl` turns the
+  // absence into no link rather than a URL ending in "undefined".
+  const { fetch } = stubFetch({ stats: STATS_5, searchIdsSequence: [[], [], []] });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    FIVE_MOD_RARE,
+    new Set(),
+    toChaos
+  );
+
+  assert.equal(estimate.chaosValue, null);
+  assert.equal(estimate.searchId, undefined);
+  assert.equal(tradeSearchUrl("Runes of Aldur", estimate.searchId), null);
+});
+
 test("the ladder reports what each rung matched, so a passed-over rung can be explained", async () => {
   const { fetch } = stubFetch({
     stats: STATS_5,
@@ -1222,10 +1592,57 @@ test("the ladder reports what each rung matched, so a passed-over rung can be ex
   );
 
   // "one listing carries all five mods" and "none does" are different things to tell the user.
+  // `filters` stays at 5 on both rungs: this fixture's mods carry no tier, so nothing is droppable
+  // and the ladder relaxes the threshold alone, exactly as it did before the drop axis existed.
   assert.deepEqual(estimate.rungs, [
-    { required: 5, total: 1 },
-    { required: 4, total: 3 }
+    { required: 5, total: 1, filters: 5 },
+    { required: 4, total: 3, filters: 5 }
   ]);
+});
+
+test("at the shipped default the ladder stops on the first rung that matched anything", async () => {
+  // minListingsForMatch: 1 is the default, and it means specificity over sample depth: the 3-listing
+  // rung is the most specific comparison this item has, so the ladder must take it and not descend to
+  // the deeper, looser one below. The real capture behind this priced a 4-mod tablet off 2 of its
+  // mods because a 3-listing rung was passed over.
+  const { fetch, calls } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [[], ["id-a", "id-b", "id-c"], ["id-d", "id-e", "id-f", "id-g"]]
+  });
+  const estimate = await new Trade2Client(
+    makeSettings({ minListingsForMatch: 1 }),
+    fetch
+  ).estimateRareValue(FIVE_MOD_RARE, new Set(), toChaos);
+
+  // Two rungs sent, not three — the loosest was never requested.
+  assert.deepEqual(estimate.rungs, [
+    { required: 5, total: 0, filters: 5 },
+    { required: 4, total: 3, filters: 5 }
+  ]);
+  assert.equal(estimate.matchedMods, 4);
+  assert.equal(estimate.matches, 3);
+  assert.equal(calls.filter((call) => call.url.includes("/search/")).length, 2);
+
+  // Both figures come from that same rung, which is what makes a thin sample readable rather than
+  // just confident: the price is the cheapest of the fetched listings, the median their middle.
+  assert.ok(estimate.chaosValue !== null);
+  assert.ok(estimate.medianChaosValue !== null);
+});
+
+test("an empty rung is not a hit, even at a threshold of 1", async () => {
+  // 0 >= 1 is false, so a rung that matched nothing can never stop the ladder — otherwise the first
+  // search would always win and the ladder would never descend at all.
+  const { fetch } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [[], [], ["id-a", "id-b"]]
+  });
+  const estimate = await new Trade2Client(
+    makeSettings({ minListingsForMatch: 1 }),
+    fetch
+  ).estimateRareValue(FIVE_MOD_RARE, new Set(), toChaos);
+
+  assert.equal(estimate.matchedMods, 3);
+  assert.equal(estimate.matches, 2);
 });
 
 test("a thin market is still priced when no rung clears the bar", async () => {
@@ -1242,7 +1659,7 @@ test("a thin market is still priced when no rung clears the bar", async () => {
   );
 
   assert.equal(estimate.matchedMods, 3);
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
 });
 
 test("an empty ladder blames the loosest rung, not the strictest, and names what it tried", async () => {
@@ -1256,7 +1673,9 @@ test("an empty ladder blames the loosest rung, not the strictest, and names what
   assert.equal(estimate.chaosValue, null);
   // The question this wording exists to pre-empt: "why not just require all the mods?"
   assert.match(estimate.reason!, /3 or more of its 5 mods/);
-  assert.match(estimate.reason!, /tried 5, 4, 3/);
+  // Each rung as required/searched, since the ladder varies both. Here nothing was droppable, so the
+  // denominator stays 5 throughout and the line reads as the pure threshold walk it was.
+  assert.match(estimate.reason!, /tried required\/searched 5\/5, 4\/5, 3\/5/);
 });
 
 test("running out of budget mid-ladder says so rather than reporting no market", async () => {
@@ -1316,7 +1735,10 @@ test("a base-type-only search says so instead of blaming filters it never sent",
   const noMods = parse("Item Class: Rings\nRarity: Rare\nPlain Thing\nSapphire Ring\n--------\nItem Level: 60");
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(noMods, new Set(), toChaos);
 
-  assert.match(estimate.reason!, /no online listings for base type "Sapphire Ring"/);
+  assert.match(
+    estimate.reason!,
+    /no in-person listings from online sellers for base type "Sapphire Ring"/
+  );
 });
 
 test("a 429 is reported as a rate limit, naming the setting that controls it", async () => {
@@ -1324,6 +1746,7 @@ test("a 429 is reported as a rate limit, naming the setting that controls it", a
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
   assert.equal(estimate.chaosValue, null);
+  assert.equal(estimate.medianChaosValue, null, "no price means no median either");
   assert.match(estimate.reason!, /rate-limited/);
   assert.match(estimate.reason!, /retry after 60s/);
   assert.match(estimate.reason!, /maxSearchesPerWindow/);
@@ -1336,7 +1759,7 @@ test("a 502 is retried and the item still gets a price", async () => {
   const { fetch, calls } = stubFetch({ searchStatusSequence: [502, 200] });
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
   assert.equal(calls.filter((call) => call.url.includes("/search/")).length, 2);
 });
 
@@ -1344,7 +1767,7 @@ test("a dropped socket is retried too", async () => {
   const { fetch } = stubFetch({ throwOnSearch: 1 });
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
-  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.chaosValue, 2);
 });
 
 test("a persistent 5xx gives up after the configured attempts and says so", async () => {
@@ -1425,8 +1848,8 @@ test("declines once the search budget is spent, rather than stalling on a rate l
   const { fetch } = stubFetch();
   const client = new Trade2Client(makeSettings({ maxSearchesPerWindow: 2 }), fetch);
 
-  assert.equal((await client.estimateRareValue(RARE, new Set(), toChaos)).chaosValue, 10);
-  assert.equal((await client.estimateRareValue(RARE, new Set(), toChaos)).chaosValue, 10);
+  assert.equal((await client.estimateRareValue(RARE, new Set(), toChaos)).chaosValue, 2);
+  assert.equal((await client.estimateRareValue(RARE, new Set(), toChaos)).chaosValue, 2);
 
   const third = await client.estimateRareValue(RARE, new Set(), toChaos);
   assert.equal(third.chaosValue, null);

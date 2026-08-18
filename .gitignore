@@ -3,9 +3,12 @@ node_modules/
 .npm/
 .pnpm-store/
 
-# Build output. `npm run build` compiles src -> dist and copies renderer assets;
-# `npm run package` writes the installer, the portable exe and win-unpacked/ here.
+# Build output. `npm run build` compiles src -> dist, copies renderer assets and draws the app
+# icon into build/; `npm run package` writes the installer, the portable exe and win-unpacked/ here.
+# The icons are generated from src/main/icon-art.ts on every build, so committing them would only
+# create a second copy to drift.
 dist/
+build/
 release/
 *.tsbuildinfo
 

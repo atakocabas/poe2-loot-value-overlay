@@ -206,14 +206,46 @@ and that line is the whole reason for the split:
   user's GGG requests. Saving **relaunches the app**, because the league is captured in closures in
   `index.ts` and again in each of `PoeNinjaClient`/`Trade2Client`/`CurrencyExchangeClient`, so
   applying it live would take in some places and not others.
-- **Settings** (`hotkeys`, the `overlay` block, `display.currency`) all ship with working defaults
-  and are **applied in place** — nothing downstream captured any of them. `onSettingsSaved` in
-  `index.ts` **mutates the live `settings` object rather than rebinding it**, since `statusDeps`,
-  `registerIpcHandlers` and the clipboard closure all hold that same object. Don't widen it to keys
-  the clients captured; that's what the setup window is for.
+
+  Both windows also carry a **static note about Advanced Item Descriptions**, which is a setting in
+  the *game* and so has no field and nothing to save. It sits here because the option has to be on
+  before an item is copied for its mod tiers to exist at all, and setup is the one page every install
+  sees exactly once. Don't turn it into a checkbox — the app cannot set it.
+- **Settings** (`hotkeys`, the `overlay` block, `display.currency`, `trade2.saleType`) all ship with
+  working defaults and are **applied in place** — nothing downstream captured any of them.
+  `onSettingsSaved` in `index.ts` **mutates the live `settings` object rather than rebinding it**,
+  since `statusDeps`, `registerIpcHandlers` and the clipboard closure all hold that same object.
+  Don't widen it to keys the clients captured; that's what the setup window is for. `trade2.saleType`
+  is assigned **field by field** rather than as a block, because its neighbours *are* captured —
+  `contactEmail` by `createPublicGggFetch`'s User-Agent and the budget numbers by
+  `TradeSearchBudget`, both at construction — so replacing the whole `trade2` object would read as
+  applied and silently not be.
 
 The overlay panel has nowhere sensible to ask for any of this, and `settings.json` in `userData` is
 hand-edited JSON most users will never open.
+
+**The app's icon is geometry, not an image file.** `src/main/icon-art.ts` draws the mark — a gold
+hexagonal gem cut by a chevron — into RGBA at any size, in a unit square, with 4x4 supersampling of
+the finished composite rather than per-shape antialiasing. `icon.ts` wraps it as `NativeImage` for
+the tray and the two framed windows' title bars (the overlay window is frameless and `skipTaskbar`,
+so it has nowhere to show one), and `scripts/make-icons.js` runs after `tsc` in `npm run build` to
+write `build/icon.ico` and `build/icon.png`, which is what `build.win.icon` points electron-builder
+at. `build/` is generated and gitignored like `dist/`. Four things there are deliberate:
+
+- **`icon-art.ts` and `icon-png.ts` must not import electron**, because the build script requires
+  them out of `dist/` long before there is an app. Authoring the mark as an SVG instead would need
+  `sharp`/`resvg` to rasterise, which are native modules — the same call as `better-sqlite3` and
+  `active-win` — and committing seven hand-drawn PNGs means seven copies to drift.
+- **Both consumers go through PNG**, hence the small encoder in `icon-png.ts`. Handing raw pixels to
+  `nativeImage.createFromBuffer` means matching Skia's native BGRA-*premultiplied* order, which
+  silently yields a plausible icon in the wrong hue rather than an error.
+- **`renderIcon` simplifies below 32px** (`detailFor`): the specular and crown facet come off, the
+  cut widens and the rim goes to full strength. They are sub-pixel at tray size and land as haze
+  over the one thing that has to survive. It's the only place in that file that knows the size.
+- **The rim is drawn before the cut**, so the cut runs through the girdle. The other order leaves the
+  chevron's arms as stubs, and at 16px welds them into the outline — the mark becomes a dark smudge
+  on a gold blob. For the same reason the .ico's 16/24/32 entries are the bare mark and only 48+
+  carry the plate.
 
 Setup's three IPC channels are registered by `registerSetupIpcHandlers()`, **separately from and
 earlier than** `registerIpcHandlers()`. That split is load-bearing: on first run setup has to run to
@@ -270,7 +302,13 @@ Data flow, item capture to UI:
    **It must handle PoE2's "Advanced Item Descriptions" option**, which many players run with and
    which changes the mod format substantially. Three things it adds, all handled and none optional:
    - `{ Prefix Modifier "Polar" (Tier: 1) — Elemental, Cold }` grouping headers. These are not mods;
-     they classify the lines *under* them, until the next header or the end of the section.
+     they classify the lines *under* them, until the next header or the end of the section. Two
+     things are read off one: the leading word, which gives the `ModKind`, and `(Tier: N)`, which
+     gives `ParsedMod.tier` and is the **only** source of affix tier anywhere in the app — GGG's stat
+     reference publishes none. One header can cover several lines (a hybrid affix is one roll printed
+     as two), and they share its tier as well as its kind, so both travel together. A trailing
+     `(rune)`-style marker overrides the kind and takes the tier to null with it: a header that isn't
+     describing this line's kind isn't describing its tier either.
    - The roll range spliced into the number itself — `Attacks Gain 20(19-20)% of Damage`. GGG's stat
      templates carry a bare `#` and `TradeStatsMatcher` anchors end to end, so a range left in place
      matches **nothing**. This alone silently reduced every rare to a base-type-only trade search.
@@ -338,6 +376,14 @@ Data flow, item capture to UI:
    then `CurrencyExchangeClient`, then falls back to `Trade2Client` (mod-aware search) for unpriced
    **Rares** — otherwise the item is stored with `priceSource: "unpriced"` and a logged reason.
 
+   **The automatic path persists everything the estimate carries**, the same set `REPRICE_ITEM`
+   writes. It used to keep six fields and drop `statCoverage`, `coverageSample`, `pseudoDropped` and
+   `mapDropped` even though the search had already paid for them, so a freshly captured rare showed
+   none of the badges the row is built to render until the user pressed Reprice once — which read as
+   missing data rather than a lost write. `autoDroppedMods` is what made that asymmetry
+   load-bearing: without it the row editor cannot show which mods produced an *automatic* price, and
+   showing that is the reason the field exists. Keep the two write paths in step.
+
    The resolver does **not** gate the trade2 call on availability or rate-limit budget; it calls
    unconditionally for Rares and `Trade2Client` short-circuits internally. That keeps one place
    deciding whether a lookup happens and one place wording the refusal, which is then reused
@@ -355,6 +401,20 @@ Data flow, item capture to UI:
    item unpriced. But poe.ninja is **not consistent** about this in its own ids — the same category
    ships `oisins-oath` *and* `mórrigans-insight` — so `slugVariants()` offers both spellings and
    `lookupCandidates()` probes each. Don't collapse it back to one.
+
+   **poe.ninja is not a GGG host and gets none of `ggg-fetch.ts`.** It publishes no rate limits and
+   returns no `X-Rate-Limit-*` headers, so `GggRateLimiter` would have nothing to act on — there is
+   nothing to measure and nothing to react to, which argues for restraint rather than against it.
+   Two things stand in for it, neither optional:
+   - **One pool across both category lists** (`inPool`, `poeNinja.maxConcurrentRequests`, default 4).
+     A refresh is 23 requests and firing them together at a free community service behind Cloudflare
+     is the pattern that gets an IP blocked. It must stay **one** pool: two under a `Promise.all`
+     each honour the limit while the refresh runs at twice it — measured at 8 in flight for a
+     configured 4. A bad value falls back to the default rather than reducing the limit to `NaN`,
+     which emptied the batch and made a refresh silently fetch nothing.
+   - **An identifying `User-Agent`**, via `appUserAgent()` shared with `createPublicGggFetch` so the
+     string can't drift. It optional-chains `trade2.contactEmail`, since `PoeNinjaClient` otherwise
+     has no reason to require that block.
 5. `PricingQueue` (`src/pricing/queue.ts`) throttles resolution to one item per 250ms and persists
    the result via `db/store.ts`, then pushes it to the renderer over IPC.
 
@@ -479,6 +539,34 @@ Practically:
   running alongside it, spends the same budget. `TradeStatsMatcher` also draws on it, though only
   once per run. (`CurrencyExchangeClient` does not — that feed is on `web.poecdn.com` under a
   different policy.) Defaults leave deliberate headroom; don't raise them to "use the full limit".
+  Confirmed still live: a search response advertises exactly that rule under
+  `x-rate-limit-policy: trade-search-request-limit`, while `/api/trade2/data/*` sends **no**
+  rate-limit headers at all — so `GggRateLimiter` genuinely has nothing to learn from those.
+- **`TradeSearchBudget` tracks two windows, because the budget counts searches while GGG counts
+  requests.** A lookup is N ladder rungs — **all** budgeted, one slot each — plus **one** unbudgeted
+  fetch of the winning rung. So the worst request-per-search ratio is 2:1, on a lookup that hits at
+  the top rung, and it improves as the ladder descends. Size against 2:1; the short window's 12
+  searches are therefore at most 24 requests. Three consequences, all settled by configuration rather
+  than by code:
+  - Against `30:300:1800` — 30 requests per 5 minutes, **30 minutes** of lockout — `maxSearchesPerWindow`
+    is the ceiling, at **12** for 24 of the 30. Don't take it to 15 "to use the full limit": the rule
+    is per **IP**, so a second copy of the app, another trade tool, or the one-off `/data/stats`
+    fetch spends the same bucket, and at 15 someone else's single request triggers the blackout.
+  - Against `15:60:300` — 15 requests a minute, 5 minutes of lockout — `minSearchIntervalMs` is the
+    only thing shaping the burst, and it is what bounds this window regardless of the 5-minute cap.
+    At 5s, searches and their fetches pack ~20 requests into 45 seconds and breach it; the default is
+    **10s**, which caps any 60-second stretch at 6 searches and ~12 requests. It costs nothing, since
+    `maxSearchesPerWindow` over `windowMs` is the real ceiling either way, and a lone drop still waits
+    not at all, having no previous search to be spaced from.
+  - Against `600:21600:3600` — 600 requests per 6 hours, and an **hour-long** lockout, the worst
+    penalty on the list — the short window is blind: it refills twelve times an hour. Hence
+    `maxSearchesPerLongWindow`/`longWindowMs` (240 per 6h, so ≤480 of the 600). **This one is not
+    raised alongside the short window** — 12 searches per 5 minutes sustained is 864 per 6 hours, so
+    the long window is what binds during a heavy session, and that is exactly its job. Tuning the short
+    window down far enough to cover this instead would throttle the ordinary case — a burst of drops
+    in one map — to guard against something only hours of continuous mapping reach. `cooldownMs()`
+    reports the **longest** wait across full windows, or the "retry in ~Ns" message would send the
+    user to press Reprice while the search still can't go out.
 - The fetch endpoint rejects **more than 10 ids** with `400 {"error":{"code":2}}`, hence
   `MAX_FETCH_IDS`. Search takes the realm as a path segment (`/search/poe2/{league}`); fetch takes
   it as a query param (`?query={searchId}&realm=poe2`).
@@ -512,10 +600,17 @@ Practically:
   only thing in GGG's response saying *which* filters a given listing satisfied. `countCoverage()`
   turns it into `PricedItem.statCoverage` — how many of the sampled listings held each mod — shown as
   a `9/10` chip per row in the editor. It costs no extra requests: the fetch already happens.
-  **It is not "the mods the search used", and must never be presented as one.** A `count` search asks
-  for at least N of M and different listings satisfy different subsets, so no such set exists; a row
-  of ticks would assert otherwise. Groups are flattened before lookup, since a listing may carry the
-  same stat as a crafted or fractured mod where this item has it as an explicit one.
+  **It is not "the mods the search used", and must never be presented as one.** A `count` rung asks
+  for at least N of M and different listings satisfy different subsets, so no such set exists there; a
+  row of ticks would assert otherwise. Groups are flattened before lookup, since a listing may carry
+  the same stat as a crafted or fractured mod where this item has it as an explicit one.
+
+  **The drop axis is the exception, and it answers the question from the other side.** A drop rung
+  requires *all* of a named subset, so what it left out is known exactly — that is
+  `PricedItem.autoDroppedMods`, which the row editor unticks and marks. The two coexist without
+  contradicting each other because they say different things: `autoDroppedMods` names what the search
+  removed, `statCoverage` measures what the listings carried among what remained. Don't collapse
+  either into the other.
 - A **transient** failure (5xx or a thrown fetch) is retried `trade2.maxTransientRetries` times,
   each retry spending another budget slot; `4xx` and `429` never are. Without this a one-second GGG
   blip — a real capture caught `502` from trade2 *and* the currency exchange in the same second —
@@ -525,6 +620,17 @@ Practically:
 - The `corrupted` misc filter is applied **only when the item is corrupted**. Corrupted items are
   their own market and pricing one off uncorrupted listings overstates it; the reverse is a soft
   distinction, and demanding it measurably cost matches (1 result -> 0 on a real thin base).
+- **Listings with no asking price are excluded by sending nothing**, which is the one filter whose
+  default state is an absence rather than a value. `trade2.saleType` is `"buyout"` by default and
+  emits no `trade_filters` group at all; only the opt-out (`"any"`) sends
+  `sale_type: { option: "any" }`. Measured live on an `Alpha Talisman` search: omitted 239 listings,
+  `unpriced` 93, `any` 332 — exactly 239 + 93. GGG's `/api/trade2/data/filters` agrees, giving
+  "Buyout or Fixed Price" the id `null`, i.e. the dropdown's untouched state. **Don't try to send
+  that null explicitly** — `{ option: null }` is rejected with `400 Invalid sale type`, so there is
+  no way to say "buyout" other than saying nothing. The default matters because the price is a
+  median of the *cheapest* matches (see `priceSample`) and an unpriced listing has no number to sort
+  by; it can only take a slot a real asking price would have filled. This is the second knob after
+  `listingStatus` that explains a gap between the app and the trade site.
 - An armour piece is searched on its **defence totals**, via `equipment_filters`
   (`ar`/`ev`/`es`/`ward`, confirmed against `/api/trade2/data/filters`), and the local defence mods
   that produced those totals are **dropped from the stat filters** — see `isLocalDefenceMod()`.
@@ -587,44 +693,102 @@ Practically:
 - Searches use `stats` type **`count`** with a minimum, never `"and"` — see `requiredModMatches()`
   for the live measurements. Requiring every mod returns 0 listings for an ordinary four-to-six-mod
   rare, so `"and"` alone leaves essentially every rare unpriced.
-- One lookup walks a **ladder** of thresholds (`modLadder()`), strictest first: all mods, one fewer,
-  then `minModMatchRatio`'s floor. It stops at the first rung holding at least
-  `trade2.minListingsForMatch` listings, and only that rung is fetched — so a hit at the top costs
-  exactly what the old single search did, and each miss costs one more request. Two rules are
-  load-bearing:
-  - **A rung must describe a market, not just match.** The Ruby jewel this came from had 1 listing
-    matching all 4 mods (30 chaos), 9 matching 3 (1 divine), and 263 matching 2 (25 exalted — what
-    sellers were actually asking). "Strictest rung that matched anything" would have reported one
-    stranger's asking price. The bar is deliberately higher than `maxListings`: the sample only has
-    to be fillable, but the rung has to describe a market before it is worth sampling at all.
+- One lookup walks a **ladder** with two axes, assembled by `searchRungs()` and strictest first. It
+  stops at the first rung holding at least `trade2.minListingsForMatch` listings, and only that rung
+  is fetched — so a hit at the top costs exactly what the old single search did, and each miss costs
+  one more request.
+  - **The threshold axis** (`modLadder()`) keeps every filter and relaxes the `count` minimum: all
+    mods, one fewer, then `minModMatchRatio`'s floor.
+  - **The drop axis** (`droppableFilters()`, `trade2.useModDropLadder`) removes the item's *weakest
+    named affixes* one at a time and requires all the survivors. The two ask different questions and
+    the difference is the point: "4 of 5" lets a listing miss **any** mod, including the T1 roll that
+    is why the item is worth anything, while dropping a named T5 filter asks for a specific, slightly
+    worse item — which is how a player narrows a search by hand.
+  - **Only the drop axis produces a knowable mod set**, and that is what makes
+    `PricedItem.autoDroppedMods` possible at all where `statCoverage` is not (see below). A drop rung
+    requires *all* of a named subset, so the mods left out of it are known exactly; the row editor
+    unticks them, so reopening Edit shows the mods the price actually came from.
+  - **The drop axis needs mod tiers, which need Advanced Item Descriptions.** PoE2 prints `(Tier: N)`
+    in the affix headers only under that option. Without it every `ParsedMod.tier` is null,
+    `droppableFilters()` returns `[]`, and `searchRungs()` degenerates to `modLadder()` rung for
+    rung — which is why the feature costs nothing for players who don't run it, and why the setup and
+    settings windows both carry a note about the game option. **Unknown tier is never droppable**, at
+    any threshold: the ladder sheds a mod only on positive evidence that it's the weak one.
+  - **A filter is ranked by its *best* contributor.** Filters are summed per stat id, so one can be
+    fed by several mod lines (a hybrid affix is one roll printed as two), and dropping it drops all of
+    them. Ranking by the worst would let a T5 line carry a T1 out of the search with it.
+  - **The drop axis has its own cap** (`maxModDropSearches`, default 5) rather than sharing
+    `maxModLadderSearches`, because it is the more expensive one — a rare walking every rung can spend
+    most of a rate-limit window by itself. It never empties the filter set; one always survives.
+
+  Two rules are load-bearing on both axes:
+  - **`minListingsForMatch` decides specificity versus sample depth, and it now defaults to 1** —
+    stop at the first rung that matched anything. The measurement that argued the other way is still
+    real and worth knowing: the Ruby jewel this came from had 1 listing matching all 4 mods (30
+    chaos), 9 matching 3 (1 divine), and 263 matching 2 (25 exalted — what sellers were actually
+    asking). At a high bar the ladder walks past the exact item to reach a market; at 1 it reports the
+    exact item off however few listings carry it. Both are defensible and the setting is the seam.
+    What makes 1 workable is that the row prints `medianChaosValue` next to the price, so a rung too
+    thin to mean anything shows it rather than hiding behind a confident single number. **Don't
+    re-raise the default on the strength of "the sample is small" alone** — small is the point now;
+    it was changed deliberately after repeatedly pricing 4-mod rares off 2 of their mods.
   - **The floor rung is never dropped**, whatever caps apply, since it's the query that priced
     things before the ladder existed. If no rung clears the bar, the loosest non-empty one is used.
-  - **Searches default to `status: online`, and every message wording follows the setting.** Two
-    real jewels matched **0** online listings on all their mods and **16** / **5** with offline
-    sellers counted — that gap is what makes the app look wrong next to the trade site, whose status
-    filter the user may have cleared. `trade2.listingStatus` switches it; `listingsLabel` and
-    `explainStrictMiss()` both key off it, so a search that counted offline sellers never reports
-    "no online listings". `TradeEstimate.rungs` carries each threshold's count so the same function
-    can separate "nobody has one" from "one person does, too thin to take a median over".
+  - **`status` is not an online/offline toggle, and reading it as one was a real bug.** Confirmed
+    against `/api/trade2/data/filters`, GGG's five options are `securable` (**Instant Buyout**),
+    `available` (Instant Buyout and In Person), `online` (**In Person (Online)**), `onlineleague`, and
+    `any`. The default is **`securable`**, because it is the only one matching what `priceSample`
+    claims to report: a floor you can sell into *today*. An in-person listing needs the seller to
+    answer a whisper, so it is not executable on demand. It is also not the narrower market it sounds
+    like — measured live on a `Sapphire Ring` base, `online` returned 5678 listings and `securable`
+    10000+.
+
+    Every message wording follows the setting through `listingsLabelFor()`, shared by `listingsLabel`
+    and `explainStrictMiss()`. The old code said "online listings" for everything but `any`, which
+    sent a user to check whether sellers were online when the app had in fact excluded every
+    instantly-buyable listing on the site. Never emit a bare "no listings": each option excludes
+    something, and which one is the whole explanation for a gap against the trade site. Two real
+    jewels matched **0** on all their mods and **16** / **5** once offline sellers were counted.
+    `TradeEstimate.rungs` carries each threshold's count so the same function can separate "nobody has
+    one" from "one person does, too thin to take a median over".
   `matchedMods`/`totalMods` ride along on `TradeEstimate` and are persisted as `PricedItem.modMatch`
   (optional — nothing migrates `loot-cache.json`), so the log, the reprice status text and the row
   badge can all say a price came from fewer than every mod. Don't drop that: the number looks
   equally confident either way.
-- **The price is the market floor, on purpose.** `priceSample()` takes the **cheapest**
-  `trade2.maxListings` (default 5) of the price-ascending results and medians those, so the number is
-  what undercutters are currently asking rather than what the item is nominally worth. Measured on a
-  real Ruby jewel with 236 matching listings: ids 0-4 are `1 exalted` straight through, while ids
-  45-54 run 29-40 exalted, which is what that jewel was actually selling for.
+- **The price is the market floor, on purpose — and the row reports two numbers, not one.**
+  `priceSample()` takes the **cheapest** `trade2.maxListings` (default 5) of the price-ascending
+  results, so the window is what undercutters are currently asking rather than what the item is
+  nominally worth. Measured on a real Ruby jewel with 236 matching listings: ids 0-4 are `1 exalted`
+  straight through, while ids 45-54 run 29-40 exalted, which is what that jewel was actually selling
+  for.
 
-  **Both numbers are real, and this deliberately reports the lower one** — a floor is what you can
-  sell into today. This reverses an earlier decision that took the middle of the window; don't move
-  it back on the strength of "the prices look too low", because low is the specification. That would
-  change what the number means, not just its accuracy, so it needs asking first.
+  **`chaosValue` is the cheapest listing in that window; `medianChaosValue` is its median.** Both are
+  carried on `TradeEstimate`, the median is persisted as `PricedItem.tradeMedianChaosValue`, and the
+  row prints them as `12ex (18ex)` via `medianValueEl()` in `common.ts`. The gap between the two is
+  the whole point of showing both: a floor far below the median of its own five listings is one
+  optimistic seller, not a market, and no single number can say that. The price stays the lower one
+  because a floor is what you can sell into today.
+
+  Two things follow, both deliberate. **The map total sums the floors**, since `chaosValue` is what
+  `recomputeSessionTotal` reads — so the headline on a row and the total in the header agree, which
+  they would not if the row led with one figure and the total summed another. And
+  **`tradeMedianChaosValue` annotates a price, it never is one**: nothing should read it through
+  `effectiveChaosValue` or sum it. It sits next to `manualChaosValue` in `PricedItem` and does the
+  opposite thing — that one *replaces* the price.
+
+  Don't collapse this back to a single number on the strength of "the prices look too low", because
+  low is the specification; and don't promote the median back to the price. Either would change what
+  the number means, not just its accuracy, so it needs asking first. The median is still worth taking
+  over a mean for the reason it was originally chosen: one unconverted-currency or misplaced outlier
+  among five would drag a mean, and the cheap end is exactly where those live.
+
+  `medianValueEl` returns null wherever the parenthetical would assert something untrue — a non-trade2
+  source, a manual override, an item stored before the field existed, a folded group (the headline is
+  a *sum* there), or the two figures agreeing. It is not in the `#panel.minimal` hide list: the pair
+  is wanted in the heads-up form too.
 
   `TradeEstimate.matches` carries the full match count next to the sample size, so the log line and
-  the reprice status both say which slice the number came from. The median still earns its keep over
-  five listings: one unconverted-currency or misplaced outlier would drag a mean, and the cheap end
-  is exactly where those live.
+  the reprice status both say which slice the numbers came from.
 
   The bias compounds with two others pointing the same way — the ladder settling on a rung looser
   than every mod, and GGG's search returning at most the 100 cheapest ids however many matched.
@@ -655,10 +819,13 @@ the setup window appear once — including for installs upgrading past the key, 
 `mergeWithDefaults` fills it in.
 
 **Which keys the settings window may edit is a rule, not a list.** `SettingsConfig`
-(`shared/types.ts`) is `hotkeys`, the editable part of `overlay`, and `display.currency` — everything
-nothing downstream captured, which is exactly what can be applied without a relaunch. Adding a key
-there means checking that no client, closure or watcher read it at construction; if one did, it
-belongs to the setup window and its restart instead. `loadDefaultSettings()` backs the per-field
+(`shared/types.ts`) is `hotkeys`, the editable part of `overlay`, `display.currency` and
+`trade2.saleType` — everything nothing downstream captured, which is exactly what can be applied
+without a relaunch. Adding a key there means checking that no client, closure or watcher read it at
+construction; if one did, it belongs to the setup window and its restart instead. `trade2.saleType`
+qualifies on exactly that test and is worth reading as the worked example: `Trade2Client` holds the
+same `Settings` object `index.ts` mutates and reads `this.settings.trade2.saleType` while building
+each query, so a save reaches the very next lookup. Most of that block does **not** qualify. `loadDefaultSettings()` backs the per-field
 Reset buttons, so "default" in the window means the same thing it means to `mergeWithDefaults`
 rather than a second set of constants in the renderer.
 
@@ -738,8 +905,19 @@ rather than a second set of constants in the renderer.
 - A waystone's affixes never becoming stat filters is the feature, not a gap — see the trade2 notes.
   Don't add an opt-in checkbox for them without first checking the listing count for that base, which
   was measured at zero.
-- `statCoverage` counting per mod rather than naming "the mods that matched" is not a shortcut: the
-  set it would name doesn't exist. Don't turn it into ticks.
+- `statCoverage` counting per mod rather than naming "the mods that matched" is not a shortcut: on a
+  `count` rung the set it would name doesn't exist. Don't turn it into ticks. The ticks that *are*
+  there come from `autoDroppedMods`, which the drop axis knows because it chose the subset itself.
+- **`autoDroppedMods` and `ignoredMods` are kept apart on purpose.** One is the app's guess,
+  recomputed by every search; the other is the user's decision, recorded from the editor's checkboxes
+  and re-sent on the next Reprice. Folding them into one list would make an automatic drop
+  indistinguishable from a deliberate exclusion and permanent by accident. Same separation as
+  `tradeMedianChaosValue` versus `manualChaosValue`: one annotates, the other replaces. A Reprice
+  *does* convert an auto-drop into a user exclusion — the box was unticked when they pressed it — and
+  overwrites `autoDroppedMods` wholesale so the two can never accumulate.
+- The drop axis doing nothing without **Advanced Item Descriptions** is the designed degradation, not
+  a gap to paper over. Don't infer a tier from the roll range, or treat unknown as droppable: both
+  turn "no information" into a confident decision to shed one of the item's mods.
 - `CurrencyExchangeClient` covering only currency-exchange-traded items, and therefore never pricing
   rares, is inherent to the data source. It is a fallback for poe.ninja, not a replacement for
   trade search.
@@ -760,8 +938,8 @@ rather than a second set of constants in the renderer.
   it covering only three settings. Don't "unify" it with the settings window: the restart is the
   honest way to apply a league three clients captured at construction, and a single dialog would have
   to restart for every change or lie about which ones need it.
-- The settings window covering **only** hotkeys, the overlay block and the display currency is the
-  same rule from the other side, not an unfinished job. Everything else in `settings.json` is a
+- The settings window covering **only** hotkeys, the overlay block, the display currency and
+  `trade2.saleType` is the same rule from the other side, not an unfinished job. Everything else in `settings.json` is a
   tuning knob with a working default that no UI has to exist for. The bar for adding a field is "can
   this be applied in place", not "is this configurable" — see the Settings section above.
 - **Hotkeys are suspended while the settings window is open, and re-registered when it closes.** Not

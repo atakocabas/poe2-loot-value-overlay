@@ -104,6 +104,16 @@ export interface Settings {
      * changing it here only affects fresh installs.
      */
     refreshIntervalMs: number;
+    /**
+     * How many category requests a refresh may have in flight at once.
+     *
+     * poe.ninja publishes no rate limits and returns no `X-Rate-Limit-*` headers, so unlike the GGG
+     * hosts there is nothing to measure and nothing to react to — which argues for restraint rather
+     * than against it. A refresh is one request per category (23 by default), and firing all of them
+     * simultaneously at a free community service behind Cloudflare is the pattern that gets an IP
+     * blocked. Nothing waits on a refresh, so the pool costs only wall clock on a 10-minute timer.
+     */
+    maxConcurrentRequests: number;
     itemOverviewTypes: string[];
     exchangeOverviewTypes: string[];
   };
@@ -159,17 +169,52 @@ export interface Settings {
      */
     contactEmail: string;
     /**
-     * Searches allowed per `windowMs`. Each costs two requests against GGG's 30-per-5-minutes IP
-     * budget, which is shared with anything else on this machine hitting the trade API, so the
-     * default leaves headroom. Once spent, further Rares are stored unpriced rather than stalling
-     * the pricing queue.
+     * Searches allowed per `windowMs`. Once spent, further Rares are stored unpriced rather than
+     * stalling the pricing queue.
+     *
+     * Sized against GGG's `30:300:1800` bucket — 30 requests per 5 minutes, then a **30-minute**
+     * lockout — confirmed live from `X-Rate-Limit-Ip` rather than taken from the policy page. The
+     * conversion is the part worth getting right: the budget counts *searches* while GGG counts
+     * *requests*, and a lookup is N ladder rungs (all budgeted) plus **one** unbudgeted fetch of the
+     * winning rung. The worst ratio is therefore a lookup that hits on its first rung — 2 requests
+     * for 1 search — and it improves from there, so 2:1 is the safe number to size by.
+     *
+     * At the default of 12: 24 of GGG's 30 requests, leaving a fifth of the bucket spare. That spare
+     * is not slack to reclaim — the limit is per **IP**, not per app, so a second copy of this
+     * overlay or any other trade tool on the same connection spends the same bucket, and the
+     * one-off `/data/stats` fetch comes out of it too. Raising this to 15 would sit exactly on the
+     * ceiling and make an unrelated tool's single request the thing that triggers a 30-minute
+     * blackout.
      */
     maxSearchesPerWindow: number;
     /** The rolling window `maxSearchesPerWindow` is counted over. Matches GGG's 300s bucket. */
     windowMs: number;
     /**
-     * Minimum spacing between searches. GGG's tightest bucket is 5 requests per 10 seconds, so at
-     * two requests per lookup anything under ~4s risks a lockout on a burst of rare drops.
+     * A second, much longer budget, counted the same way and enforced alongside the short one.
+     *
+     * GGG's `600:21600:3600` bucket is 600 requests per **6 hours**, and exceeding it is an
+     * hour-long lockout — by far the worst penalty on the list. The short window alone permits 10
+     * searches per 5 minutes, which is ~240 requests an hour sustained, so a long mapping session
+     * spending the budget continuously would breach the 6-hour ceiling after roughly two and a half
+     * hours. Tuning the *short* window down to prevent that would have throttled the ordinary case —
+     * a burst of drops in one map — to guard against something only hours of play reach.
+     *
+     * The default is 240 searches, i.e. at most ~480 of GGG's 600 requests, leaving room for the
+     * one-off `/data/stats` fetch and for anything else on the machine using the trade API.
+     */
+    maxSearchesPerLongWindow: number;
+    /** The rolling window `maxSearchesPerLongWindow` is counted over. Matches GGG's 21600s bucket. */
+    longWindowMs: number;
+    /**
+     * Minimum spacing between searches, and the only thing keeping a burst inside GGG's *short*
+     * buckets — the budget above counts searches, while the limits count requests.
+     *
+     * A lookup is one budgeted search plus an **unbudgeted** fetch of the winning rung, so a full
+     * burst of 10 searches is up to 20 requests. Against `15:60:300` — 15 requests a minute, 5
+     * minutes of lockout — 5s spacing packs those 20 into 45 seconds and breaches it. 10s spreads
+     * the same 10 searches over 90 seconds, about 13 requests in any minute, and costs nothing:
+     * `maxSearchesPerWindow` over `windowMs` is the real ceiling either way, and a lone rare drop
+     * waits not at all because there is no previous search to be spaced from.
      */
     minSearchIntervalMs: number;
     /**
@@ -182,16 +227,49 @@ export interface Settings {
      */
     maxListings: number;
     /**
-     * Which sellers count. `"online"` (the default) prices off listings you could buy from right
-     * now; `"any"` includes offline sellers, matching the trade site with its status filter cleared.
+     * Which listings count — GGG's `status` filter, whose options are **not** simply an online/offline
+     * toggle. Confirmed against `/api/trade2/data/filters`, the five it accepts are:
      *
-     * This is the usual reason the app and the site disagree, and the gap is not small: one real
-     * four-mod Emerald jewel had **0** online listings carrying all its mods and **5** counting
-     * offline ones, and a Sapphire had 0 against 16. `"any"` finds more comparables on thin items,
-     * at the cost of pricing against listings that may be months stale and unreachable — an
-     * abandoned listing never sold at its asking price.
+     * | value | GGG's label | what it means |
+     * |---|---|---|
+     * | `"securable"` | Instant Buyout | buyable on the spot, no whisper, seller needn't be online |
+     * | `"available"` | Instant Buyout and In Person | both routes |
+     * | `"online"` | In Person (Online) | seller is online; you whisper and meet to trade |
+     * | `"onlineleague"` | In Person (Online in League) | as above, restricted to this league's characters |
+     * | `"any"` | Any | everything, including sellers who logged off weeks ago |
+     *
+     * **The default is `"securable"`**, because it is the only option that matches what this app's
+     * prices claim to mean. `priceSample` deliberately reports the market *floor* — what you can sell
+     * into today — and an in-person listing is not something you can transact against on demand: it
+     * needs the seller to answer a whisper and invite you. An instant buyout is a real, executable
+     * price. Measured live on a `Sapphire Ring` base: `online` returned 5678 listings and `securable`
+     * returned 10000+, so this is not the narrower market it sounds like.
+     *
+     * This is the usual reason the app's number disagrees with the trade site, and the gap is not
+     * small in either direction: one real four-mod Emerald jewel had **0** *In Person (Online)*
+     * listings carrying all its mods and **5** counting offline ones, and a Sapphire had 0 against
+     * 16. Widening toward `"any"` finds more comparables on thin items, at the cost of pricing
+     * against listings that may be months stale and unreachable — an abandoned listing never sold at
+     * its asking price.
      */
-    listingStatus: "online" | "any";
+    listingStatus: "securable" | "available" | "online" | "onlineleague" | "any";
+    /**
+     * Whether a listing has to be buyable on the spot to count. `"buyout"` (the default) prices off
+     * listings with a buyout or fixed price; `"any"` also counts listings with no listed price,
+     * where buying means whispering the seller and haggling.
+     *
+     * `"buyout"` sends **no** `sale_type` filter at all, which is measured rather than assumed: on a
+     * real `Alpha Talisman` search, omitting it returned 239 listings, `sale_type: unpriced`
+     * returned 93, and `sale_type: any` returned 332 — exactly 239 + 93. GGG's own filter reference
+     * agrees, listing "Buyout or Fixed Price" as the option with a `null` id, i.e. the state the
+     * dropdown is in when nothing is sent. **Don't try to send that `null` explicitly**: the API
+     * rejects `{ option: null }` with `400 Invalid sale type`.
+     *
+     * Unpriced listings are worth excluding by default because this app takes a median of the
+     * *cheapest* listings, and an unpriced one carries no number to sort by — it can only dilute the
+     * sample or occupy a slot that a real asking price would have filled.
+     */
+    saleType: "buyout" | "any";
     /**
      * How many mod thresholds one lookup may try before settling, strictest first: 3 searches an
      * item's full mod set, then one fewer, then `minModMatchRatio`'s floor. Each rung that misses
@@ -201,16 +279,63 @@ export interface Settings {
      */
     maxModLadderSearches: number;
     /**
-     * Listings a mod threshold must match before its price is taken at face value; below it the
-     * ladder keeps loosening. Deliberately larger than `maxListings`: the sample only needs to be
-     * fillable, but the *rung* has to describe a market before it's worth sampling at all — under
-     * that the "median" is a handful of asking prices whichever end you take it from.
+     * Drop an item's **weakest** affixes one at a time when its full mod set finds no market, instead
+     * of only lowering the "at least N of M" threshold.
      *
-     * Measured on a real Ruby jewel: matching all 4 mods found 1 listing, 3 of 4 found 9 (median
-     * 1 divine), and 2 of 4 found 236 (median ~30 exalted, which is what sellers of that jewel were
-     * actually asking). Both thin rungs report a stranger's hopes; only the deep one reports a
-     * market. Lower this to prefer specificity over sample depth, 1 to always take the strictest
-     * rung that matched anything.
+     * The two do different things. Relaxing the threshold lets a listing miss *any* one mod, which
+     * on a good item usually means the T1 roll that is the reason it's worth anything. Dropping a
+     * named low-tier filter and still demanding all the rest asks for a specific, slightly worse item
+     * — which is how a player narrows a search by hand, and which unlike a `count` rung leaves a
+     * knowable set of mods behind. That set is what `PricedItem.autoDroppedMods` records and what
+     * lets the row editor reopen with the mods that produced the price still ticked.
+     *
+     * **Requires PoE2's Advanced Item Descriptions option**, which is what prints the `(Tier: N)` this
+     * reads. Without it no mod has a tier, nothing is droppable, and a lookup behaves exactly as it
+     * did before this existed — so turning this off only matters to players who have that option on.
+     * See `droppableFilters()` and `searchRungs()`.
+     */
+    useModDropLadder: boolean;
+    /**
+     * How many low-tier mods one lookup may shed, at one search each, before falling through to
+     * `maxModLadderSearches`' thresholds.
+     *
+     * This is the more expensive of the two axes and the reason it has its own cap rather than
+     * sharing that one. GGG rate-limits trade2 **per IP** and a priced lookup costs two requests, so
+     * the ceiling that matters is `maxSearchesPerWindow` over `windowMs`; a rare that walks every
+     * rung here can spend most of a window by itself and leave the rest of a busy map's drops
+     * unpriced. Raise it to price more stubborn rares, lower it to keep the budget spread across
+     * more items. 0 disables the drop axis as surely as `useModDropLadder: false` does.
+     *
+     * The set is never emptied — one filter always survives, since a search with none left is a
+     * base-type-only query that no amount of tier information makes worth a slot.
+     */
+    maxModDropSearches: number;
+    /**
+     * The affix tier at which a mod becomes droppable, **worst-or-equal**. At the default of 3, tiers
+     * 3 and up may leave the search and T1/T2 mods never do — 1 is the best possible roll in PoE.
+     *
+     * Raise it to protect more of the item (4 sheds only the truly weak affixes), lower it toward 1
+     * to let the ladder shed almost anything. A mod whose tier is unknown is never droppable at any
+     * setting, which is what makes the whole feature degrade cleanly to nothing without Advanced Item
+     * Descriptions.
+     */
+    modDropTierThreshold: number;
+    /**
+     * Listings a rung must match before its price is taken at face value; below it the ladder keeps
+     * loosening. **The default of 1 means "stop at the first rung that matched anything at all"**,
+     * which is the most specific comparison available for the item.
+     *
+     * This trades sample depth for specificity, deliberately, and the tradeoff is worth understanding
+     * because it runs the other way from what the number suggests. Measured on a real Ruby jewel:
+     * all 4 mods found 1 listing, 3 of 4 found 9 (median 1 divine), and 2 of 4 found 236 (median ~30
+     * exalted, which is what sellers of that jewel were actually asking). At 1 this reports the
+     * 1-listing rung — one stranger's asking price, taken from an item that really is this item. At
+     * 10 it descends to the 236-listing rung, which describes a market but describes it for a looser
+     * item than the one in your stash.
+     *
+     * Neither is wrong; they answer different questions. Raise this toward 10 to prefer a real market
+     * over an exact match, and read `medianChaosValue` alongside the price either way — on a thin
+     * rung the two figures being close is the only evidence the number means anything.
      */
     minListingsForMatch: number;
     /**

@@ -19,6 +19,17 @@ export interface ParsedMod {
   /** Display text with roll ranges and the trailing kind marker removed. */
   text: string;
   kind: ModKind;
+  /**
+   * The affix tier out of the `(Tier: N)` in an Advanced Item Descriptions header, where **1 is the
+   * best roll** and larger numbers are worse. Null when the header carried no tier, and `undefined`
+   * on items captured before this was parsed — `loot-cache.json` has no migration, which is the same
+   * reason `modsOf()` exists. Both read as "unknown", and unknown is never treated as droppable by
+   * `droppableFilters()`, so the absence can only cost specificity, never invent it.
+   *
+   * PoE2 prints this only when the player has Advanced Item Descriptions switched on, so an item
+   * whose mods all have no tier is the ordinary case rather than a parse failure.
+   */
+  tier?: number | null;
 }
 
 /**
@@ -188,6 +199,16 @@ export interface PricedItem extends ParsedItem {
   /** User-entered override; takes precedence over chaosValue when set. See effectiveChaosValue(). */
   manualChaosValue: number | null;
   /**
+   * The median of the same sampled listings `chaosValue` is the cheapest of — shown in parentheses
+   * beside the price so a floor propped up by one optimistic seller is visible as one.
+   *
+   * Named apart from `manualChaosValue` deliberately: that one *replaces* the price, this one only
+   * annotates it, and nothing should ever read this as a value the item is worth. Optional for the
+   * same reason as `tradeSearchId` — nothing migrates `loot-cache.json`, and only trade2-priced
+   * items ever set it.
+   */
+  tradeMedianChaosValue?: number;
+  /**
    * How specific the trade2 search behind `chaosValue` was: `{ matched: 3, total: 4 }` means no
    * listing carried all four of this item's mods, so the price came from ones sharing three.
    *
@@ -195,6 +216,15 @@ export interface PricedItem extends ParsedItem {
    * treat its absence as "not applicable", not as "matched everything".
    */
   modMatch?: { matched: number; total: number };
+  /**
+   * GGG's id for the trade2 search `chaosValue` came from, which `tradeSearchUrl` turns into a link
+   * to that same query on the trade site.
+   *
+   * Optional for the same reason as `modMatch`, and additionally **perishable**: GGG expires search
+   * ids, so a stored one is a lead rather than a guarantee. Anything offering it as a link has to
+   * cope with the search no longer being there.
+   */
+  tradeSearchId?: string;
   /**
    * The trade2 search found nothing at this item's own defence totals and was retried without that
    * constraint, so `chaosValue` compares this base and these mods at *any* Armour/Evasion/ES.
@@ -225,6 +255,22 @@ export interface PricedItem extends ParsedItem {
    */
   statCoverage?: Array<{ text: string; listings: number }>;
   coverageSample?: number;
+  /**
+   * The mod lines the tier ladder removed by itself to find a market — the low-tier affixes that were
+   * pinning the search to an item nobody has listed. See `droppableFilters()`.
+   *
+   * **Kept apart from `ignoredMods` deliberately.** That field is the user's decision, recorded from
+   * the row editor's checkboxes and re-sent on the next Reprice; this one is the app's, recomputed
+   * from scratch by every search. Folding them together would make an automatic guess indistinguish-
+   * able from a deliberate exclusion and permanent by accident. It's the same separation
+   * `tradeMedianChaosValue` has from `manualChaosValue`: one annotates the price, the other replaces
+   * it.
+   *
+   * The editor unticks these rows so the mods that produced the price come back selected, and marks
+   * them so the state still reads as the app's choice. Optional — nothing migrates `loot-cache.json`,
+   * and an item priced off a `count` rung legitimately has none.
+   */
+  autoDroppedMods?: string[];
 }
 
 export interface Session {
@@ -356,6 +402,14 @@ export interface SettingsConfig {
     panel: { width: number; maxHeightPercent: number; position: "left" | "right" };
   };
   display: { currency: "auto" | "exalted" | "chaos" | "divine" };
+  /**
+   * The one trade2 key the window may edit. It qualifies on the same test as everything above:
+   * `Trade2Client` reads `this.settings.trade2.saleType` when it builds each query, so mutating it
+   * applies to the very next lookup. Its neighbours in that block mostly do *not* — `contactEmail`
+   * is baked into the User-Agent by `createPublicGggFetch` and the budget numbers are captured by
+   * `TradeSearchBudget`, both at construction — so don't widen this to them without checking.
+   */
+  trade2: { saleType: "buyout" | "any" };
 }
 
 /** `SettingsConfig` plus the shipped defaults, which back the per-field Reset buttons. */

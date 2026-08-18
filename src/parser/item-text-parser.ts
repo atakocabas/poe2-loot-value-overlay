@@ -11,11 +11,20 @@ const SECTION_SEPARATOR = /\r?\n-{5,}\r?\n/;
 const PROPERTY_LINE = /^[A-Za-z][A-Za-z .]*:\s*.+$/;
 
 /**
- * The "{ Prefix Modifier "Polar" — Elemental, Cold, Attack }" grouping headers PoE2 emits when the
- * player has **Advanced Item Descriptions** switched on. Only the leading word is needed; the
- * affix name, an optional "(Tier: N)", and the tag list after the em dash are all ignored.
+ * The "{ Prefix Modifier "Polar" (Tier: 1) — Elemental, Cold, Attack }" grouping headers PoE2 emits
+ * when the player has **Advanced Item Descriptions** switched on. Two things are read out of it: the
+ * leading word, which gives the `ModKind`, and the rest of the line, which is where the tier is. The
+ * affix name and the tag list after the em dash are still ignored.
  */
-const ADVANCED_MOD_HEADER = /^\{\s*(\w+)/;
+const ADVANCED_MOD_HEADER = /^\{\s*(\w+)(.*)$/;
+
+/**
+ * The affix tier inside such a header. Read separately from `ADVANCED_MOD_HEADER` rather than as one
+ * more optional group on it: the tier sits between the affix name and the tags, both of which are
+ * free text, and a single pattern spanning all three would have to guess at their shape to stay
+ * anchored. Absent on headers that carry no tier, which is why `ParsedMod.tier` is nullable.
+ */
+const MOD_TIER = /\(Tier:\s*(\d+)\)/;
 
 /** The trailing marker on a mod line outside advanced mode, e.g. "... Energy Shield (rune)". */
 const MOD_KIND_SUFFIX = /\s*\((implicit|rune|enchant|crafted|fractured|desecrated)\)\s*$/i;
@@ -183,8 +192,11 @@ function parseMods(sections: string[], rarity: ItemRarity): ParsedMod[] {
     const lines = section.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
     // A "{ ... Modifier ... }" header applies to every line under it until the next header. It does
-    // not carry across a section break, so this resets per section rather than per item.
+    // not carry across a section break, so these reset per section rather than per item. Both travel
+    // together because one header can cover several lines — a hybrid affix granting evasion *and*
+    // energy shield is two mod lines off one roll, and they share its tier as well as its kind.
     let headerKind: ModKind = "explicit";
+    let headerTier: number | null = null;
 
     // Classified per line rather than per section. Requiring *every* line in a section to look
     // mod-like meant one property line sharing the block (PoE2 puts "Grants Skill: ..." next to
@@ -193,16 +205,20 @@ function parseMods(sections: string[], rarity: ItemRarity): ParsedMod[] {
       const header = line.match(ADVANCED_MOD_HEADER);
       if (header) {
         headerKind = kindFromHeader(header[1]);
+        const tier = header[2].match(MOD_TIER);
+        headerTier = tier ? Number(tier[1]) : null;
         continue;
       }
       if (PROPERTY_LINE.test(line) || isKnownNonModLine(line)) continue;
 
       // An explicit "(rune)"-style marker beats the enclosing header: rune lines sit in their own
-      // section above the "{ ... }" blocks and carry no header of their own.
+      // section above the "{ ... }" blocks and carry no header of their own. It takes the tier with
+      // it — whatever header is in scope demonstrably isn't describing this line.
       const suffix = line.match(MOD_KIND_SUFFIX);
       mods.push({
         text: stripRollRanges(line.replace(MOD_KIND_SUFFIX, "")).trim(),
-        kind: suffix ? (suffix[1].toLowerCase() as ModKind) : headerKind
+        kind: suffix ? (suffix[1].toLowerCase() as ModKind) : headerKind,
+        tier: suffix ? null : headerTier
       });
     }
   }
