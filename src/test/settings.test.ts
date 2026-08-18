@@ -31,6 +31,9 @@ function makeDefaults(): Settings {
     display: {
       currency: "auto"
     },
+    stash: {
+      selectedTabIds: []
+    },
     poeNinja: {
       baseUrl: "https://poe.ninja/poe2/api/economy",
       refreshIntervalMs: 900000,
