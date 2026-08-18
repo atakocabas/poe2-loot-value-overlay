@@ -34,6 +34,7 @@ function makeDefaults(): Settings {
     poeNinja: {
       baseUrl: "https://poe.ninja/poe2/api/economy",
       refreshIntervalMs: 900000,
+      maxConcurrentRequests: 4,
       itemOverviewTypes: ["UniqueWeapons"],
       exchangeOverviewTypes: ["Currency"]
     },
@@ -53,10 +54,16 @@ function makeDefaults(): Settings {
       contactEmail: "someone@example.com",
       maxSearchesPerWindow: 10,
       windowMs: 300000,
+      maxSearchesPerLongWindow: 240,
+      longWindowMs: 21600000,
       minSearchIntervalMs: 5000,
+      saleType: "buyout" as const,
       maxListings: 5,
       listingStatus: "online" as const,
       maxModLadderSearches: 3,
+      useModDropLadder: true,
+      maxModDropSearches: 5,
+      modDropTierThreshold: 3,
       minListingsForMatch: 10,
       minModMatchRatio: 0.5,
       useDefenceFilters: true,
@@ -108,6 +115,29 @@ test("the shipped panel side is one the renderer knows how to place", () => {
   ) as { overlay: { panel: { position: string } } };
 
   assert.equal(defaults.overlay.panel.position, "right");
+});
+
+test("the shipped sale type excludes listings with no asking price", () => {
+  // Read from the file for the same reason as the panel side above. This one decides what every
+  // install prices against by default: "any" would quietly fold unpriced listings into a median
+  // taken over the cheapest matches, which is exactly where they do the most damage.
+  const defaults = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  ) as { trade2: { saleType: string } };
+
+  assert.equal(defaults.trade2.saleType, "buyout");
+});
+
+test("fills in the sale type for a settings.json written before it was configurable", () => {
+  const defaults = makeDefaults();
+  const { saleType, ...trade2WithoutSaleType } = defaults.trade2;
+  const loaded = { ...defaults, trade2: trade2WithoutSaleType };
+
+  const merged = mergeWithDefaults(defaults, loaded as typeof defaults);
+
+  // Existing installs land on buyout-only, which is what they were already getting: the app never
+  // sent a sale_type filter before this was configurable, and omitting it *is* buyout-only.
+  assert.equal(merged.trade2.saleType, "buyout");
 });
 
 test("fills in the panel's side for a settings.json written before it was configurable", () => {

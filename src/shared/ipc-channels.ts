@@ -31,6 +31,16 @@ export const IPC = {
    */
   GET_EDITOR_ROWS: "get-editor-rows",
   REPRICE_ITEM: "reprice-item",
+  /**
+   * Opens the trade2 search a price came from in the system browser.
+   *
+   * Takes an item id rather than a URL, for the same reason `GET_EDITOR_ROWS` takes one: the renderer
+   * is a plain <script> and can't import `tradeSearchUrl`, and pushing `league` at it just to build
+   * the string over there would put a second copy of that derivation in `common.ts`. It also means
+   * `shell.openExternal` is only ever reached with a URL this app assembled from its own hardcoded
+   * origin — the renderer never handles one at all.
+   */
+  OPEN_TRADE_SEARCH: "open-trade-search",
   SET_MANUAL_PRICE: "set-manual-price",
 
   // The setup window's three channels. Registered separately from the overlay's, because on first

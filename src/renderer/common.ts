@@ -178,6 +178,37 @@ function sourceBadge(item: PricedItem): HTMLElement {
   return badge;
 }
 
+/**
+ * The `(18ex)` beside a trade2 price — the median of the same sampled listings the headline is the
+ * cheapest of. The gap between the two is the point: a floor far below the median of its own sample
+ * is one optimistic seller rather than a market, and a single number cannot say that.
+ *
+ * Returns null in every case where the parenthetical would assert something untrue:
+ *
+ * - No other price source has a sample to take a median over.
+ * - A manual price *replaces* the trade figure, so pairing it with the leftover median would read as
+ *   a range the user never set.
+ * - Items priced before this existed carry no median (nothing migrates `loot-cache.json`).
+ * - `count > 1` means the headline is a summed group total, and a median printed beside a sum
+ *   describes nothing. Trade2 only ever prices Rares and `groupItems` refuses to fold anything
+ *   carrying mods, so this is a guard rather than a live case — but it is also what makes comparing
+ *   the two numbers valid at all, since an unfolded row's `total` is one item at `stackSize` 1.
+ * - The two agreeing (a one-listing sample) makes `12ex (12ex)`, which is noise.
+ */
+function medianValueEl(item: PricedItem, count: number, total: number | null): HTMLElement | null {
+  const median = item.tradeMedianChaosValue;
+  if (item.priceSource !== "trade2" || item.manualChaosValue !== null) return null;
+  if (median === undefined || count !== 1 || total === null || median === total) return null;
+
+  const el = document.createElement("span");
+  el.className = "item-value-median";
+  el.textContent = `(${formatValue(median)})`;
+  el.title =
+    "Median of the listings this price was sampled from. The headline is the cheapest one " +
+    "currently listed — the wider the gap, the thinner that floor.";
+  return el;
+}
+
 function relativeTime(timestamp: number): string {
   const seconds = Math.round((Date.now() - timestamp) / 1000);
   if (seconds < 60) return `${Math.max(0, seconds)}s ago`;

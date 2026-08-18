@@ -1,4 +1,5 @@
 import type { Settings } from "../shared/settings";
+import { appUserAgent } from "./ggg-fetch";
 import type { ParsedItem } from "../shared/types";
 import type { CurrencyRates } from "../shared/format-value";
 
@@ -122,6 +123,13 @@ export function splitLevelSuffix(name: string): { base: string; level: number | 
 /** Which of the two caches a candidate key should be looked up in. */
 type LookupCandidate = { source: "byId" | "byName"; key: string };
 
+/** Used when `poeNinja.maxConcurrentRequests` is missing or unusable. Matches the shipped default. */
+const DEFAULT_POE_NINJA_CONCURRENCY = 4;
+
+/** What each of the two category fetches reduces its response to, named so both can share one pool. */
+type ItemPrice = { name: string; baseType: string; chaosValue: number };
+type ExchangePrice = { id: string; chaosValue: number };
+
 export class PoeNinjaClient {
   /** Item-overview prices, keyed by both `name|baseType` and name alone. */
   private priceByName = new Map<string, number>();
@@ -150,10 +158,15 @@ export class PoeNinjaClient {
     this.refreshListeners.push(listener);
   }
 
+  /** Built once: the version and contact don't change while the app is running. */
+  private readonly userAgent: string;
+
   constructor(
     private readonly settings: Settings,
     private readonly fetchImpl: typeof fetch = fetch
-  ) {}
+  ) {
+    this.userAgent = appUserAgent(settings);
+  }
 
   startAutoRefresh(): void {
     void this.refresh();
@@ -169,10 +182,29 @@ export class PoeNinjaClient {
     const itemTypes = this.settings.poeNinja.itemOverviewTypes;
     const exchangeTypes = this.settings.poeNinja.exchangeOverviewTypes;
 
-    const [itemResults, exchangeResults] = await Promise.all([
-      Promise.allSettled(itemTypes.map((type) => this.fetchItemOverview(type))),
-      Promise.allSettled(exchangeTypes.map((type) => this.fetchExchangeOverview(type)))
-    ]);
+    // Run through a small pool rather than `Promise.allSettled` over the lot. A refresh is 23
+    // categories, and firing all 23 at once is a burst that poe.ninja — a free community service
+    // behind Cloudflare, publishing no rate limits and no `X-Rate-Limit-*` headers to react to —
+    // has every reason to treat as abusive. The pool costs the refresh nothing that matters: it
+    // runs on a 10-minute timer and nothing waits on it.
+    //
+    // **One pool over both lists, not one each.** Two pools under a `Promise.all` would each honour
+    // the limit while the refresh ran at twice it — measured at 8 requests in flight for a
+    // configured 4 — which makes the setting quietly mean something other than what it says.
+    const tasks = [
+      ...itemTypes.map((type) => ({ kind: "item" as const, type })),
+      ...exchangeTypes.map((type) => ({ kind: "exchange" as const, type }))
+    ];
+    const settled = await this.inPool(
+      tasks,
+      (task): Promise<ItemPrice[] | ExchangePrice[]> =>
+        task.kind === "item" ? this.fetchItemOverview(task.type) : this.fetchExchangeOverview(task.type)
+    );
+
+    // `inPool` preserves input order, so the two halves split where the item types end. Cast because
+    // the union is only needed to put both fetches in one pool; each half's element type is known.
+    const itemResults = settled.slice(0, itemTypes.length) as PromiseSettledResult<ItemPrice[]>[];
+    const exchangeResults = settled.slice(itemTypes.length) as PromiseSettledResult<ExchangePrice[]>[];
 
     const counts: string[] = [];
 
@@ -316,8 +348,42 @@ export class PoeNinjaClient {
     }
   }
 
+  /**
+   * Runs `work` over `items` at most `maxConcurrentRequests` at a time, settling rather than
+   * rejecting — the shape `Promise.allSettled` gave, which the caller relies on to keep a failed
+   * category's previous prices instead of losing the whole refresh to one bad response.
+   */
+  private async inPool<T, R>(
+    items: readonly T[],
+    work: (item: T) => Promise<R>
+  ): Promise<PromiseSettledResult<R>[]> {
+    const results: PromiseSettledResult<R>[] = [];
+    // Guarded, not trusted. `mergeWithDefaults` supplies this for any real install, but an absent or
+    // hand-mangled value makes `Math.max(1, undefined)` NaN, `slice(0, NaN)` empty and the loop exit
+    // on its first pass — a refresh that fetches nothing, reports nothing and looks like poe.ninja
+    // being down. A wrong number here must cost concurrency, never the whole refresh.
+    const configured = this.settings.poeNinja.maxConcurrentRequests;
+    const limit =
+      Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : DEFAULT_POE_NINJA_CONCURRENCY;
+
+    for (let start = 0; start < items.length; start += limit) {
+      const batch = items.slice(start, start + limit);
+      results.push(...(await Promise.allSettled(batch.map(work))));
+    }
+    return results;
+  }
+
   private async fetchJson(url: URL, label: string): Promise<{ core?: EconomyCore; lines?: unknown[] }> {
-    const response = await this.fetchImpl(url, { headers: { accept: "application/json" } });
+    const response = await this.fetchImpl(url, {
+      headers: {
+        accept: "application/json",
+        // poe.ninja is not GGG and this is not `createPublicGggFetch` — there are no rate-limit
+        // headers here to react to, and no policy requiring this. It is sent for the reason the
+        // policy exists: an anonymous client hammering a free service is the one that gets blocked
+        // by IP, and there is otherwise nothing in the request naming the app or its version.
+        "User-Agent": this.userAgent
+      }
+    });
     if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
     return (await response.json()) as { core?: EconomyCore; lines?: unknown[] };
   }

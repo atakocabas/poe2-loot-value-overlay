@@ -204,8 +204,9 @@ then the floor below, stopping at the first threshold with enough listings to pr
 is a superset of `count >= n+1`, so each step down can only add listings and the last rung is exactly
 the query this used to send on its own.
 
-A rung has to clear `minListingsForMatch` to be taken at face value, because "strictest that matched
-anything" prices an item off whoever happens to have listed something similar. On a real Ruby jewel:
+How far it descends is `minListingsForMatch`, and the default of `1` means **stop at the first rung
+that matched anything** — the most specific comparison available for the item. The tradeoff is real
+and runs both ways. On a real Ruby jewel:
 
 | mods required | listings | median |
 | --- | --- | --- |
@@ -213,19 +214,39 @@ anything" prices an item off whoever happens to have listed something similar. O
 | 3 of 4 | 9 | 1 divine |
 | 2 of 4 | 263 | **25 exalted** |
 
-Sellers of that jewel were asking around 10–30 exalted, so only the deep rung describes the market.
+Sellers of that jewel were asking around 10–30 exalted, so the deep rung is the one describing a
+market — but it describes it for a looser item than the one you picked up. Raise the setting toward
+`10` to prefer the market over the exact match. Either way the row prints the median of the sampled
+listings next to the price: on a thin rung, those two figures being close is the only evidence the
+number means anything.
 
-Every search is **online sellers only** by default, which is the usual reason the app's answer
-disagrees with the trade site. Two real jewels, all of their mods required:
+Every search is **Instant Buyout only** by default, which is the usual reason the app's answer
+disagrees with the trade site. GGG's `status` filter is not an online/offline toggle — it chooses how
+you'd buy the item:
 
-| item | online | including offline |
+| `trade2.listingStatus` | GGG's label | what it means |
+| --- | --- | --- |
+| `"securable"` *(default)* | Instant Buyout | buyable on the spot, no whisper, seller needn't be online |
+| `"available"` | Instant Buyout and In Person | both routes |
+| `"online"` | In Person (Online) | seller is online; whisper them and meet to trade |
+| `"onlineleague"` | In Person (Online in League) | as above, this league's characters only |
+| `"any"` | Any | everything, including sellers who logged off weeks ago |
+
+The default is `"securable"` because it's the only one that matches what the price claims to be: a
+floor you can sell into *today*. An in-person listing needs the seller to answer a whisper, so it
+isn't executable on demand. It's also not the narrower market it sounds like — measured live on a
+Sapphire Ring base, `"online"` returned 5678 listings and `"securable"` 10000+.
+
+Widening costs accuracy in a specific way. Two real jewels, all of their mods required:
+
+| item | online sellers | including offline |
 | --- | --- | --- |
 | Sapphire, 4 mods | 0 | 16 |
 | Emerald, 4 mods | 0 | 5 |
 
 An offline listing is a price nobody can buy at right now, and may be months stale — but on thin
-items it can be the only comparable there is. Set `trade2.listingStatus` to `"any"` to count them;
-the messages then stop saying "online listings", so what you read always matches what was searched.
+items it can be the only comparable there is. Whatever you set, the messages name the listings that
+were actually searched ("no instant-buyout listings…"), so what you read always matches the query.
 The default therefore requires a rung to hold well more listings than the median is sampled over: the
 sample only has to be fillable, but the rung has to describe a market before it is worth sampling at
 all. Every price says which rung produced it — the log line, the row's reprice status, and a
@@ -345,13 +366,16 @@ Configure it under `trade2` in settings:
 | --- | --- | --- |
 | `enabled` | `true` | Set `false` to switch rare pricing off entirely. Rares then stay unpriced until given a manual value. |
 | `contactEmail` | `""` | Sent in the `User-Agent` so GGG can contact whoever is making the requests — that's you, the person running this install, not whoever wrote it. Optional: left blank, the contact clause is omitted rather than sent empty, and rare pricing works either way. Asked for during setup. |
-| `maxSearchesPerWindow` | `10` | Searches allowed per `windowMs`. 10 searches = 20 requests, comfortably inside GGG's 30. |
+| `maxSearchesPerWindow` | `12` | Searches allowed per `windowMs`. A lookup is its ladder rungs plus one fetch, so at worst 12 searches = 24 requests against GGG's 30 per 5 minutes. The remaining sixth is left for other trade tools on the same IP — the limit is per connection, not per app. |
 | `windowMs` | `300000` | The rolling window, matching GGG's 300-second bucket. |
-| `minSearchIntervalMs` | `5000` | Spacing between searches, so a burst of rare drops can't trip the 5-per-10s bucket. |
+| `maxSearchesPerLongWindow` | `240` | A second budget over `longWindowMs`, enforced alongside the short one. GGG's 6-hour bucket is 600 requests with an **hour-long** lockout, and the 5-minute window refills twelve times an hour — so nothing else stops a long session reaching it. |
+| `longWindowMs` | `21600000` | The rolling window for the above, matching GGG's 21600-second bucket. |
+| `minSearchIntervalMs` | `10000` | Spacing between searches, and the only thing shaping a burst against GGG's per-minute bucket: a lookup is one *budgeted* search plus an unbudgeted fetch, so 10 searches are up to 20 requests, and 15 per minute is a 5-minute lockout. Costs nothing in throughput — the window budget is the real ceiling — and a lone drop waits not at all. |
 | `maxListings` | `5` | How many of the **cheapest** results the median is taken over. Raising it widens the slice but keeps it anchored to the cheap end. GGG's fetch endpoint rejects more than 10 ids outright. |
-| `listingStatus` | `"online"` | Whose listings count. `"any"` includes offline sellers — more comparables on thin items, priced against listings that may be stale and unreachable. |
+| `listingStatus` | `"securable"` | Which listings count, via GGG's `status` filter — **not** an online/offline toggle. `"securable"` is Instant Buyout, `"online"` is In Person (Online), `"available"` is both, `"any"` includes sellers who logged off weeks ago. See the table above. |
+| `saleType` | `"buyout"` | Whether a listing has to be buyable on the spot. `"any"` also counts listings with no asking price — which have no number to contribute to a median taken over the cheapest matches. In the tray's **Settings…**. |
 | `maxModLadderSearches` | `3` | Mod thresholds one lookup may try, strictest first. Each rung that misses costs another request. `1` disables the ladder and searches only the floor. |
-| `minListingsForMatch` | `10` | Listings a threshold needs before its price is trusted; under this the ladder keeps loosening. Lower to prefer specificity over sample depth. |
+| `minListingsForMatch` | `1` | Listings a rung needs before the ladder stops there. `1` takes the strictest rung that matched anything, which is the most specific price available. Raise toward `10` to walk past thin rungs to a rung that describes a market, at the cost of pricing a looser item. |
 | `minModMatchRatio` | `0.5` | How far down the ladder may go, as a fraction of the item's mods. Raise toward 1 for stricter comparisons and more unpriced rares; lower for looser matches and prices further below the item's real worth. |
 | `useDefenceFilters` | `true` | Search armour by its total Armour/Evasion/Energy Shield/Ward instead of by the individual mods that produced them — see "Pricing armour" above. `false` restores the old behaviour. |
 | `defenceMinRatio` | `0.9` | The defence floor to search on, as a fraction of the item's own total: 1081 Armour becomes "at least 972". Raise toward 1 for closer comparables and more unpriced items. |

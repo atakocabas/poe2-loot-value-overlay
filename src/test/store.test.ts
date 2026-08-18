@@ -94,6 +94,27 @@ test("session total reflects items added and later edited", async () => {
   assert.equal(sessions.find((s) => s.id === session.id)?.totalChaosValue, 40); // manual override wins, 0 + 40
 });
 
+test("updateItem persists the trade median alongside the price it annotates", async () => {
+  await freshStore();
+
+  const session = await store.startSession("Standard", null);
+  const item = await addItem(session.id);
+
+  // The failure mode this guards is silent: `updateItem`'s patch is a `Pick<>` allowlist, and a key
+  // missing from it is dropped rather than rejected, so the row would just never show the median.
+  await store.updateItem(item.id, {
+    chaosValue: 2,
+    priceSource: "trade2",
+    tradeMedianChaosValue: 10
+  });
+
+  const stored = (await store.getAllItems()).find((i) => i.id === item.id);
+  assert.equal(stored?.tradeMedianChaosValue, 10);
+  // The annotation must not leak into the total — that sums the price, which is the floor.
+  const sessions = await store.getSessions();
+  assert.equal(sessions.find((s) => s.id === session.id)?.totalChaosValue, 2);
+});
+
 test("updateItem returns null for an unknown item id", async () => {
   await freshStore();
   const result = await store.updateItem("does-not-exist", { manualChaosValue: 5 });

@@ -348,6 +348,70 @@ test("a { Implicit Modifier } header classifies the lines beneath it", () => {
   ]);
 });
 
+/** Mixed tiers under one item, which is what the drop ladder actually has to rank. */
+const MIXED_TIER_RING = [
+  "Item Class: Rings",
+  "Rarity: Rare",
+  "Doom Circle",
+  "Sapphire Ring",
+  "--------",
+  "Item Level: 78",
+  "--------",
+  "{ Implicit Modifier }",
+  "+20% to Cold Resistance",
+  "--------",
+  '{ Prefix Modifier "Sanguine" (Tier: 1) — Life }',
+  "+109(100-119) to maximum Life",
+  '{ Suffix Modifier "of the Lost" (Tier: 5) — Elemental, Fire, Resistance }',
+  "+11(9-13)% to Fire Resistance",
+  '{ Suffix Modifier "of the Dank" (Tier: 3) — Elemental, Lightning, Resistance }',
+  "+24(23-27)% to Lightning Resistance"
+].join("\n");
+
+test("the affix tier is read out of the header", () => {
+  const byText = new Map(parseItemText(MIXED_TIER_RING)!.mods.map((mod) => [mod.text, mod.tier]));
+
+  // 1 is the best roll and larger numbers are worse — the order droppableFilters ranks by.
+  assert.equal(byText.get("+109 to maximum Life"), 1);
+  assert.equal(byText.get("+11% to Fire Resistance"), 5);
+  assert.equal(byText.get("+24% to Lightning Resistance"), 3);
+});
+
+test("every line under one header shares that header's tier", () => {
+  // A hybrid affix is one roll printed as two mod lines. They leave a search together, so they must
+  // rank together — reading the tier per line rather than per header would leave the second one
+  // unknown and therefore permanently undroppable.
+  const byText = new Map(
+    parseItemText(ADVANCED_BODY_ARMOUR)!.mods.map((mod) => [mod.text, mod.tier])
+  );
+
+  assert.equal(byText.get("+144 to Evasion Rating"), 1);
+  assert.equal(byText.get("+47 to maximum Energy Shield"), 1);
+});
+
+test("a header with no (Tier: N) leaves the tier null rather than guessing one", () => {
+  // PoE2 prints the tier only under Advanced Item Descriptions, so this is the ordinary case for
+  // most players and must read as "unknown" — which droppableFilters refuses to drop.
+  const item = parseItemText(ADVANCED_GLOVES)!;
+
+  assert.deepEqual([...new Set(item.mods.map((mod) => mod.tier))], [null]);
+});
+
+test("clipboard text with no advanced headers at all carries no tiers", () => {
+  const item = parseItemText(RARE_GAUNTLETS)!;
+
+  assert.ok(item.mods.length > 0);
+  assert.deepEqual([...new Set(item.mods.map((mod) => mod.tier))], [null]);
+});
+
+test("the implicit under a tierless header stays tierless next to tiered affixes", () => {
+  // The header resets per header, not per section: an untiered implicit block above tiered prefixes
+  // must not inherit the tier of a header that comes later.
+  const byText = new Map(parseItemText(MIXED_TIER_RING)!.mods.map((mod) => [mod.text, mod.tier]));
+
+  assert.equal(byText.get("+20% to Cold Resistance"), null);
+});
+
 test("the defence totals are read out of the property block", () => {
   // These lines match PROPERTY_LINE and are skipped by mod parsing, so they used to be discarded
   // entirely. They are what GGG's equipment_filters index, and the game has already folded every
@@ -463,8 +527,11 @@ test("a (rune) line keeps its own kind rather than inheriting the enclosing head
   const rune = item!.mods.filter((mod) => mod.kind === "rune");
 
   // The trailing marker has to win: the stat id for a rune-granted mod lives in GGG's `rune` group,
-  // and 60% of that group's texts don't exist under `explicit` at all.
-  assert.deepEqual(rune, [{ text: "18% increased Armour, Evasion and Energy Shield", kind: "rune" }]);
+  // and 60% of that group's texts don't exist under `explicit` at all. The tier goes with it — a
+  // header that isn't describing this line's kind isn't describing its tier either.
+  assert.deepEqual(rune, [
+    { text: "18% increased Armour, Evasion and Energy Shield", kind: "rune", tier: null }
+  ]);
 });
 
 test("prefixes and suffixes are both plain explicit affixes", () => {

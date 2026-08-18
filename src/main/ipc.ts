@@ -1,5 +1,6 @@
-import { ipcMain } from "electron";
+import { ipcMain, shell } from "electron";
 import { IPC } from "../shared/ipc-channels";
+import { tradeSearchUrl } from "../shared/trade-link";
 import { getSessions, getAllItems, getItem, updateItem, clearHistory } from "../db/store";
 import { toChaos } from "../pricing/currency-convert";
 import type { PoeNinjaClient } from "../pricing/poeninja-client";
@@ -99,7 +100,18 @@ export function registerIpcHandlers({
               pseudoDropped: estimate.pseudoDropped,
               mapDropped: estimate.mapDropped,
               statCoverage: estimate.statCoverage,
-              coverageSample: estimate.coverageSample
+              coverageSample: estimate.coverageSample,
+              // Overwritten wholesale, never merged. The user just repriced with a given set of boxes
+              // ticked, so anything they left unticked is in `ignoredMods` above and is now their
+              // decision rather than the ladder's; carrying the old automatic set forward as well
+              // would let the two accumulate until the search had nothing left to send.
+              autoDroppedMods: estimate.autoDroppedMods,
+              // Inside the conditional on purpose: a reprice that found nothing leaves the displayed
+              // price alone, so the link has to keep pointing at the search that produced it. Only a
+              // new number gets a new query — and, for the same reason, only a new number gets a new
+              // median. The pair on the row must come from one sample or it describes no listing set.
+              tradeSearchId: estimate.searchId,
+              tradeMedianChaosValue: estimate.medianChaosValue ?? undefined
             }
           : {})
       });
@@ -126,6 +138,16 @@ export function registerIpcHandlers({
       };
     }
   );
+
+  ipcMain.handle(IPC.OPEN_TRADE_SEARCH, async (_event, itemId: string) => {
+    const item = await getItem(itemId);
+    // `settings` is the live object `onSettingsSaved` mutates rather than a league captured at
+    // construction, so a league changed since boot is the one the link carries.
+    const url = tradeSearchUrl(settings.league, item?.tradeSearchId);
+    if (!url) return false;
+    await shell.openExternal(url);
+    return true;
+  });
 
   ipcMain.handle(IPC.SET_MANUAL_PRICE, async (_event, itemId: string, value: number | null) => {
     const updated = await updateItem(itemId, { manualChaosValue: value });

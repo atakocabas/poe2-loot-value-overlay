@@ -52,13 +52,20 @@ const DISABLED_TRADE2 = {
   })
 } as unknown as Trade2Client;
 
-function makeTrade2(estimate: { chaosValue: number | null; reason: string | null; listings: number }): Trade2Client {
+function makeTrade2(estimate: {
+  chaosValue: number | null;
+  reason: string | null;
+  listings: number;
+  /** The median of the same sample. Defaults to the price, i.e. a sample with no spread. */
+  medianChaosValue?: number | null;
+}): Trade2Client {
   return {
     isAvailable: true,
     // `matches` only differs from `listings` when the search out-ran the sample; these cases don't,
     // and they all price off a four-mod item whose strictest rung hit.
     estimateRareValue: async () => ({
       ...estimate,
+      medianChaosValue: estimate.medianChaosValue ?? estimate.chaosValue,
       matches: estimate.listings,
       matchedMods: 4,
       totalMods: 4,
@@ -167,16 +174,18 @@ test("a rare is priced from trade2 when poe.ninja and the exchange both miss", a
   const poeNinja = makeClient(["Currency"]);
   await poeNinja.refresh();
 
-  const trade2 = makeTrade2({ chaosValue: 42, reason: null, listings: 7 });
+  const trade2 = makeTrade2({ chaosValue: 42, reason: null, listings: 7, medianChaosValue: 60 });
   const { lines, chaosValue } = await resolveCapturingLog(
     makeResolver(poeNinja, INERT_EXCHANGE, ONE_HOUR, trade2),
     RARE
   );
 
+  // The stored value is the floor. The median is reported beside it rather than instead of it, so
+  // the log says how thin that floor was without changing what was persisted.
   assert.equal(chaosValue, 42);
   assert.match(
     lines.join("\n"),
-    /priced via trade2: 42 chaos \(median of 7 sampled from 7 listings matching all 4 mods\)/
+    /priced via trade2: 42 chaos \(cheapest of 7 sampled from 7 listings, median 60; matching all 4 mods\)/
   );
 });
 

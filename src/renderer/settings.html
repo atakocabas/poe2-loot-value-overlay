@@ -153,6 +153,33 @@
       </select>
     </div>
 
+    <h2>Trade search</h2>
+
+    <div class="field">
+      <label for="sale-type">Count listings that are</label>
+      <div class="hint">
+        Prices come from a median of the <em>cheapest</em> matching listings, so a listing with no
+        asking price has no number to contribute — it can only take a slot a real price would have
+        filled. <strong>Buyable now</strong> is what the trade site does by default. Widening this
+        finds more comparables on thin bases, at the cost of counting listings you can't simply buy.
+      </div>
+      <select id="sale-type">
+        <option value="buyout">Buyable now — buyout or fixed price</option>
+        <option value="any">Any listing, including ones with no listed price</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label>Advanced Item Descriptions</label>
+      <div class="hint">
+        Turn this on in Path of Exile 2 under <strong>Options → UI</strong>. It makes the game print
+        each mod's tier when you copy an item, and the app uses those tiers to decide which mods to
+        leave out when nothing is listed carrying the whole set — so it drops a weak affix rather than
+        the roll that makes the item worth something. Without it pricing still works, just without
+        that preference. This is a game setting, so there's nothing to save here.
+      </div>
+    </div>
+
     <div id="actions">
       <div id="status" class="status"></div>
       <button id="save" type="button">Save</button>

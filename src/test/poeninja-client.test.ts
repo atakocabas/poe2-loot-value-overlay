@@ -297,3 +297,105 @@ test("an item poe.ninja does not list resolves to null", async () => {
 
   assert.equal(client.getChaosValue("Iron Charge", "Iron Greaves"), null);
 });
+
+/**
+ * A refresh is one request per category and poe.ninja publishes no rate limits — so unlike the GGG
+ * hosts there is no header to react to and the only lever is not bursting in the first place. These
+ * two cover that lever: the pool, and saying who is calling.
+ */
+function makeInstrumentedClient(
+  types: string[],
+  poeNinjaOverrides: Record<string, unknown> = {},
+  settingsOverrides: Record<string, unknown> = {}
+): { client: PoeNinjaClient; inFlightPeak: () => number; headers: () => Array<Record<string, string>> } {
+  const settings = {
+    league: "Runes of Aldur",
+    poeNinja: {
+      baseUrl: "https://poe.ninja/poe2/api/economy",
+      refreshIntervalMs: 900000,
+      maxConcurrentRequests: 4,
+      itemOverviewTypes: [],
+      exchangeOverviewTypes: types,
+      ...poeNinjaOverrides
+    },
+    ...settingsOverrides
+  } as unknown as Settings;
+
+  let inFlight = 0;
+  let peak = 0;
+  const headers: Array<Record<string, string>> = [];
+
+  const fetchStub = (async (_input: URL | RequestInfo, init?: RequestInit) => {
+    headers.push((init?.headers ?? {}) as Record<string, string>);
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    // A real turn of the event loop, so overlapping requests actually overlap.
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    inFlight--;
+    return { ok: true, status: 200, json: async () => ({}) } as Response;
+  }) as typeof fetch;
+
+  return { client: new PoeNinjaClient(settings, fetchStub), inFlightPeak: () => peak, headers: () => headers };
+}
+
+test("a refresh never has more requests in flight than the configured pool", async () => {
+  const types = Array.from({ length: 12 }, (_, i) => `Type${i}`);
+  const { client, inFlightPeak } = makeInstrumentedClient(types, { maxConcurrentRequests: 3 });
+
+  await client.refresh();
+
+  assert.equal(inFlightPeak(), 3, "12 categories must not all be fired at a free API at once");
+});
+
+test("the pool spans both category lists rather than allowing one each", async () => {
+  // Measured against the live API before this was one pool: a configured 4 ran 8 requests in
+  // flight, because the item and exchange lists each had their own. The limit has to mean the
+  // refresh, or it doesn't mean anything a user can reason about.
+  const { client, inFlightPeak } = makeInstrumentedClient([], {
+    maxConcurrentRequests: 3,
+    itemOverviewTypes: Array.from({ length: 6 }, (_, i) => `Item${i}`),
+    exchangeOverviewTypes: Array.from({ length: 6 }, (_, i) => `Exchange${i}`)
+  });
+
+  await client.refresh();
+
+  assert.equal(inFlightPeak(), 3);
+});
+
+test("an unusable concurrency value costs concurrency, never the whole refresh", async () => {
+  // `Math.max(1, undefined)` is NaN, `slice(0, NaN)` is empty, and the loop then exits on its first
+  // pass — a refresh that silently fetches nothing and reads as poe.ninja being down.
+  const types = Array.from({ length: 6 }, (_, i) => `Type${i}`);
+  const { client, inFlightPeak, headers } = makeInstrumentedClient(types, {
+    maxConcurrentRequests: undefined
+  });
+
+  await client.refresh();
+
+  assert.equal(headers().length, 6, "every category must still be fetched");
+  assert.ok(inFlightPeak() >= 1);
+});
+
+test("every poe.ninja request names the app, and the contact when one is configured", async () => {
+  const { client, headers } = makeInstrumentedClient(["Currency"], {}, {
+    trade2: { contactEmail: "someone@example.com" }
+  });
+
+  await client.refresh();
+
+  const agent = headers()[0]["User-Agent"];
+  assert.match(agent, /^PoE2LootValueOverlay\/\d/);
+  assert.match(agent, /\(contact: someone@example\.com\)$/);
+});
+
+test("no configured contact leaves the clause off rather than sending an empty one", async () => {
+  // The address is asked for during setup and is legitimately absent until then; `(contact: )`
+  // identifies nobody and is a malformed header into the bargain.
+  const { client, headers } = makeInstrumentedClient(["Currency"], {}, {
+    trade2: { contactEmail: "  " }
+  });
+
+  await client.refresh();
+
+  assert.doesNotMatch(headers()[0]["User-Agent"], /contact/);
+});

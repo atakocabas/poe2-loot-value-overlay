@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { IPC } from "../shared/ipc-channels";
 import { findDuplicateAccelerators, validateAccelerator } from "../shared/accelerator";
+import { appIcon } from "./icon";
 import { probeAccelerator } from "./hotkeys";
 import { loadDefaultSettings, loadSettings, saveSettings } from "./settings";
 import { pipeRendererLogs } from "./window";
@@ -19,12 +20,14 @@ function toConfig(settings: Settings): SettingsConfig {
       hideDelayMs: settings.overlay.hideDelayMs,
       panel: { ...settings.overlay.panel }
     },
-    display: { currency: settings.display.currency }
+    display: { currency: settings.display.currency },
+    trade2: { saleType: settings.trade2.saleType }
   };
 }
 
 /**
- * The settings window: hotkeys, overlay behaviour and the display currency.
+ * The settings window: hotkeys, overlay behaviour, the display currency and the trade search's sale
+ * type — everything that applies the moment it is saved.
  *
  * Framed, opaque, focusable and not always-on-top, exactly like the setup window and for the same
  * reason — it is not the second *overlay* the "one window" non-goal rules out, which is about two
@@ -62,6 +65,9 @@ export function showSettingsWindow(): Promise<void> {
     skipTaskbar: false,
     autoHideMenuBar: true,
     backgroundColor: "#14161c",
+    // The overlay window is frameless and skipTaskbar, so this and the setup window are the only
+    // two places the app's mark can appear while it is running.
+    icon: appIcon(),
     title: "PoE2 Loot Value Overlay — Settings",
     show: false,
     webPreferences: {
@@ -146,7 +152,10 @@ export function registerSettingsIpcHandlers({ onSettingsSaved }: SettingsIpcDeps
           hideDelayMs: config.overlay.hideDelayMs,
           panel: { ...config.overlay.panel }
         },
-        display: { ...settings.display, currency: config.display.currency }
+        display: { ...settings.display, currency: config.display.currency },
+        // Spread first: every other trade2 key is a tuning knob this window doesn't show, and
+        // rebuilding the block from the form would erase them from settings.json.
+        trade2: { ...settings.trade2, saleType: config.trade2.saleType }
       };
       saveSettings(next);
 
@@ -155,7 +164,8 @@ export function registerSettingsIpcHandlers({ onSettingsSaved }: SettingsIpcDeps
           .map(([name, accelerator]) => `${name}=${accelerator || "(none)"}`)
           .join(" ")}, panel=${next.overlay.panel.width}x${next.overlay.panel.maxHeightPercent}% ` +
           `${next.overlay.panel.position}, ` +
-          `currency=${next.display.currency}, hideWhenGameUnfocused=${next.overlay.hideWhenGameUnfocused}`
+          `currency=${next.display.currency}, hideWhenGameUnfocused=${next.overlay.hideWhenGameUnfocused}, ` +
+          `saleType=${next.trade2.saleType}`
       );
       if (refused.length > 0) {
         console.warn(
