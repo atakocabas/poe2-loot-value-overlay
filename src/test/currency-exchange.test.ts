@@ -233,6 +233,30 @@ test("an unmapped item name returns null instead of throwing", () => {
   assert.equal(client.describeLookup(item("Some Unlisted Orb")).metadataId, null);
 });
 
+/**
+ * `getChaosValueForItem` delegates to `getChaosValue`, which exists because the stash read has no
+ * `ParsedItem` to hand — GGG returns stash contents as JSON. The two must never drift apart, or a
+ * currency would price differently depending on which door it came in through.
+ */
+test("the name-only lookup and the parsed-item lookup agree", async () => {
+  const client = new CurrencyExchangeClient(makeSettings(), async (url) => {
+    const hour = Number(url.split("/").pop());
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ next_change_id: hour, markets: [CHAOS_DIVINE] })
+    } as Response;
+  });
+  await client.refresh();
+
+  const viaItem = client.getChaosValueForItem(item("Divine Orb"));
+  assert.equal(typeof viaItem, "number", "the fixture prices divine, so this is a real lookup");
+  assert.equal(client.getChaosValue("Divine Orb"), viaItem);
+  // Case and whitespace are normalised in one place, so both doors inherit it.
+  assert.equal(client.getChaosValue("  divine orb  "), viaItem);
+  assert.equal(client.getChaosValue("Some Unlisted Orb"), null);
+});
+
 test("the three hub currencies are mapped, since every other price is derived through them", () => {
   assert.equal(metadataIdForName("Chaos Orb"), CHAOS_ID);
   assert.equal(metadataIdForName("Divine Orb"), DIVINE_ID);

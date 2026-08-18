@@ -253,7 +253,17 @@ export class CurrencyExchangeClient {
 
   /** Chaos value for a parsed item, or null if it isn't mapped or isn't traded. */
   getChaosValueForItem(item: ParsedItem): number | null {
-    const metadataId = metadataIdForName(item.name);
+    return this.getChaosValue(item.name);
+  }
+
+  /**
+   * Name-only entry point, mirroring `PoeNinjaClient.getChaosValue` and existing for the same reason:
+   * callers that never had a `ParsedItem` to begin with. The stash read is one — GGG returns stash
+   * contents as JSON, so forcing it through `parseItemText` to satisfy a signature that only ever
+   * read `.name` would mean synthesising an item that never existed.
+   */
+  getChaosValue(name: string): number | null {
+    const metadataId = metadataIdForName(name);
     if (metadataId === null) return null;
     return this.index.entries.get(metadataId)?.chaosValue ?? null;
   }
