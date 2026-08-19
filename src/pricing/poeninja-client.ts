@@ -143,6 +143,8 @@ export class PoeNinjaClient {
   private rates: CurrencyRates | null = null;
   private lastRefreshAt: number | null = null;
   private refreshListeners: Array<() => void> = [];
+  /** The pull in progress, if any — see `refresh()` for why callers share one rather than each starting one. */
+  private inFlight: Promise<void> | null = null;
 
   /** null until poe.ninja first answers; consumers must show the raw chaos figure until then. */
   getRates(): CurrencyRates | null {
@@ -178,7 +180,29 @@ export class PoeNinjaClient {
     this.refreshTimer = null;
   }
 
-  async refresh(): Promise<void> {
+  /**
+   * Pulls every configured category, or joins the pull already running.
+   *
+   * **The guard is not tidiness.** A refresh is 23 requests deliberately spaced through a 4-wide
+   * pool, because firing them together at a free community service behind Cloudflare is the pattern
+   * that gets an IP blocked. Each concurrent call would open its **own** pool, so two overlapping
+   * refreshes run at twice the configured concurrency — exactly the failure the "one pool over both
+   * lists, not one each" note below guards against, arriving by another route.
+   *
+   * It only became reachable when the panel grew a Refresh button: a press can land on top of the
+   * 10-minute timer's tick, or on top of a previous press. Handing every caller the same promise
+   * also gives that button its "already refreshing" behaviour without a second piece of state.
+   */
+  refresh(): Promise<void> {
+    if (!this.inFlight) {
+      this.inFlight = this.runRefresh().finally(() => {
+        this.inFlight = null;
+      });
+    }
+    return this.inFlight;
+  }
+
+  private async runRefresh(): Promise<void> {
     const itemTypes = this.settings.poeNinja.itemOverviewTypes;
     const exchangeTypes = this.settings.poeNinja.exchangeOverviewTypes;
 

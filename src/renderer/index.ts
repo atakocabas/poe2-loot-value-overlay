@@ -15,12 +15,14 @@ const sessionTotalLineEl = document.getElementById("session-total-line")!;
 const sessionStatusEl = document.getElementById("session-status")!;
 const priceStatusEl = document.getElementById("price-status")!;
 const rateStatusEl = document.getElementById("rate-status")!;
+const updateStatusEl = document.getElementById("update-status") as HTMLButtonElement;
 const itemListEl = document.getElementById("item-list")!;
 const pendingListEl = document.getElementById("pending-list")!;
 const listEmptyEl = document.getElementById("list-empty")!;
 const searchEl = document.getElementById("list-search") as HTMLInputElement;
 const sortEl = document.getElementById("list-sort") as HTMLSelectElement;
 const unpricedEl = document.getElementById("list-unpriced") as HTMLInputElement;
+const refreshButton = document.getElementById("refresh-prices") as HTMLButtonElement;
 const exportButton = document.getElementById("export-csv") as HTMLButtonElement;
 const clearButton = document.getElementById("clear-history") as HTMLButtonElement;
 
@@ -30,6 +32,9 @@ let allItems: PricedItem[] = [];
 let latestSession: Session | null = null;
 let lastZoneIsHideout = false;
 let pricesFetchedAt: number | null = null;
+/** A GitHub release newer than the running build, pushed on OVERLAY_STATUS. Null means neither
+ * the check has answered nor there is anything to say — the line is hidden either way. */
+let availableUpdate: OverlayStatus["update"] = null;
 
 /** Client-side view state over `allItems`, read off the static controls in index.html. */
 let searchText = "";
@@ -120,6 +125,24 @@ function renderRateStatus(): void {
   rateStatusEl.textContent = line ?? "";
   rateStatusEl.classList.toggle("hidden", line === null);
 }
+
+/**
+ * A newer release, or nothing. Hidden in both the "no update" and the "haven't checked yet" cases —
+ * they look identical from here, and neither has anything to say.
+ *
+ * The URL never reaches this page: `openReleasesPage()` takes no argument, and the main process
+ * opens the link it already holds.
+ */
+function renderUpdateStatus(): void {
+  updateStatusEl.textContent = availableUpdate
+    ? `Update available: v${availableUpdate.version} — get it`
+    : "";
+  updateStatusEl.classList.toggle("hidden", availableUpdate === null);
+}
+
+updateStatusEl.addEventListener("click", () => {
+  void window.poe2Overlay.openReleasesPage();
+});
 
 /**
  * How long the total survives a map ending before it's taken down.
@@ -220,6 +243,7 @@ function applyStatus(status: OverlayStatus): void {
   rates = status.rates;
   displayCurrency = status.displayCurrency;
   pricesFetchedAt = status.pricesFetchedAt;
+  availableUpdate = status.update;
   panel.classList.toggle("interactive", status.interactive);
   setMinimalMode(!status.expanded);
   panel.style.width = `${status.panel.width}px`;
@@ -229,6 +253,7 @@ function applyStatus(status: OverlayStatus): void {
   panel.classList.toggle("left", status.panel.position === "left");
   renderPriceStatus();
   renderRateStatus();
+  renderUpdateStatus();
   renderSessionTotal();
   // Every value on screen was formatted with the old rates.
   scheduleRender();
@@ -439,8 +464,20 @@ function renderItemRow({ item, count, total }: ItemGroup): HTMLElement {
   top.className = "item-row-top";
 
   const value = document.createElement("span");
+  // A rate-limited item is unpriced *and* recoverable, so it says so where the number would go. The
+  // badge beside it says the same thing; this is the half that is visible in the minimal panel, where
+  // a row reading "unpriced" mid-map is the difference between binning a rare and repricing it.
+  const rateLimited = total === null && item.unpricedReason === "rateLimited";
   value.className = total === null ? "item-value unpriced" : "item-value";
-  value.textContent = total === null ? "unpriced" : formatValue(total);
+  if (rateLimited) value.classList.add("rate-limited");
+  // The cheapest listing's own currency when there is one, so a row priced off a seller asking
+  // 2 chaos reads "2c" rather than the same value restated as 66ex. See `rowQuote`.
+  value.textContent =
+    total === null
+      ? rateLimited
+        ? "rate limited"
+        : "unpriced"
+      : formatValue(total, rowQuote(item, count));
 
   // Offered for every item, not just unpriced ones: a price that resolved to the wrong unique
   // variant or a stale poe.ninja figure needs correcting just as much as a missing one does.
@@ -543,6 +580,25 @@ const isModUnticked = (rows: ModRow[], text: string): boolean =>
  * The floor is a **placeholder**, not a value: it shows what the search will use while still reading
  * as "not set by hand", which is what lets an untouched row be left out of the request entirely.
  */
+/**
+ * The affix tiers behind a derived row, as `T1 T3` badges appended to its tag line.
+ *
+ * Shared with `renderModRow`'s single badge rather than duplicated: the class, the wording and the
+ * "1 is the best" explanation all have to read identically, since the two badges sit inches apart on
+ * the same list and mean exactly the same thing. Tiers the game didn't print are skipped — an item
+ * captured without Advanced Item Descriptions has none at all, which is the ordinary case.
+ */
+function appendTierBadges(tags: HTMLElement, tiers: Array<number | null | undefined>): void {
+  for (const tier of tiers) {
+    if (typeof tier !== "number") continue;
+    const badge = document.createElement("span");
+    badge.className = "badge badge-tier";
+    badge.textContent = `T${tier}`;
+    badge.title = `One of the affixes summed into this total is tier ${tier} — 1 is the best possible roll.`;
+    tags.append(badge);
+  }
+}
+
 function renderDerivedRow(options: {
   id: string;
   label: string;
@@ -553,6 +609,8 @@ function renderDerivedRow(options: {
   includeTitle: string;
   stored: ModFilter | undefined;
   rowClass: string;
+  /** The contributing affixes' tiers, in contributor order. Omitted on rows that have no affixes. */
+  tiers?: Array<number | null | undefined>;
 }): ModRow {
   const el = document.createElement("li");
   el.className = options.rowClass;
@@ -580,6 +638,10 @@ function renderDerivedRow(options: {
   const tags = document.createElement("div");
   tags.className = "mod-tags";
   tags.append(badge);
+  // One tier badge per contributing affix, in the same class and wording a mod row uses, so an 83%
+  // total reads as "one T1 and two fillers" rather than as a bare number. `syncFolding` rebuilds
+  // these from the ticked contributors, for the same reason it rewrites the total.
+  appendTierBadges(tags, options.tiers ?? []);
   body.append(text, tags);
 
   const bounds = document.createElement("div");
@@ -609,32 +671,56 @@ function renderPseudoRow(item: PricedItem, stat: PseudoStat, minRatio: number): 
     badgeTitle: `Summed from ${stat.contributors.length} mods, which are searched as this total instead of individually.`,
     includeTitle: "Untick to search these mods individually instead of as a total.",
     stored: item.pseudoFilters?.find((filter) => filter.text === stat.id),
-    rowClass: "mod-pseudo"
+    rowClass: "mod-pseudo",
+    tiers: stat.contributors.map((contributor) => contributor.tier)
   });
-  row.include.checked = !item.ignoredMods.includes(stat.id);
+  // Same rule as a mod row. An aggregate the search had to drop to find any market did not constrain
+  // the price, so it opens unticked. Gated on a search record existing, or an item that never ran one
+  // would untick on the strength of a `pseudoDropped` no search ever set.
+  row.include.checked =
+    !item.ignoredMods.includes(stat.id) &&
+    !(item.searchedMods !== undefined && item.pseudoDropped === true);
   return row;
 }
 
 /**
- * One of a waystone's printed reward totals — what it is actually traded on.
+ * One of a waystone's printed totals — what it is actually traded on.
  *
  * No checkbox behaviour to speak of: unlike an aggregate there is nothing to fall back to, since the
  * affixes that produced this number are never searched. It stays ticked and disabled.
  */
 function renderMapRow(item: PricedItem, mapRow: MapRow, minRatio: number): ModRow {
+  const ceiling = mapRow.direction === "max";
   const row = renderDerivedRow({
     id: mapRow.id,
     label: mapRow.label,
     total: mapRow.value,
     minRatio,
-    badge: "reward",
-    badgeTitle:
-      "A total the game prints on the waystone, produced by its affixes between them. This is what " +
-      "GGG indexes and what buyers choose on.",
-    includeTitle: "A waystone is always searched on its reward totals.",
+    // Difficulty is not a reward, and badging it as one is the misreading this row exists to correct.
+    badge: ceiling ? "difficulty" : "reward",
+    badgeTitle: ceiling
+      ? "How much harder this waystone's monsters are. A cost to the buyer, not a benefit, so it's " +
+        "searched as a ceiling — the comparables are the waystones at most this dangerous."
+      : "A total the game prints on the waystone, produced by its affixes between them. This is what " +
+        "GGG indexes and what buyers choose on.",
+    includeTitle: "A waystone is always searched on its printed totals.",
     stored: item.mapFilters?.find((filter) => filter.text === mapRow.id),
     rowClass: "mod-pseudo"
   });
+  // `renderDerivedRow` places the computed placeholder on the min box, which is right for every row
+  // that widens downward. A ceiling widens the other way, so the hint belongs on the other box — left
+  // on the min it would read as a floor the search never sends.
+  // Both boxes are always present on a derived row — the null case on `ModRow` is a mod line with no
+  // number in it, which this never is — but the type covers both, so it's tested rather than asserted.
+  if (ceiling && row.min && row.max) {
+    row.min.placeholder = "";
+    row.max.placeholder = String(Math.ceil(mapRow.value / minRatio));
+  }
+  // Informational only, unlike every other row: map rows are left out of the `ignoredMods` readback
+  // and `buildMapFilters` rebuilds these floors from the waystone itself on every search, so an
+  // unticked one cannot strand the item. It says the reward floors matched nothing and the price fell
+  // back to base type alone — which for a waystone is every other waystone of this tier.
+  row.include.checked = !(item.searchedMods !== undefined && item.mapDropped === true);
   row.include.disabled = true;
   return row;
 }
@@ -643,13 +729,14 @@ function renderMapRow(item: PricedItem, mapRow: MapRow, minRatio: number): ModRo
  * How many of the priced listings carried this mod, as a `9/10` chip — or null when the item has no
  * coverage recorded (never trade2-priced, or priced before this existed).
  *
- * Deliberately not a tick. A count rung asks for "at least N of M", so different listings satisfy
- * different subsets and there is no set of mods that "was used"; a tick would assert one exists.
- * What the number does answer is the question behind that — which of these mods the comparables
- * actually share, and therefore which ones are worth unticking.
+ * Deliberately not a tick, and the reason is the query shape: every rung is an `and`, so a listing it
+ * returned carries all of the mods it demanded and their chips read `10/10` by construction. The chip
+ * is worth reading on the rows the query did **not** demand — a mod the ladder dropped, or one GGG
+ * indexes no template for — where it says how many of the listings this price came from carry it
+ * anyway, and therefore whether losing it cost anything.
  *
- * The tier ladder's drop rungs *do* name a set, but they name it by what they removed, which is what
- * `autoDroppedMods` and the checkbox state carry. This stays the measurement of what remained.
+ * What was *asked for* is a set, and it is named by `searchedMods` and `autoDroppedMods`, which is
+ * what the checkbox state carries. This stays the measurement alongside it.
  */
 function coverageBadge(item: PricedItem, text: string): HTMLElement | null {
   const sample = item.coverageSample ?? 0;
@@ -663,12 +750,19 @@ function coverageBadge(item: PricedItem, text: string): HTMLElement | null {
   if (entry.listings === 0) badge.classList.add("badge-partial");
   badge.title =
     `${entry.listings} of the ${sample} listings this price was taken from carry this mod.\n\n` +
-    "The search asked for a number of mods, not these specific ones, so listings differ in which " +
-    "they carry. A low count means the price barely rests on this mod.";
+    "Every mod the search demanded is on all of them, so this is worth reading on the rows it " +
+    "did not: a dropped mod most listings carry anyway cost the price little.";
   return badge;
 }
 
-function renderModRow(item: PricedItem, mod: ParsedMod, notSearched = false): ModRow {
+function renderModRow(
+  item: PricedItem,
+  mod: ParsedMod,
+  /** What the search will floor this mod at, from `searchFloorsByMod`. Absent on an item with no
+   *  printed roll bracket, where the floor is the roll and this falls back to it. */
+  searchMin: number | undefined,
+  notSearched = false
+): ModRow {
   const el = document.createElement("li");
   // On a waystone the affixes aren't a filter the user can switch on — the search is the reward
   // block or nothing. A live checkbox here would promise something the request never sends.
@@ -684,9 +778,25 @@ function renderModRow(item: PricedItem, mod: ParsedMod, notSearched = false): Mo
   const autoDropped = (item.autoDroppedMods ?? []).includes(mod.text);
   if (autoDropped) el.classList.add("mod-auto-dropped");
 
+  // What the last successful search actually asked for. Absent on an item that never ran one — priced
+  // by poe.ninja or the exchange, or captured before this was recorded — and absence has to read as
+  // "no record", not "nothing was searched", or every such row would open unticked.
+  const searched = item.searchedMods;
+  const ignored = item.ignoredMods.includes(mod.text);
+  // In the record, but neither the user's exclusion nor the ladder's drop: this mod reached no filter
+  // group at all. Two ways that happens — GGG's stat reference has no template matching its text, or
+  // it was folded into an aggregate the search then had to drop — and the row can't tell which, so
+  // the wording below names both rather than picking one.
+  const unsearched =
+    searched !== undefined && !searched.includes(mod.text) && !ignored && !autoDropped;
+
   const include = document.createElement("input");
   include.type = "checkbox";
-  include.checked = !item.ignoredMods.includes(mod.text) && !autoDropped;
+  // The `&& !ignored` arm is not redundant against `searched`. `ignoredMods` persists on *every*
+  // reprice while `searchedMods` persists only on one that found a price, so after a failed reprice
+  // the record describes a search older than the user's last decision — and without this a mod they
+  // had just unticked would tick itself again and silently undo the exclusion.
+  include.checked = searched ? searched.includes(mod.text) && !ignored : !ignored && !autoDropped;
   include.disabled = notSearched;
   if (notSearched) {
     include.title =
@@ -698,6 +808,11 @@ function renderModRow(item: PricedItem, mod: ParsedMod, notSearched = false): Mo
       "Dropped automatically: nothing was listed carrying this item's full mod set, so the search " +
       "shed its lowest-tier mods until it found a market. The ticked mods are the ones this price " +
       "actually came from. Re-tick it and press Reprice to demand it again.";
+  } else if (unsearched) {
+    include.title =
+      "Not part of the search this price came from. Either GGG's trade stat reference has no filter " +
+      "matching this line, or it was folded into an aggregate above that the search then dropped. " +
+      "Re-tick it and press Reprice to try asking for it.";
   }
 
   const body = document.createElement("div");
@@ -743,6 +858,18 @@ function renderModRow(item: PricedItem, mod: ParsedMod, notSearched = false): Mo
       "carrying the item's full mod set.";
     tags.append(dropped);
   }
+  // Skipped on a waystone, whose affixes already carry `.mod-unsearchable` and their own explanation
+  // — every one of them would take this badge, saying the same thing four times over.
+  if (unsearched && !notSearched) {
+    const missing = document.createElement("span");
+    missing.className = "badge badge-partial";
+    missing.textContent = "not searched";
+    missing.title =
+      "This mod was not one of the filters the winning query sent, so the price does not rest on it " +
+      "at all. Either GGG indexes nothing matching its text, or it fed an aggregate the search had " +
+      "to drop.";
+    tags.append(missing);
+  }
   const coverage = coverageBadge(item, mod.text);
   if (coverage) tags.append(coverage);
 
@@ -757,7 +884,10 @@ function renderModRow(item: PricedItem, mod: ParsedMod, notSearched = false): Mo
     const bounds = document.createElement("div");
     bounds.className = "mod-bounds";
 
-    row.min = boundInput("min", stored ? stored.min : Number(split.roll));
+    // The floor the query will use, not the roll the item has — those are now different numbers,
+    // and showing the roll would both misreport the search and, on the next Reprice, send the roll
+    // back as a bound and undo the floor.
+    row.min = boundInput("min", stored ? stored.min : (searchMin ?? Number(split.roll)));
     row.max = boundInput("MAX", stored ? stored.max : null);
     bounds.append(row.min, row.max);
     el.append(include, body, bounds);
@@ -793,6 +923,9 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
   container.className = "item-edit";
 
   const { pseudoStats, pseudoMinRatio, mapRows, mapMinRatio } = rows;
+  // Computed in the main process from each mod's printed roll bracket — see `searchFloor`. Empty for
+  // an item stored before the brackets were parsed, where every row falls back to its own roll.
+  const floorByMod = new Map((rows.modFloors ?? []).map((floor) => [floor.text, floor.min]));
   const allMods = itemMods(item);
   const modRows: ModRow[] = [];
   const pseudoRows: ModRow[] = [];
@@ -820,7 +953,7 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
     }
 
     for (const mod of allMods) {
-      const row = renderModRow(item, mod, rewardsOnly);
+      const row = renderModRow(item, mod, floorByMod.get(mod.text), rewardsOnly);
       modRows.push(row);
       modList.append(row.el);
     }
@@ -836,8 +969,10 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
         const live = stat.contributors.filter(
           (contributor) => !isModUnticked(modRows, contributor.text)
         );
-        // Mirrors derivePseudoStats: below two contributors there is nothing left to aggregate.
-        const active = row.include.checked && live.length >= 2;
+        // Mirrors derivePseudoStats, through the number it sends rather than a copy of its rule:
+        // most aggregates stop being derived below two contributors, a single-element resistance
+        // total holds at one.
+        const active = row.include.checked && live.length >= stat.minContributors;
         row.el.classList.toggle("mod-inactive", !active);
 
         // Both the headline and the floor track the ticked contributors. Leaving the headline at the
@@ -847,6 +982,13 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
         const roll = row.el.querySelector(".mod-roll");
         if (roll) roll.textContent = String(total);
         if (row.min) row.min.placeholder = String(Math.floor(total * pseudoMinRatio));
+        // And the tiers with them: they name the affixes behind that number, so leaving a badge up
+        // for a contributor the user just unticked would credit the total to a roll it no longer has.
+        const tags = row.el.querySelector(".mod-tags");
+        if (tags) {
+          for (const badge of Array.from(tags.querySelectorAll(".badge-tier"))) badge.remove();
+          appendTierBadges(tags as HTMLElement, live.map((contributor) => contributor.tier));
+        }
         if (!active) continue;
         for (const contributor of stat.contributors) {
           const modRow = modRows.find((candidate) => candidate.text === contributor.text);
@@ -877,8 +1019,9 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
     viewButton.type = "button";
     viewButton.textContent = "View search";
     viewButton.title =
-      "Opens the trade search this price was taken from. GGG expires searches, so an older one may " +
-      "no longer be there.";
+      "Opens the trade search this price was taken from, with the mods it used ticked and the ones " +
+      "it dropped shown unticked beside them. Mods GGG indexes no filter for can't appear at all. " +
+      "GGG expires searches, so an older one may no longer be there.";
     const syncTradeLink = (searchId: string | undefined) => {
       viewButton.hidden = !searchId;
     };
@@ -898,7 +1041,10 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
       // Unticked aggregates ride in the same list as unticked mods — a pseudo id is not a mod line,
       // so the main process can tell them apart without a second field.
       const ignoredMods = [...modRows, ...pseudoRows]
-        .filter((row) => !row.include.checked)
+        // A disabled box is not a decision the user made. A waystone's affixes are disabled *and* now
+        // open unticked, since none of them is ever searched, so without this the first Reprice would
+        // convert every one of them into a permanent user exclusion.
+        .filter((row) => !row.include.checked && !row.include.disabled)
         .map((row) => row.text);
       const boundsOf = (rows: ModRow[], skipUntouched: boolean): ModFilter[] =>
         rows
@@ -928,6 +1074,10 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
         // The main process words this: a spent rate-limit budget, no listings for these mods, and
         // an HTTP error each call for something different from the user.
         status.textContent = result.reason ?? "No matching listings found.";
+        // Flagged rather than left plain, for the same reason the row is: pressing Reprice into a
+        // spent budget means no search went out at all, so the message is about when to try again
+        // rather than about the item. The row's badge has already changed to match.
+        status.classList.toggle("reprice-warning", result.rateLimited);
         return;
       }
 
@@ -944,7 +1094,8 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
           : result.totalMods === 0
             ? "base type only."
             : relaxed
-              ? `matching only ${result.matchedMods} of ${result.totalMods} mods — a ballpark.`
+              ? `dropping ${result.totalMods - result.matchedMods} mod(s) to find a market, ` +
+                `matching all ${result.matchedMods} of the rest.`
               : `matching all ${result.totalMods} mods.`) +
         // Nothing in the mod counts hints at this, and it changes what the number means: the
         // comparables include weak and strong rolls of this base alike.
@@ -1110,6 +1261,48 @@ function wireClearButton(): void {
 }
 
 wireClearButton();
+
+/**
+ * Forces the poe.ninja pull that otherwise waits out `poeNinja.refreshIntervalMs`.
+ *
+ * Every state it reports goes **in the button's own label**, the same choice `wireClearButton` makes
+ * and for the same reason: this window is frameless and non-focusable outside interactive mode, so a
+ * native dialog can end up behind the game.
+ *
+ * Success needs no message of its own — the main process broadcasts `OVERLAY_STATUS` off the same
+ * refresh, so the header's age line reads "Prices: just updated" by the time this resolves. Failure
+ * does, because nothing else on screen changes: the prices are as stale as they were, which is
+ * indistinguishable from a button that did nothing.
+ */
+function wireRefreshButton(): void {
+  let restoreTimer: ReturnType<typeof setTimeout> | null = null;
+
+  refreshButton.addEventListener("click", async () => {
+    if (restoreTimer) clearTimeout(restoreTimer);
+    // Disabled for the duration rather than left clickable: `PoeNinjaClient.refresh` would hand a
+    // second press the same promise anyway, so the press would do nothing while looking like it had.
+    refreshButton.disabled = true;
+    refreshButton.textContent = "Refreshing…";
+
+    let updated = false;
+    try {
+      ({ updated } = await window.poe2Overlay.refreshPrices());
+    } catch {
+      updated = false;
+    }
+
+    refreshButton.disabled = false;
+    refreshButton.textContent = updated ? "Refresh prices" : "poe.ninja unreachable";
+    if (!updated) {
+      restoreTimer = setTimeout(() => {
+        refreshButton.textContent = "Refresh prices";
+        restoreTimer = null;
+      }, 4000);
+    }
+  });
+}
+
+wireRefreshButton();
 
 /**
  * Sessions come back newest-first, so the first is the map in progress (or the one that just

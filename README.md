@@ -20,6 +20,19 @@ Neither is code-signed, so Windows SmartScreen will warn the first time you run 
 *Run anyway*. If you'd rather not trust a binary, `npm run package` (see [Development](#development))
 builds exactly these two files from this source.
 
+### Updates
+
+The app asks GitHub for the latest release when it starts and every six hours after that. If one is
+newer than what you're running, it says so in two places: an **Update available: vX.Y.Z** entry at
+the top of the tray menu, and a line in the panel header once you've opened the full list. Either one
+opens that release's page.
+
+**It never downloads or installs anything.** Updating means fetching the new exe from that page
+yourself, exactly as you did the first time — which is also why the portable download is no worse off
+than the installed one here. Set `updates.checkForUpdates` to `false` in
+`%APPDATA%/poe2-loot-value-overlay/settings.json` to switch the check off entirely; there is no
+setting for it in the settings window.
+
 ## First run
 
 The app asks for three things once, in a small setup window, because none of them can ship as a
@@ -118,7 +131,10 @@ entirely. If Windows or another app already owns a combination the app says so a
 so it starts working once whatever holds it is closed.
 
 The same window holds the panel size, the display currency, and whether the overlay hides when the
-game isn't focused. The league, Client.txt path and contact email live under **Setup…** instead —
+game isn't focused. On **Automatic**, an item priced off the trade site is shown in the currency its
+cheapest listing was asking — a row taken from a seller asking 2 chaos reads `2c`, the way the market
+reads — while everything else picks divine, chaos or exalted by size. Values are stored in chaos
+throughout, so this only changes what you read. The league, Client.txt path and contact email live under **Setup…** instead —
 those are read once at startup by the pricing clients, so changing them restarts the app.
 
 ## Map sessions and unpriced rares
@@ -129,9 +145,22 @@ is *not* scoped to a map: entering a new one resets the total and leaves everyth
 in place, below the new drops.
 
 poe.ninja publishes no rare prices at all (too mod-dependent), so rares are priced against GGG's
-trade API instead (see below). When that comes back empty — or the search budget is spent — the
+trade API instead (see below). **White base items go there too**, but only at item level 81 and
+above — they are searched on item level alone, which is the whole of what a base is worth, and the
+floor keeps the constant stream of low-level white drops from spending the rate-limit budget your
+rares need. Both halves are settings (`trade2.useBaseItemSearch`, `trade2.baseItemMinLevel`).
+Magic items are never searched: the game glues their affixes onto the base on one line, leaving no
+base type to search with. When that comes back empty — or the search budget is spent — the
 row's **Edit** control lets you type a value in yourself, or uncheck specific mod lines to loosen
 the search and hit "Reprice via trade". That ignore-list is remembered on the item either way.
+
+The mod list opens with **the mods the search actually used already ticked** — not everything. A row
+left unticked is one the query never asked for, and it says which kind it is: `dropped` for a
+low-tier affix the search shed to find a market at all, and `not searched` for one it could not ask
+for, either because GGG indexes nothing matching that line or because it fed an aggregate the search
+then had to drop. Re-tick anything you want demanded and press Reprice. Items priced before this
+existed, and anything priced by poe.ninja rather than trade search, still open with every mod ticked
+— there is no record of a search to show.
 
 ## Fallback pricing via GGG's Currency Exchange
 
@@ -237,6 +266,12 @@ floor you can sell into *today*. An in-person listing needs the seller to answer
 isn't executable on demand. It's also not the narrower market it sounds like — measured live on a
 Sapphire Ring base, `"online"` returned 5678 listings and `"securable"` 10000+.
 
+Pick one from the tray's **Settings…**, under *Trade search*. It applies to the next lookup — no
+restart. If you installed before this default changed, the first launch after upgrading moves you
+from `"online"` to `"securable"` once and then leaves the setting alone, so a choice you make in that
+dropdown sticks. Note that **View search** on a row reopens the query that produced *that* price, so
+a row priced before the change still opens an in-person search until you reprice it.
+
 Widening costs accuracy in a specific way. Two real jewels, all of their mods required:
 
 | item | online sellers | including offline |
@@ -252,23 +287,38 @@ sample only has to be fillable, but the rung has to describe a market before it 
 all. Every price says which rung produced it — the log line, the row's reprice status, and a
 `trade 2/4` badge on the item row when it had to relax.
 
-#### Why requiring *all* of them can't be the only setting
+#### How a search is relaxed: mods are dropped, never half-matched
 
-Searching for every mod at once — GGG's `stats` type `"and"` — is the obvious reading of "price this
-item", and on its own it finds nothing. Measured against the live API for one Sapphire Ring base:
+Searching for every mod at once is the obvious reading of "price this item", and on its own it finds
+nothing. Measured against the live API for one Sapphire Ring base:
 
 | query | listings |
 | --- | --- |
 | base type only | 7673 |
 | 2 mods, all required | 14 |
 | 5 mods, all required | **0** |
-| 5 mods, 3 required | 44 |
 
-An ordinary rare has four to six explicit mods, so an all-mods search alone leaves essentially every
-rare unpriced. Searches therefore use `count` with a minimum, and `minModMatchRatio` sets how far
-down the ladder may go (floor of 2, so one- and two-mod items keep every filter). A real four-mod
-Diamond jewel matched 84 listings on any *one* of its mods and **zero** on any two, so no threshold
-would have priced it — that is the market, not a search bug.
+So a search that misses has to be loosened somehow. There are two ways, and this app deliberately
+uses only one of them.
+
+The tempting one is to keep every mod and ask for "at least 4 of these 5". It finds listings — but a
+listing matching 4 of 5 may be missing the single roll that makes your item valuable, and *which* 4
+differs from listing to listing, so nothing can tell you what the price was actually based on. It
+prices an item that isn't yours and can't say which. **That option was removed.**
+
+What happens instead is that the search **drops** a mod outright and still demands all the rest, one
+mod per attempt — the weakest first, which is how you'd narrow a search by hand. The surviving set is
+known exactly, so the row can tell you: the mods that were dropped show up unticked and badged in
+**Edit**, and the ones the price rests on stay ticked. `minModMatchRatio` sets how far this can go —
+at the default, a five-mod rare never searches on fewer than three of its mods.
+
+The cost is honest: a rare whose remaining mods nobody has listed together stays unpriced rather than
+being given an approximate number. A real four-mod Diamond jewel matched 84 listings on any *one* of
+its mods and **zero** on any two — that is the market, not a search bug.
+
+Press **View search** on a row to open the exact query on the trade site. The mods it used are
+ticked, and the ones it dropped are shown beside them unticked, so the whole picture is visible.
+(Mods GGG indexes no filter for can't appear at all — those are the rows marked `not searched`.)
 
 ### Pricing armour
 
@@ -372,11 +422,12 @@ Configure it under `trade2` in settings:
 | `longWindowMs` | `21600000` | The rolling window for the above, matching GGG's 21600-second bucket. |
 | `minSearchIntervalMs` | `10000` | Spacing between searches, and the only thing shaping a burst against GGG's per-minute bucket: a lookup is one *budgeted* search plus an unbudgeted fetch, so 10 searches are up to 20 requests, and 15 per minute is a 5-minute lockout. Costs nothing in throughput — the window budget is the real ceiling — and a lone drop waits not at all. |
 | `maxListings` | `5` | How many of the **cheapest** results the median is taken over. Raising it widens the slice but keeps it anchored to the cheap end. GGG's fetch endpoint rejects more than 10 ids outright. |
-| `listingStatus` | `"securable"` | Which listings count, via GGG's `status` filter — **not** an online/offline toggle. `"securable"` is Instant Buyout, `"online"` is In Person (Online), `"available"` is both, `"any"` includes sellers who logged off weeks ago. See the table above. |
+| `listingStatus` | `"securable"` | Which listings count, via GGG's `status` filter — **not** an online/offline toggle. `"securable"` is Instant Buyout, `"online"` is In Person (Online), `"available"` is both, `"any"` includes sellers who logged off weeks ago. See the table above. In the tray's **Settings…**. |
+| `listingStatusMigrated` | `false` | A migration marker, not a preference. An install that predates the `"securable"` default is moved off `"online"` once and this is stamped, so a deliberate `"online"` chosen in **Settings…** is never overridden. Nothing to set by hand. |
 | `saleType` | `"buyout"` | Whether a listing has to be buyable on the spot. `"any"` also counts listings with no asking price — which have no number to contribute to a median taken over the cheapest matches. In the tray's **Settings…**. |
-| `maxModLadderSearches` | `3` | Mod thresholds one lookup may try, strictest first. Each rung that misses costs another request. `1` disables the ladder and searches only the floor. |
+| `minListingPrice` | `1` | The cheapest listing worth counting. PoE2's cheap end is a wall of dump listings and the price is sampled from that end, so without this a rare routinely reports a fraction of a chaos. Sent to GGG, so it filters the search rather than the sample. An item with nothing at or above it is left unpriced rather than given a junk number. `0` switches it off. The unit is GGG's own cross-currency value, roughly one exalted, and deliberately carries no currency name — naming one asks for listings *quoted* in it and hides every other. |
 | `minListingsForMatch` | `1` | Listings a rung needs before the ladder stops there. `1` takes the strictest rung that matched anything, which is the most specific price available. Raise toward `10` to walk past thin rungs to a rung that describes a market, at the cost of pricing a looser item. |
-| `minModMatchRatio` | `0.5` | How far down the ladder may go, as a fraction of the item's mods. Raise toward 1 for stricter comparisons and more unpriced rares; lower for looser matches and prices further below the item's real worth. |
+| `minModMatchRatio` | `0.5` | The fraction of an item's mods that must stay in the query — the floor the drop ladder can't shed past. At `0.5` a five-mod rare never searches on fewer than three. Raise toward 1 for prices that describe your exact item and more unpriced rares; lower to price more items off less of what makes them good. |
 | `useDefenceFilters` | `true` | Search armour by its total Armour/Evasion/Energy Shield/Ward instead of by the individual mods that produced them — see "Pricing armour" above. `false` restores the old behaviour. |
 | `defenceMinRatio` | `0.9` | The defence floor to search on, as a fraction of the item's own total: 1081 Armour becomes "at least 972". Raise toward 1 for closer comparables and more unpriced items. |
 | `maxTransientRetries` | `1` | Extra attempts after a GGG 5xx or a dropped socket. Each spends another search from the budget. 4xx and 429 are never retried — the query was rejected, or the budget is already too high for this IP. |
@@ -442,6 +493,7 @@ save. They're also under `overlay` in settings.json:
 ```bash
 npm install
 npm run build   # compile + copy renderer assets
+npm run dev     # the iterative loop: rebuild and restart the app on every change
 npm test        # parser/pricing/db unit tests
 npm start        # run the overlay
 npm run package  # produce a Windows installer + portable exe (see release/)

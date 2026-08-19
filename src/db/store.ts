@@ -93,6 +93,7 @@ export async function updateItem(
       PricedItem,
       | "chaosValue"
       | "priceSource"
+      | "unpricedReason"
       | "ignoredMods"
       | "modFilters"
       | "pseudoFilters"
@@ -105,6 +106,7 @@ export async function updateItem(
       | "statCoverage"
       | "coverageSample"
       | "autoDroppedMods"
+      | "searchedMods"
       | "tradeSearchId"
       | "tradeMedianChaosValue"
     >

@@ -2,6 +2,7 @@ import type {
   ItemDefences,
   ItemMapStats,
   ItemRarity,
+  ItemWeaponStats,
   ModKind,
   ParsedItem,
   ParsedMod
@@ -37,10 +38,33 @@ const MOD_KIND_SUFFIX = /\s*\((implicit|rune|enchant|crafted|fractured|desecrate
  * `TradeStatsMatcher` anchors its patterns end to end, so a range left in place matches nothing —
  * which silently reduced a six-mod rare to a base-type-only trade search.
  */
-const ROLL_RANGE = /(\d)\(\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?\)/g;
+const ROLL_RANGE = /(\d)\((\d+(?:\.\d+)?)(?:-(\d+(?:\.\d+)?))?\)/g;
 
 function stripRollRanges(line: string): string {
   return line.replace(ROLL_RANGE, "$1");
+}
+
+/**
+ * The bracket behind the **first** number on the line — `16(6-16)%` gives `{ min: 6, max: 16 }`.
+ *
+ * The first one specifically, because that is the number the search uses: GGG's templates carry a
+ * bare `#` and `TradeStatsMatcher` reads its first capture group, so a line like `Adds 12(10-14) to
+ * 25(20-30) Fire Damage` is filtered on the 12 and it is the 12's bracket that says how good a roll
+ * that is.
+ *
+ * Null when the game printed no range, which is every capture made without **Advanced Item
+ * Descriptions** — the same degraded-not-disabled case as `tier`. A single-value bracket (no dash)
+ * yields an equal min and max, which reads correctly as "this affix has one possible roll".
+ */
+function parseRollRange(line: string): { min: number; max: number } | null {
+  ROLL_RANGE.lastIndex = 0;
+  const match = ROLL_RANGE.exec(line);
+  if (!match) return null;
+
+  const min = Number(match[2]);
+  const max = match[3] === undefined ? min : Number(match[3]);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+  return { min, max };
 }
 
 /**
@@ -163,6 +187,49 @@ function parseMapStats(sections: string[]): ItemMapStats {
   };
 }
 
+/**
+ * A weapon's elemental damage and attack rate, which multiply into the elemental DPS GGG indexes as
+ * `equipment_filters.edps`.
+ *
+ * Read for the same reason `parseDefences` is: the game has already folded every `Adds # to #
+ * Fire Damage` roll into the printed line, and that total is what the market is searched on — the
+ * individual rolls pin numbers nobody else has.
+ *
+ * The line carries **one range per element**, comma separated, each able to take its own
+ * `(augmented)` suffix: `Elemental Damage: 12-25 (augmented), 8-14 (augmented)`. So this can't go
+ * through `findNumber`, which reads a single capture — the ranges are scanned out of the line and
+ * averaged, since a range of 12-25 contributes 18.5 to the damage per hit GGG computes.
+ *
+ * Everything returns null when the line is absent, which is the ordinary case: only weapons print
+ * either of these, and `weapon-stats.ts` reads null as "no constraint".
+ */
+function parseWeaponStats(sections: string[]): ItemWeaponStats {
+  return {
+    elementalDamage: parseElementalDamage(sections),
+    attacksPerSecond: findNumber(sections, /^Attacks per Second:\s*([\d.]+)/m)
+  };
+}
+
+/** Sum of the averages of every range on the `Elemental Damage:` line. null when there is none. */
+function parseElementalDamage(sections: string[]): number | null {
+  for (const section of sections) {
+    const line = section.match(/^Elemental Damage:\s*(.+)$/m);
+    if (!line) continue;
+
+    let total = 0;
+    let found = false;
+    // Deliberately a global scan for `N-M` pairs rather than a split on commas: the separator between
+    // ranges is the one part of this line's formatting not confirmed against a real capture, and
+    // pulling the pairs out directly doesn't depend on it.
+    for (const range of line[1].matchAll(/(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/g)) {
+      total += (Number(range[1]) + Number(range[2])) / 2;
+      found = true;
+    }
+    if (found) return total;
+  }
+  return null;
+}
+
 /** Rune/soul-core sockets, written as `Sockets: S S`. Counts the slot tokens. */
 function parseSocketCount(sections: string[]): number | null {
   for (const section of sections) {
@@ -188,15 +255,30 @@ function parseMods(sections: string[], rarity: ItemRarity): ParsedMod[] {
 
   const mods: ParsedMod[] = [];
 
-  for (const section of sections.slice(1)) {
-    const lines = section.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // Split once. The header pass below reads the same lines the mod loop does, and re-splitting for it
+  // would be one more place for the two to drift apart.
+  const blocks = sections
+    .slice(1)
+    .map((section) => section.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
 
+  // With Advanced Item Descriptions on the game names every affix, so anything it did *not* name is
+  // prose: a jewel's "Place into an allocated Jewel Socket ...", a waystone's map device line, a
+  // unique's flavour text, a trailing "Unmodifiable". Believing the headers is what makes this one
+  // rule rather than an `isKnownNonModLine` entry per item class, which is what it was becoming.
+  //
+  // Keyed on the whole item rather than per section, and that is the whole point. Those description
+  // lines sit in their *own* trailing section with no header in it, so a per-section test would find
+  // no headers there and go on taking every one of them for an affix.
+  const headed = blocks.some((lines) => lines.some((line) => ADVANCED_MOD_HEADER.test(line)));
+
+  for (const lines of blocks) {
     // A "{ ... Modifier ... }" header applies to every line under it until the next header. It does
     // not carry across a section break, so these reset per section rather than per item. Both travel
     // together because one header can cover several lines — a hybrid affix granting evasion *and*
     // energy shield is two mod lines off one roll, and they share its tier as well as its kind.
     let headerKind: ModKind = "explicit";
     let headerTier: number | null = null;
+    let sawHeader = false;
 
     // Classified per line rather than per section. Requiring *every* line in a section to look
     // mod-like meant one property line sharing the block (PoE2 puts "Grants Skill: ..." next to
@@ -207,6 +289,7 @@ function parseMods(sections: string[], rarity: ItemRarity): ParsedMod[] {
         headerKind = kindFromHeader(header[1]);
         const tier = header[2].match(MOD_TIER);
         headerTier = tier ? Number(tier[1]) : null;
+        sawHeader = true;
         continue;
       }
       if (PROPERTY_LINE.test(line) || isKnownNonModLine(line)) continue;
@@ -215,10 +298,22 @@ function parseMods(sections: string[], rarity: ItemRarity): ParsedMod[] {
       // section above the "{ ... }" blocks and carry no header of their own. It takes the tier with
       // it — whatever header is in scope demonstrably isn't describing this line.
       const suffix = line.match(MOD_KIND_SUFFIX);
+
+      // An item that names its affixes has nothing unnamed that is still a mod — except a rune, which
+      // prints no header of its own and says so with the suffix instead. That escape is load-bearing
+      // rather than defensive: without it every runeforged item silently loses its rune, which is a
+      // far worse failure than the stray description line this gate exists to drop.
+      if (headed && !sawHeader && !suffix) continue;
+
+      const body = line.replace(MOD_KIND_SUFFIX, "");
       mods.push({
-        text: stripRollRanges(line.replace(MOD_KIND_SUFFIX, "")).trim(),
+        text: stripRollRanges(body).trim(),
         kind: suffix ? (suffix[1].toLowerCase() as ModKind) : headerKind,
-        tier: suffix ? null : headerTier
+        tier: suffix ? null : headerTier,
+        // Read before the stripping throws it away. Unlike `tier` this is kept even on a rune line:
+        // the bracket is printed by the roll itself rather than by a header, so the suffix that
+        // invalidates the header's tier says nothing about it.
+        rollRange: parseRollRange(body)
       });
     }
   }
@@ -247,7 +342,15 @@ function isKnownNonModLine(line: string): boolean {
     // too: "Can be used in a Map Device, allowing you to enter a Map. Waystones can only be used
     // once." was being stored as an explicit mod on every waystone and offered in the row editor as
     // something to untick.
-    /^Can be used in a Map Device/i.test(line)
+    /^Can be used in a Map Device/i.test(line) ||
+    // "Place into an allocated Jewel Socket on the Passive Skill Tree. Right click to remove from the
+    // Socket." — the click guard above misses it because that phrase is only its *second* sentence,
+    // so it was stored as an explicit mod on every jewel and offered in the row editor to untick.
+    //
+    // The header gate in `parseMods` catches this first whenever Advanced Item Descriptions is on.
+    // This list is the fallback for captures made without the option, where there are no headers to
+    // believe and rejecting prose by name is the only thing left.
+    /^Place into /i.test(line)
   );
 }
 
@@ -271,6 +374,7 @@ export function parseItemText(rawText: string): ParsedItem | null {
     waystoneTier: findNumber(sections, /^Waystone Tier:\s*(\d+)/m),
     socketCount: parseSocketCount(sections),
     defences: parseDefences(sections),
+    weapon: parseWeaponStats(sections),
     mapStats: parseMapStats(sections),
     identified: isIdentified(rawText),
     corrupted: isCorrupted(sections),

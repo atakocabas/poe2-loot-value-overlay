@@ -21,13 +21,18 @@ function toConfig(settings: Settings): SettingsConfig {
       panel: { ...settings.overlay.panel }
     },
     display: { currency: settings.display.currency },
-    trade2: { saleType: settings.trade2.saleType }
+    trade2: {
+      saleType: settings.trade2.saleType,
+      listingStatus: settings.trade2.listingStatus,
+      useMapFilters: settings.trade2.useMapFilters,
+      mapMinRatio: settings.trade2.mapMinRatio
+    }
   };
 }
 
 /**
- * The settings window: hotkeys, overlay behaviour, the display currency and the trade search's sale
- * type — everything that applies the moment it is saved.
+ * The settings window: hotkeys, overlay behaviour, the display currency and the two trade search
+ * filters — everything that applies the moment it is saved.
  *
  * Framed, opaque, focusable and not always-on-top, exactly like the setup window and for the same
  * reason — it is not the second *overlay* the "one window" non-goal rules out, which is about two
@@ -155,7 +160,13 @@ export function registerSettingsIpcHandlers({ onSettingsSaved }: SettingsIpcDeps
         display: { ...settings.display, currency: config.display.currency },
         // Spread first: every other trade2 key is a tuning knob this window doesn't show, and
         // rebuilding the block from the form would erase them from settings.json.
-        trade2: { ...settings.trade2, saleType: config.trade2.saleType }
+        trade2: {
+          ...settings.trade2,
+          saleType: config.trade2.saleType,
+          listingStatus: config.trade2.listingStatus,
+          useMapFilters: config.trade2.useMapFilters,
+          mapMinRatio: config.trade2.mapMinRatio
+        }
       };
       saveSettings(next);
 
@@ -165,7 +176,8 @@ export function registerSettingsIpcHandlers({ onSettingsSaved }: SettingsIpcDeps
           .join(" ")}, panel=${next.overlay.panel.width}x${next.overlay.panel.maxHeightPercent}% ` +
           `${next.overlay.panel.position}, ` +
           `currency=${next.display.currency}, hideWhenGameUnfocused=${next.overlay.hideWhenGameUnfocused}, ` +
-          `saleType=${next.trade2.saleType}`
+          `saleType=${next.trade2.saleType}, listingStatus=${next.trade2.listingStatus}, ` +
+          `useMapFilters=${next.trade2.useMapFilters}, mapMinRatio=${next.trade2.mapMinRatio}`
       );
       if (refused.length > 0) {
         console.warn(

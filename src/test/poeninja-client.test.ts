@@ -19,6 +19,7 @@ function makeParsedItem(name: string, overrides: Partial<ParsedItem> = {}): Pars
     waystoneTier: null,
     socketCount: null,
     defences: { armour: null, evasion: null, energyShield: null, ward: null },
+    weapon: { elementalDamage: null, attacksPerSecond: null },
     mapStats: {
       itemRarity: null,
       packSize: null,
@@ -374,6 +375,31 @@ test("an unusable concurrency value costs concurrency, never the whole refresh",
 
   assert.equal(headers().length, 6, "every category must still be fetched");
   assert.ok(inFlightPeak() >= 1);
+});
+
+test("overlapping refreshes share one pull rather than each opening a pool", async () => {
+  // What the panel's Refresh button made reachable: a press can land on top of the 10-minute timer,
+  // or on top of a previous press. Each concurrent call used to open its own pool, so two refreshes
+  // ran at twice the configured concurrency — the same failure "one pool over both lists" guards
+  // against, arriving by another route.
+  const types = Array.from({ length: 6 }, (_, i) => `Type${i}`);
+  const { client, inFlightPeak, headers } = makeInstrumentedClient(types, { maxConcurrentRequests: 3 });
+
+  await Promise.all([client.refresh(), client.refresh(), client.refresh()]);
+
+  assert.equal(headers().length, 6, "three callers, one pull of the six categories");
+  assert.equal(inFlightPeak(), 3, "and the pool is still the configured pool");
+});
+
+test("the guard releases, so the next refresh after one settles really refreshes", async () => {
+  // A latched guard would look identical until the prices went stale and nothing could renew them.
+  const types = Array.from({ length: 6 }, (_, i) => `Type${i}`);
+  const { client, headers } = makeInstrumentedClient(types, { maxConcurrentRequests: 3 });
+
+  await client.refresh();
+  await client.refresh();
+
+  assert.equal(headers().length, 12);
 });
 
 test("every poe.ninja request names the app, and the contact when one is configured", async () => {

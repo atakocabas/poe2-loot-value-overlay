@@ -14,6 +14,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.js && node scripts/make-icons.js",
     "watch": "tsc -p tsconfig.json --watch",
+    "dev": "node scripts/dev.js",
     "start": "npm run build && electron .",
     "test": "npm run build && node --test dist/test/*.test.js",
     "verify:exchange-ids": "npm run build && node scripts/verify-exchange-ids.js",

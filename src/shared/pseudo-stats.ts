@@ -22,6 +22,9 @@ import { modsOf } from "./mods";
  */
 const PSEUDO_IDS = {
   elementalResistance: "pseudo.pseudo_total_elemental_resistance",
+  fireResistance: "pseudo.pseudo_total_fire_resistance",
+  coldResistance: "pseudo.pseudo_total_cold_resistance",
+  lightningResistance: "pseudo.pseudo_total_lightning_resistance",
   chaosResistance: "pseudo.pseudo_total_chaos_resistance",
   life: "pseudo.pseudo_total_life",
   mana: "pseudo.pseudo_total_mana",
@@ -35,6 +38,9 @@ type Aggregate = keyof typeof PSEUDO_IDS;
 /** What each aggregate is called in the row editor and in the reprice status line. */
 const LABELS: Record<Aggregate, string> = {
   elementalResistance: "total Elemental Resistance",
+  fireResistance: "total Fire Resistance",
+  coldResistance: "total Cold Resistance",
+  lightningResistance: "total Lightning Resistance",
   chaosResistance: "total Chaos Resistance",
   life: "total maximum Life",
   mana: "total maximum Mana",
@@ -46,6 +52,9 @@ const LABELS: Record<Aggregate, string> = {
 /** Emitted in this order, so the editor lists the aggregates people price on first. */
 const AGGREGATE_ORDER: Aggregate[] = [
   "elementalResistance",
+  "fireResistance",
+  "coldResistance",
+  "lightningResistance",
   "chaosResistance",
   "life",
   "mana",
@@ -53,6 +62,22 @@ const AGGREGATE_ORDER: Aggregate[] = [
   "increasedEnergyShield",
   "attributes"
 ];
+
+/** The three single-element totals, which `chooseResistanceAggregate` picks between and the combined one. */
+const ELEMENTS = ["fireResistance", "coldResistance", "lightningResistance"] as const;
+
+/**
+ * How many contributing mods an aggregate needs before it is worth deriving. Two everywhere except
+ * the three single-element resistance totals — see `chooseResistanceAggregate` for why one is exact
+ * there and lossy everywhere else.
+ */
+const MIN_CONTRIBUTORS: Partial<Record<Aggregate, number>> = {
+  fireResistance: 1,
+  coldResistance: 1,
+  lightningResistance: 1
+};
+
+const DEFAULT_MIN_CONTRIBUTORS = 2;
 
 /**
  * How one mod line feeds one aggregate.
@@ -73,6 +98,7 @@ interface Contribution {
 }
 
 const ELEMENT = "Fire|Cold|Lightning";
+const ALL_ELEMENTAL = /^\+?[\d.]+% to all Elemental Resistances$/i;
 
 const CONTRIBUTIONS: Contribution[] = [
   {
@@ -82,9 +108,22 @@ const CONTRIBUTIONS: Contribution[] = [
   },
   {
     aggregate: "elementalResistance",
-    pattern: /^\+?[\d.]+% to all Elemental Resistances$/i,
+    pattern: ALL_ELEMENTAL,
     multiplier: 3
   },
+  // The same rolls again, split by element. Only one of these two views is ever emitted — see
+  // `chooseResistanceAggregate`. `to all Elemental Resistances` counts **once** here where it counts
+  // three times above, because it grants 15 to *this* element rather than 45 to the pool.
+  { aggregate: "fireResistance", pattern: /^\+?[\d.]+% to Fire Resistance$/i, multiplier: 1 },
+  { aggregate: "fireResistance", pattern: ALL_ELEMENTAL, multiplier: 1 },
+  { aggregate: "coldResistance", pattern: /^\+?[\d.]+% to Cold Resistance$/i, multiplier: 1 },
+  { aggregate: "coldResistance", pattern: ALL_ELEMENTAL, multiplier: 1 },
+  {
+    aggregate: "lightningResistance",
+    pattern: /^\+?[\d.]+% to Lightning Resistance$/i,
+    multiplier: 1
+  },
+  { aggregate: "lightningResistance", pattern: ALL_ELEMENTAL, multiplier: 1 },
   {
     aggregate: "chaosResistance",
     pattern: /^\+?[\d.]+% to Chaos Resistance$/i,
@@ -138,9 +177,44 @@ const SUPPRESSED_WHEN_DISPLAYED: Partial<Record<Aggregate, keyof ReturnType<type
  * `+38% to Fire Resistance` into "total elemental resistance >= 38" would happily match an item whose
  * 38 is all *cold* — looser without being any more accurate about what this item is. Two or more is
  * the point at which summing is what the market itself does.
+ *
+ * **The three single-element resistance totals are the stated exception** (`MIN_CONTRIBUTORS`), and
+ * they are an exception because that argument does not reach them — a fire total cannot silently be
+ * cold. See `chooseResistanceAggregate`, which also settles which of the two views is emitted.
  */
 export function derivePseudoStats(item: Pick<ParsedItem, "mods" | "implicitMods" | "explicitMods" | "defences">): PseudoStat[] {
   return derivePseudoStatsFromMods(modsOf(item), defencesOf(item));
+}
+
+/**
+ * Settles the combined elemental total against the three single-element ones, by deleting whichever
+ * view is not being used. **They are alternatives, never both:** asking for "83% total elemental
+ * *and* 38% of it fire" is narrower than either on its own, which is the opposite of what an
+ * aggregate exists to do.
+ *
+ * The rule is that a per-element total wins when every resistance roll on the item names that same
+ * element — which is exactly the case where the combined figure says less than the item does, since
+ * "58% total elemental" also describes an item with 20 fire, 20 cold and 18 lightning.
+ *
+ * An `all Elemental Resistances` roll feeds all three, so its presence puts contributors in more than
+ * one element and hands the decision back to the combined total. That is the honest answer: the item
+ * really does carry all three.
+ *
+ * **One contributor is enough for a per-element total, unlike everywhere else.** The two-contributor
+ * rule exists because folding a lone `+38% to Fire Resistance` into a *combined* total matches an
+ * item whose 38 is all cold — looser without being more accurate. Against the fire total there is no
+ * such slippage: "total fire resistance >= 38" is precisely what that mod says, and it additionally
+ * finds listings that reach 38 through an `all Elemental Resistances` roll, which the explicit stat
+ * filter for `#% to Fire Resistance` misses entirely. So it is strictly wider at no cost.
+ */
+function chooseResistanceAggregate(byAggregate: Map<Aggregate, PseudoStat["contributors"]>): void {
+  const present = ELEMENTS.filter((element) => (byAggregate.get(element)?.length ?? 0) > 0);
+
+  if (present.length === 1) {
+    byAggregate.delete("elementalResistance");
+    return;
+  }
+  for (const element of ELEMENTS) byAggregate.delete(element);
 }
 
 /** The same derivation over an explicit mod list, for callers that have already filtered one. */
@@ -161,16 +235,27 @@ export function derivePseudoStatsFromMods(
       if (!number) continue;
 
       const contributors = byAggregate.get(aggregate) ?? [];
-      contributors.push({ text: mod.text, amount: Number(number[0]) * multiplier });
+      // The affix tier rides along for the row editor, which shows it on the aggregate the same way
+      // it does on a mod row — an 83% total made of one T1 and two fillers reads very differently
+      // from three good rolls, and the summed number alone cannot say which it is.
+      contributors.push({ text: mod.text, amount: Number(number[0]) * multiplier, tier: mod.tier });
       byAggregate.set(aggregate, contributors);
     }
   }
 
+  chooseResistanceAggregate(byAggregate);
+
   const derived: PseudoStat[] = [];
   for (const aggregate of AGGREGATE_ORDER) {
     const contributors = byAggregate.get(aggregate);
-    if (!contributors || contributors.length < 2) continue;
-    derived.push({ id: PSEUDO_IDS[aggregate], label: LABELS[aggregate], contributors });
+    const minContributors = MIN_CONTRIBUTORS[aggregate] ?? DEFAULT_MIN_CONTRIBUTORS;
+    if (!contributors || contributors.length < minContributors) continue;
+    derived.push({
+      id: PSEUDO_IDS[aggregate],
+      label: LABELS[aggregate],
+      contributors,
+      minContributors
+    });
   }
   return derived;
 }

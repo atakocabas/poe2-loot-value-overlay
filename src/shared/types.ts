@@ -30,6 +30,18 @@ export interface ParsedMod {
    * whose mods all have no tier is the ordinary case rather than a parse failure.
    */
   tier?: number | null;
+  /**
+   * The roll bracket printed around this mod's first number — `16(6-16)%` gives `{ min: 6, max: 16 }`.
+   *
+   * What separates "rolled the top of its bracket" from "rolled the bottom", which the roll alone
+   * cannot say. `searchFloor()` (`shared/mod-rolls.ts`) turns it into the number the search asks for,
+   * so a 16-of-16 and a 6-of-16 are not both demanded exactly.
+   *
+   * Null when the game printed no bracket and `undefined` on items captured before it was parsed —
+   * both read as "unknown", and both fall back to flooring at the item's own roll, which is what
+   * every search did before. Same degraded-not-disabled arrangement as `tier`.
+   */
+  rollRange?: { min: number; max: number } | null;
 }
 
 /**
@@ -47,8 +59,23 @@ export interface PseudoStat {
   /**
    * The mod lines feeding this aggregate and what each adds. Kept rather than pre-summed because the
    * editor lets the user untick contributors, and the total has to follow.
+   *
+   * `tier` is the contributing affix's own tier, carried through from `ParsedMod.tier` and read the
+   * same way — null when the game printed none, `undefined` on an item captured before it was
+   * parsed. The editor badges them onto the aggregate row, because a total says nothing about
+   * whether it is one excellent roll or three mediocre ones.
    */
-  contributors: Array<{ text: string; amount: number }>;
+  contributors: Array<{ text: string; amount: number; tier?: number | null }>;
+  /**
+   * How many ticked contributors this aggregate needs before it is worth deriving — two for most,
+   * one for the single-element resistance totals (see `chooseResistanceAggregate`).
+   *
+   * It rides along for the same reason `pseudoMinRatio` does: the row editor has to grey out an
+   * aggregate the next search would no longer derive, and it is a plain `<script>` that cannot import
+   * `shared/pseudo-stats.ts` at runtime. A renderer-side copy of the rule would silently disagree the
+   * first time the table changed.
+   */
+  minContributors: number;
 }
 
 /**
@@ -88,6 +115,28 @@ export interface ItemDefences {
 }
 
 /**
+ * The two numbers a weapon's property block carries that multiply into elemental DPS.
+ *
+ * Kept apart from `ItemDefences` because they are not a total but the factors of one: GGG's
+ * `equipment_filters.edps` is damage per hit times attacks per second, and neither half is a filter
+ * on its own. Both are already finished numbers — every `Adds # to # Fire Damage` roll on the item
+ * is inside the printed damage, exactly as local defence mods are inside `Armour:`.
+ *
+ * Read through `weaponStatsOf()` (`shared/weapon-stats.ts`), never off the field: nothing migrates
+ * `loot-cache.json`, so items captured before this existed have no `weapon` key at all.
+ */
+export interface ItemWeaponStats {
+  /**
+   * Summed average of every range on the `Elemental Damage:` line — 12-25 contributes 18.5. One line
+   * can carry a range per element, which is why this is a single total rather than three fields:
+   * eDPS makes no distinction between them.
+   */
+  elementalDamage: number | null;
+  /** `Attacks per Second: 1.55`. */
+  attacksPerSecond: number | null;
+}
+
+/**
  * The reward totals PoE2 prints on a waystone's property block. Each is the *finished* number the
  * game shows, produced collectively by the affix set rather than by any one mod — which is why these
  * are searched directly and the affixes are not.
@@ -104,19 +153,33 @@ export interface ItemMapStats {
   monsterRarity: number | null;
   /** `Waystone Drop Chance: +85%`. */
   dropChance: number | null;
-  /** `Monster Effectiveness: +13%`. Parsed but not filtered on — see `buildMapFilters`. */
+  /**
+   * `Monster Effectiveness: +13%`. GGG indexes it as `map_magic_monsters` — the id reads like magic
+   * monster quantity but `/api/trade2/data/filters` titles it "Monster Effectiveness", confirmed live.
+   *
+   * Searched as a **ceiling**, unlike everything else here: this is difficulty, which is a cost to the
+   * buyer, so the comparable waystones are the ones at most this dangerous.
+   */
   monsterEffectiveness: number | null;
-  /** `Revives Available: 0`. Parsed but not filtered on, for the same reason. */
+  /** `Revives Available: 0`. GGG's `map_revives`, searched as a floor — more revives is a benefit. */
   revives: number | null;
 }
 
-/** One of a waystone's reward totals as the search and the row editor both see it. */
+/** One of a waystone's printed totals as the search and the row editor both see it. */
 export interface MapRow {
   /** GGG's `map_filters` id. Also the key a user-set bound is stored under. */
   id: string;
   label: string;
-  /** The waystone's own printed value, before any floor ratio is applied. */
+  /** The waystone's own printed value, before the ratio is applied. */
   value: number;
+  /**
+   * Which side the ratio widens toward, and therefore which bound is sent.
+   *
+   * `"min"` for anything the buyer wants more of — every reward total, and revives. `"max"` for
+   * difficulty, where a floor would exclude the easier waystones that are worth *more*. The row
+   * editor reads this to decide which of its two boxes carries the computed placeholder.
+   */
+  direction: "min" | "max";
 }
 
 export interface ParsedItem {
@@ -153,6 +216,11 @@ export interface ParsedItem {
    */
   defences: ItemDefences;
   /**
+   * A weapon's elemental damage and attack rate, all null for anything that isn't one. Their product
+   * is the elemental DPS GGG indexes as `equipment_filters.edps` — see `shared/weapon-stats.ts`.
+   */
+  weapon: ItemWeaponStats;
+  /**
    * A waystone's printed reward totals, all null for anything that isn't one. These are what GGG's
    * `map_filters` group indexes, and what a waystone is actually traded on — see `shared/map-stats.ts`.
    */
@@ -177,6 +245,19 @@ export interface PricedItem extends ParsedItem {
   sessionId: string;
   chaosValue: number | null;
   priceSource: "poeninja" | "currencyExchange" | "trade2" | "unpriced";
+  /**
+   * Why an unpriced item is unpriced, where the answer is recoverable and worth showing on the row.
+   *
+   * Only `"rateLimited"` so far: the trade search was declined by `TradeSearchBudget`, ran out of
+   * slots mid-ladder, or came back 429. Deliberately **not** a fifth `priceSource` — that field says
+   * where a price *came from*, and a rate limit is not a source. It also scales: `explainUnpriced`
+   * already distinguishes four situations, and only this one resolves by waiting.
+   *
+   * Optional and never migrated, like everything else here. Absent means "no price, and nothing more
+   * to say about it", which is how every item stored before this existed reads — the honest fallback,
+   * since a rate limit that old has long since expired.
+   */
+  unpricedReason?: "rateLimited";
   /** Mod lines (exact text) excluded from the trade2 search when this item was last (re)priced. */
   ignoredMods: string[];
   /**
@@ -208,6 +289,19 @@ export interface PricedItem extends ParsedItem {
    * items ever set it.
    */
   tradeMedianChaosValue?: number;
+  /**
+   * What the cheapest sampled listing was actually asking — `{ amount: 2, currency: "chaos" }`.
+   *
+   * Kept for **display only**, and only to choose a unit: a row whose price came from a seller
+   * asking 2 chaos reads "2c" rather than the same value restated as 66ex, which is what the market
+   * is quoting and what you would type into the trade site. The number shown is still converted from
+   * `chaosValue`, so nothing here can drift from the totals — see `pickDisplayUnit`.
+   *
+   * Never read it as a value. Chaos is the storage unit throughout and this is a label on one, in the
+   * same way `tradeMedianChaosValue` annotates rather than replaces. Optional for the usual reason:
+   * nothing migrates `loot-cache.json`, and only a trade2-priced item ever has a listing behind it.
+   */
+  tradeListingQuote?: { amount: number; currency: string };
   /**
    * How specific the trade2 search behind `chaosValue` was: `{ matched: 3, total: 4 }` means no
    * listing carried all four of this item's mods, so the price came from ones sharing three.
@@ -271,6 +365,23 @@ export interface PricedItem extends ParsedItem {
    * and an item priced off a `count` rung legitimately has none.
    */
   autoDroppedMods?: string[];
+  /**
+   * Every mod line that constrained the search this price came from — its own stat filter, a pseudo
+   * aggregate that was applied, or an equipment defence floor that was applied.
+   *
+   * This is what the row editor ticks. Before it existed the editor ticked everything except
+   * `ignoredMods` and `autoDroppedMods`, which overstated the search: a mod GGG's stat reference has
+   * no template for never reaches the query at all, yet read as one the price rested on.
+   *
+   * **`undefined` means "no record", never "nothing was searched"** — nothing migrates
+   * `loot-cache.json`, and items priced by poe.ninja or the exchange never ran a search to record.
+   * The editor must fall back to its previous behaviour on absence rather than unticking every row.
+   *
+   * Distinct from `statCoverage` in the direction it measures, and the distinction is why both
+   * exist: this names what the query **asked for**, which is known exactly; `statCoverage` counts
+   * what the returned listings **carried**, which on a `count` rung names no set at all.
+   */
+  searchedMods?: string[];
 }
 
 export interface Session {
@@ -356,6 +467,15 @@ export interface OverlayStatus {
    * whole panel now — and the side as a class, since it carries no number of its own.
    */
   panel: { width: number; maxHeightPercent: number; position: "left" | "right" };
+  /**
+   * A GitHub release newer than the running version, or null — from `main/update-check.ts`.
+   *
+   * Rides this push rather than getting a channel of its own because it is exactly what the rest of
+   * this interface is: panel-wide state that isn't per-item, which the renderer reapplies wholesale
+   * on every arrival. Null until the first check answers, which is also what a current install looks
+   * like — the header line stays hidden for both, since there is nothing to say either way.
+   */
+  update: { version: string; url: string } | null;
 }
 
 /**
@@ -403,13 +523,26 @@ export interface SettingsConfig {
   };
   display: { currency: "auto" | "exalted" | "chaos" | "divine" };
   /**
-   * The one trade2 key the window may edit. It qualifies on the same test as everything above:
-   * `Trade2Client` reads `this.settings.trade2.saleType` when it builds each query, so mutating it
-   * applies to the very next lookup. Its neighbours in that block mostly do *not* — `contactEmail`
-   * is baked into the User-Agent by `createPublicGggFetch` and the budget numbers are captured by
-   * `TradeSearchBudget`, both at construction — so don't widen this to them without checking.
+   * The four trade2 keys the window may edit. All qualify on the same test as everything above:
+   * `Trade2Client` reads them off `this.settings.trade2` while building each query — `saleType` and
+   * `listingStatus` in `searchRung`, `useMapFilters` and `mapMinRatio` in `buildMapFilters` — so
+   * mutating any of them applies to the very next lookup. Their neighbours in that block mostly do
+   * *not* — `contactEmail` is baked into the User-Agent by `createPublicGggFetch` and the budget
+   * numbers are captured by `TradeSearchBudget`, both at construction — so don't widen this to them
+   * without checking.
+   *
+   * `listingStatus` is spelled out here rather than imported as `ListingStatus` from
+   * `pricing/trade2-client`, matching `saleType` and keeping this shared type free of a dependency
+   * on the pricing layer. The five options and what each means are documented on
+   * `Settings["trade2"].listingStatus`.
    */
-  trade2: { saleType: "buyout" | "any" };
+  trade2: {
+    saleType: "buyout" | "any";
+    listingStatus: "securable" | "available" | "online" | "onlineleague" | "any";
+    useMapFilters: boolean;
+    /** Stored as a ratio, but the window edits it as a percentage — see `settings.ts`. */
+    mapMinRatio: number;
+  };
 }
 
 /** `SettingsConfig` plus the shipped defaults, which back the per-field Reset buttons. */

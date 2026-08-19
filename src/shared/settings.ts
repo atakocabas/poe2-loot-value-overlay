@@ -103,6 +103,34 @@ export interface Settings {
      */
     selectedTabIds: string[];
   };
+  /**
+   * The release check — see `main/update-check.ts`.
+   *
+   * **This app notifies, it does not update itself**, and the block is small because of it: there is
+   * nothing here about download paths or install behaviour, because it downloads and installs
+   * nothing. Three things ruled auto-update out. One of the two shipped targets is a *portable* exe,
+   * which has no install to replace; neither binary is code-signed, so a silent background install
+   * puts a SmartScreen prompt somewhere the user cannot see or answer it; and the release workflow
+   * uploads only the exes, not the `latest.yml` an updater would read.
+   *
+   * Deliberately **not** in `SettingsConfig`, so it has no field in the settings window. The bar
+   * there is "must this be editable for the app to work", not "is this configurable" — both keys
+   * ship with a working default, and the off switch is for someone who has opened settings.json
+   * anyway.
+   */
+  updates: {
+    /**
+     * Whether to ask GitHub about newer releases at all. False skips the check outright — no timer,
+     * no request — for a user who would rather the app not talk to github.com.
+     */
+    checkForUpdates: boolean;
+    /**
+     * How often to re-check after the one at startup. Six hours by default, against an
+     * unauthenticated GitHub limit of 60 requests per hour per IP: the interval is long because a
+     * release is not urgent, not because the budget is tight.
+     */
+    checkIntervalMs: number;
+  };
   poeNinja: {
     baseUrl: string;
     /**
@@ -268,6 +296,29 @@ export interface Settings {
      */
     listingStatus: "securable" | "available" | "online" | "onlineleague" | "any";
     /**
+     * A migration marker, not a preference — there is no reason for anyone to set it by hand.
+     *
+     * The shipped default for `listingStatus` was once `"online"`, and `mergeWithDefaults` only fills
+     * in keys that are *missing*, so changing that default reached new installs and nobody else: an
+     * existing settings.json kept searching in-person listings indefinitely, with nothing on screen
+     * to say so. `adoptInstantBuyoutDefault` (`main/settings.ts`) takes such an install to
+     * `"securable"` exactly once and stamps this, so a user who later picks `"online"` in the
+     * settings window keeps it. Defaults to `false` precisely so old installs migrate; a fresh one
+     * is already on `"securable"` and the fold only stamps the marker.
+     */
+    listingStatusMigrated: boolean;
+    /**
+     * Whether `adoptListingThresholdDefault` has run. Same mechanism as the marker above, for the
+     * other default that changed under existing installs.
+     *
+     * `minListingsForMatch` shipped as **10** and became **1**, so an install predating that kept a
+     * ladder that walked past the rung carrying the item's whole mod set whenever fewer than ten
+     * listings had it — pricing a four-mod rare off three, and looking exactly like a search that
+     * had failed to find listings the trade site plainly showed. Defaults to `false` so those
+     * installs migrate; on a fresh one the fold finds the current value and only stamps the marker.
+     */
+    minListingsThresholdMigrated: boolean;
+    /**
      * Whether a listing has to be buyable on the spot to count. `"buyout"` (the default) prices off
      * listings with a buyout or fixed price; `"any"` also counts listings with no listed price,
      * where buying means whispering the seller and haggling.
@@ -285,53 +336,48 @@ export interface Settings {
      */
     saleType: "buyout" | "any";
     /**
-     * How many mod thresholds one lookup may try before settling, strictest first: 3 searches an
-     * item's full mod set, then one fewer, then `minModMatchRatio`'s floor. Each rung that misses
-     * costs another request against GGG's per-IP limit, so this is the knob that trades pricing
-     * precision for how many rares a busy map can price at all. 1 disables the ladder and searches
-     * only the floor, which is what this did before. See `modLadder()`.
-     */
-    maxModLadderSearches: number;
-    /**
-     * Drop an item's **weakest** affixes one at a time when its full mod set finds no market, instead
-     * of only lowering the "at least N of M" threshold.
+     * Relax a search that found nothing by **dropping** an item's most expendable mod and still
+     * demanding all the rest, one mod per rung.
      *
-     * The two do different things. Relaxing the threshold lets a listing miss *any* one mod, which
-     * on a good item usually means the T1 roll that is the reason it's worth anything. Dropping a
-     * named low-tier filter and still demanding all the rest asks for a specific, slightly worse item
-     * — which is how a player narrows a search by hand, and which unlike a `count` rung leaves a
-     * knowable set of mods behind. That set is what `PricedItem.autoDroppedMods` records and what
-     * lets the row editor reopen with the mods that produced the price still ticked.
+     * This is the only relaxation there is. The alternative — keeping every filter and lowering the
+     * "at least N of M" threshold — was removed on purpose: it lets a listing miss *any* one mod,
+     * which on a good item is usually the T1 roll that is the reason it is worth anything, and since
+     * different listings satisfy different subsets there is no set of mods to report back. Dropping a
+     * named filter asks for a specific, slightly worse item, which is how a player narrows a search by
+     * hand and which leaves a knowable set behind — what `PricedItem.autoDroppedMods` and
+     * `searchedMods` record, and what lets the row editor tick the mods that produced the price.
      *
-     * **Requires PoE2's Advanced Item Descriptions option**, which is what prints the `(Tier: N)` this
-     * reads. Without it no mod has a tier, nothing is droppable, and a lookup behaves exactly as it
-     * did before this existed — so turning this off only matters to players who have that option on.
-     * See `droppableFilters()` and `searchRungs()`.
+     * **Off means no relaxation at all**: one rung, every mod required, and an item with no market at
+     * those exact rolls stays unpriced. Advanced Item Descriptions is no longer required — without it
+     * no mod has a tier, so the drop *order* falls back to the item's own order, but dropping still
+     * happens. See `droppableFilters()` and `searchRungs()`.
      */
     useModDropLadder: boolean;
     /**
-     * How many low-tier mods one lookup may shed, at one search each, before falling through to
-     * `maxModLadderSearches`' thresholds.
+     * How many mods one lookup may shed, at one search each, before giving up and storing the item
+     * unpriced.
      *
-     * This is the more expensive of the two axes and the reason it has its own cap rather than
-     * sharing that one. GGG rate-limits trade2 **per IP** and a priced lookup costs two requests, so
-     * the ceiling that matters is `maxSearchesPerWindow` over `windowMs`; a rare that walks every
-     * rung here can spend most of a window by itself and leave the rest of a busy map's drops
-     * unpriced. Raise it to price more stubborn rares, lower it to keep the budget spread across
-     * more items. 0 disables the drop axis as surely as `useModDropLadder: false` does.
+     * GGG rate-limits trade2 **per IP** and a priced lookup costs two requests, so the ceiling that
+     * matters is `maxSearchesPerWindow` over `windowMs`; a rare that walks every rung here can spend
+     * most of a window by itself and leave the rest of a busy map's drops unpriced. Raise it to price
+     * more stubborn rares, lower it to keep the budget spread across more items. 0 disables dropping
+     * as surely as `useModDropLadder: false` does.
      *
-     * The set is never emptied — one filter always survives, since a search with none left is a
-     * base-type-only query that no amount of tier information makes worth a slot.
+     * `minModMatchRatio` is the other bound on how far this goes, and usually the binding one.
      */
     maxModDropSearches: number;
     /**
-     * The affix tier at which a mod becomes droppable, **worst-or-equal**. At the default of 3, tiers
-     * 3 and up may leave the search and T1/T2 mods never do — 1 is the best possible roll in PoE.
+     * The affix tier at which a mod counts as **weak**, worst-or-equal. At the default of 3, tiers 3
+     * and up are shed first — 1 is the best possible roll in PoE.
      *
-     * Raise it to protect more of the item (4 sheds only the truly weak affixes), lower it toward 1
-     * to let the ladder shed almost anything. A mod whose tier is unknown is never droppable at any
-     * setting, which is what makes the whole feature degrade cleanly to nothing without Advanced Item
-     * Descriptions.
+     * This orders the drops rather than gating them, which is what changed when the count axis was
+     * removed. Everything is droppable eventually, in three bands: known-weak first (worst tier
+     * first), then mods whose tier the game did not print, then known-good (T2 before T1). Raise it to
+     * shed more of the item before touching a good roll; lower it toward 1 to protect less.
+     *
+     * Nothing here forbids a drop any more, so an item captured without Advanced Item Descriptions
+     * still relaxes — it just does so in item order, having no tiers to sort by. `minModMatchRatio`
+     * is what stops the shedding, not this. See `droppableFilters()`.
      */
     modDropTierThreshold: number;
     /**
@@ -353,10 +399,14 @@ export interface Settings {
      */
     minListingsForMatch: number;
     /**
-     * Fraction of an item's matched mods a listing must also have to count as comparable. Requiring
-     * all of them finds nothing for a typical four-to-six-mod rare — see `requiredModMatches()` for
-     * the measurements. Raise it toward 1 for stricter comparisons and more unpriced rares; lower it
-     * for looser matches and prices biased further below what the item is actually worth.
+     * Fraction of an item's mods that must **stay in the query** — the floor the drop ladder may not
+     * shed past. At the default of 0.5 a five-mod rare never searches on fewer than three of its mods.
+     *
+     * It used to mean "fraction a listing must share", for the `count` group that no longer exists.
+     * Same arithmetic, stricter promise: every surviving mod is now *required* of every listing, where
+     * before any N of them sufficed. Raise it toward 1 for prices that describe this exact item and
+     * more unpriced rares; lower it to price more items off less of what makes them good.
+     * See `minSurvivingFilters()`.
      */
     minModMatchRatio: number;
     /**
@@ -387,6 +437,25 @@ export interface Settings {
      */
     defenceMinRatio: number;
     /**
+     * Search a weapon on the elemental DPS it prints (`equipment_filters.edps`) and drop the
+     * `Adds # to # Fire Damage` rolls that produced it from the stat filters.
+     *
+     * Exactly the argument behind `useDefenceFilters`, one item class over: the game has already
+     * folded those rolls into the printed damage, GGG indexes the product of that and the attack
+     * rate, and asking for the rolls individually asks for a weapon nobody else has.
+     *
+     * Its own switch rather than a share of `useDefenceFilters` because they are two features that
+     * happen to travel in one filter group — an install can want armour totals and not weapon DPS.
+     * The floor under it is `defenceMinRatio`, which is deliberately shared: eDPS is a continuous
+     * stat like armour, so a second ratio would only ever hold the same number.
+     *
+     * **There is no elemental *damage* pseudo to use instead.** Confirmed against the live
+     * `/api/trade2/data/stats`: PoE2's pseudo group is 36 entries of resistances, attributes,
+     * life/mana/energy shield, movement speed and mod counts. `edps` is the only aggregate route
+     * there is, which is why this sits here rather than in `shared/pseudo-stats.ts`.
+     */
+    useWeaponFilters: boolean;
+    /**
      * Search resistances, life, mana, attributes and global energy shield as GGG's *pseudo*
      * aggregates — one "83% total Elemental Resistance" filter in place of the three resistance rolls
      * that add up to it.
@@ -410,29 +479,88 @@ export interface Settings {
      */
     pseudoMinRatio: number;
     /**
-     * Search a waystone on the reward totals it prints — Item Rarity, Pack Size, Monster Rarity and
-     * Waystone Drop Chance — through GGG's `map_filters`, instead of on its affixes.
+     * Search a waystone on the totals it prints — Item Rarity, Pack Size, Monster Rarity, Waystone
+     * Drop Chance, Revives and Monster Effectiveness — through GGG's `map_filters`, instead of on
+     * its affixes.
      *
      * The strongest case of the three folds. A waystone's affixes are monster-difficulty mods, and
-     * the reward block is what the whole affix set produces *collectively*, so there is no per-mod
+     * the printed block is what the whole affix set produces *collectively*, so there is no per-mod
      * mapping the way there is for armour: the affixes are simply the part nobody else has in the
      * same combination. Measured on a real T15 capture — its six affixes matched 0 listings, three of
      * them matched 118, and its reward totals matched 3453.
      *
      * All affix stat filters are dropped when this is on. `false` restores the old payload exactly.
      *
-     * Monster Effectiveness and Revives are parsed but never filtered: they describe difficulty,
-     * which is a cost to the buyer, so a floor on them would exclude the easier maps worth *more*.
-     * Waystone Tier isn't filtered either — the base type is per-tier ("Waystone (Tier 15)"), which
+     * **Monster Effectiveness is sent as a ceiling, not a floor.** It used to be excluded outright,
+     * on the grounds that difficulty is a cost to the buyer and a floor would exclude the easier maps
+     * worth *more* — right about the direction, wrong about the remedy. A ceiling asks for the maps
+     * at most this dangerous, which is what the comparables actually are; sending nothing priced a
+     * 5% waystone against 50% ones. Revives keeps a floor: more attempts is a benefit.
+     *
+     * Waystone Tier still isn't filtered — the base type is per-tier ("Waystone (Tier 15)"), which
      * already pins it. Measured: that type plus `map_tier: { min: 16 }` returns zero listings.
      */
     useMapFilters: boolean;
     /**
-     * The reward floor to search on, as a fraction of the waystone's own total: 0.9 turns
-     * `Item Rarity: +24%` into `"map_iir": { "min": 21 }`. Below 1 for the same reason as
-     * `defenceMinRatio` — at parity the only matches are waystones strictly better than this one.
+     * How far to widen a waystone's printed totals when searching, as a fraction of each: 0.9 turns
+     * `Item Rarity: +24%` into `"map_iir": { "min": 21 }` and `Monster Effectiveness: +13%` into
+     * `"map_magic_monsters": { "max": 15 }`. Below 1 for the same reason as `defenceMinRatio` — at
+     * parity the only matches are waystones strictly better than this one.
+     *
+     * One ratio for both directions, like `defenceMinRatio` also serving eDPS: a second knob would
+     * only ever hold the same number. The settings window edits it as a percentage.
      */
     mapMinRatio: number;
+    /**
+     * Whether a **Normal**-rarity base item is worth a trade search at all.
+     *
+     * Off-by-default would be the safe reading, but the gate that actually matters is
+     * `baseItemMinLevel` below: white bases drop constantly and almost all of them are worth
+     * nothing, so the cost of switching this on is bounded by the floor rather than by the flag.
+     * Magic items are still excluded and always will be — PoE2 glues the affixes onto the base on
+     * one header line, so there is no base type left to search with.
+     */
+    useBaseItemSearch: boolean;
+    /**
+     * The item level a Normal-rarity base has to reach before it costs a search. Below it the item is
+     * stored unpriced without a request being made, which is the entire point: the rate limit is per
+     * **IP** and shared with every rare dropping in the same map.
+     *
+     * The floor sent to GGG is the item's **own** level, exactly, with no ratio — unlike
+     * `defenceMinRatio` and its neighbours. Item level is a discrete breakpoint rather than a
+     * continuous stat, and 0.9 of 82 is 73, which is a different market entirely rather than a
+     * slightly wider one.
+     */
+    baseItemMinLevel: number;
+    /**
+     * The cheapest listing worth counting. 0 switches the floor off.
+     *
+     * PoE2's cheap end is a wall of dump listings, and `priceSample` deliberately reads that end —
+     * so without a floor a rare's reported value is routinely some fraction of a chaos. A real
+     * capture priced at **0.09 chaos** against a median of 0.6 over the same ten listings, which is
+     * not a price so much as evidence that nobody is really selling one.
+     *
+     * Sent to GGG as `trade_filters.filters.price`, so it constrains the **search** rather than the
+     * sample. That is not an implementation detail: `priceSample` takes the ten *cheapest* matches,
+     * so a floor applied after the fetch would usually find every one of them below it and leave
+     * nothing to price. Filtering server-side means the ten cheapest are the ten cheapest that clear
+     * the floor, and every listing count in the log is counting the same set the price came from.
+     *
+     * An item with nothing at or above the floor is stored **unpriced**, with a reason saying so.
+     * There is no retry without it, unlike the defence and aggregate floors: those exist to widen a
+     * search that was too specific, while this one exists to reject a market that isn't worth
+     * recording, and retrying without it would hand back exactly the number it was set to suppress.
+     *
+     * **It names no currency, and must not.** The `option` field on GGG's price filter selects the
+     * currency a listing is *quoted in* rather than a unit to compare against, so the
+     * `{ min: 1, option: "exalted" }` this used to send meant "listings priced in exalted orbs" and
+     * silently threw away every divine-priced one — the whole expensive end of every market. A bare
+     * `min` compares across currencies, in a unit of GGG's own that measures one divine somewhere
+     * between 400 and 3000 (poe.ninja's rate would call it 347 exalted). Near enough to exalted that
+     * 1 still means about what it reads as; don't write "exalted" into the docs or the log, and don't
+     * add the currency back to tidy the wording.
+     */
+    minListingPrice: number;
     /**
      * Extra attempts after a **transient** failure — GGG 5xx or a dead socket. Without this, one
      * blip (a real capture caught `HTTP 502` from trade2 and the currency exchange in the same

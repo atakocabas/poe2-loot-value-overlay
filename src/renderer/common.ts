@@ -49,14 +49,51 @@ function convertFromChaos(chaos: number, r: Rates, unit: Exclude<DisplayCurrency
   return unit === "divine" ? divine : divine * r.exaltedPerDivine;
 }
 
-function formatValue(chaos: number | null): string {
+type ListingQuote = { amount: number; currency: string };
+
+/** The three GGG currency ids this app can label; anything else falls back to the magnitude rule. */
+const QUOTE_UNITS: Record<string, Exclude<DisplayCurrency, "auto">> = {
+  chaos: "chaos",
+  exalted: "exalted",
+  divine: "divine"
+};
+
+/**
+ * The unit a value is shown in. An explicit setting wins; on `auto` the listing's own currency wins
+ * next, and the size of the number decides when there is no listing behind it. See the shared
+ * original for the argument.
+ */
+function pickDisplayUnit(chaos: number, r: Rates, quote?: ListingQuote | null): Exclude<DisplayCurrency, "auto"> {
+  if (displayCurrency !== "auto") return displayCurrency;
+
+  const quoted = quote ? QUOTE_UNITS[quote.currency] : undefined;
+  if (quoted) return quoted;
+
+  if (chaos / r.chaosPerDivine >= 1) return "divine";
+  return chaos >= 1 ? "chaos" : "exalted";
+}
+
+function formatValue(chaos: number | null, quote?: ListingQuote | null): string {
   if (chaos === null) return "?";
   if (!rates || !Number.isFinite(rates.chaosPerDivine) || rates.chaosPerDivine <= 0) {
     return `${formatNumber(chaos)}c`;
   }
-  const unit =
-    displayCurrency === "auto" ? (chaos / rates.chaosPerDivine >= 1 ? "divine" : "exalted") : displayCurrency;
+  const unit = pickDisplayUnit(chaos, rates, quote);
   return `${formatNumber(convertFromChaos(chaos, rates, unit))}${UNIT_LABEL[unit]}`;
+}
+
+/**
+ * The unit a *row* is shown in, and the one its median parenthetical has to share.
+ *
+ * Only a single, unfolded, trade2-priced item follows its listing: `count > 1` means the headline is
+ * a summed group total, `stackSize > 1` means it is a stack, and a manual price replaces the trade
+ * figure entirely — in all three the quote no longer describes the number on screen. Those are the
+ * same guards `medianValueEl` applies, for the same reason.
+ */
+function rowQuote(item: PricedItem, count: number): ListingQuote | null {
+  if (count !== 1 || item.stackSize !== 1) return null;
+  if (item.priceSource !== "trade2" || item.manualChaosValue !== null) return null;
+  return item.tradeListingQuote ?? null;
 }
 
 // Direction matters: exalted-per-chaos is exaltedPerDivine / chaosPerDivine (~48), not its
@@ -130,7 +167,20 @@ function sourceBadge(item: PricedItem): HTMLElement {
   }
 
   badge.textContent = SOURCE_LABEL[item.priceSource] ?? item.priceSource;
-  if (item.priceSource === "unpriced") badge.classList.add("badge-unpriced");
+  if (item.priceSource === "unpriced") {
+    // "unpriced" reads as a fact about the item — that nothing on the market matches it. A rate limit
+    // means the opposite: nobody has looked yet, and the answer arrives by waiting. Same badge slot,
+    // different word, because the two ask different things of the reader.
+    if (item.unpricedReason === "rateLimited") {
+      badge.textContent = "rate limited";
+      badge.classList.add("badge-ratelimited");
+      badge.title =
+        "No trade search went out for this item — GGG rate-limits by IP and the budget was spent. " +
+        "Press Edit and Reprice once the window refills; nothing about the item itself is wrong.";
+    } else {
+      badge.classList.add("badge-unpriced");
+    }
+  }
 
   // A trade2 price that couldn't find every mod is a price for items *like* this one, and there is
   // nothing else on the row to say so — the number looks exactly as confident either way.
@@ -138,9 +188,12 @@ function sourceBadge(item: PricedItem): HTMLElement {
   if (match && match.total > 0 && match.matched < match.total) {
     badge.textContent += ` ${match.matched}/${match.total}`;
     badge.classList.add("badge-partial");
+    // Dropped, not merely un-matched. Every listing behind this price carries *all* of the surviving
+    // mods — the search shed the rest to find a market, and Edit names exactly which.
     badge.title =
-      `No listing had all ${match.total} of this item's mods, so the price comes from ones ` +
-      `sharing ${match.matched}. Treat it as a ballpark.`;
+      `Nothing was listed with all ${match.total} of this item's mods, so the search dropped ` +
+      `${match.total - match.matched} of them and priced it off listings carrying all ` +
+      `${match.matched} of the rest. Press Edit to see which were dropped.`;
   }
 
   // Same argument, different cause: nothing was listed at this item's own armour/evasion, so the
@@ -202,7 +255,9 @@ function medianValueEl(item: PricedItem, count: number, total: number | null): H
 
   const el = document.createElement("span");
   el.className = "item-value-median";
-  el.textContent = `(${formatValue(median)})`;
+  // The same unit as the headline it sits beside — a floor in chaos next to a median in exalted is
+  // two numbers the eye cannot compare, which is the one thing the pair exists to let it do.
+  el.textContent = `(${formatValue(median, rowQuote(item, count))})`;
   el.title =
     "Median of the listings this price was sampled from. The headline is the cheapest one " +
     "currently listed — the wider the gap, the thinner that floor.";

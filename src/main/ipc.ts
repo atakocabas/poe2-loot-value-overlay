@@ -6,6 +6,8 @@ import { toChaos } from "../pricing/currency-convert";
 import type { PoeNinjaClient } from "../pricing/poeninja-client";
 import { toModFilterMap, type Trade2Client } from "../pricing/trade2-client";
 import { derivePseudoStats } from "../shared/pseudo-stats";
+import { searchFloorsByMod } from "../shared/mod-rolls";
+import { modsOf } from "../shared/mods";
 import { isWaystone, mapRowsOf } from "../shared/map-stats";
 import type { ModFilter, OverlayStatus } from "../shared/types";
 import type { Settings } from "../shared/settings";
@@ -54,6 +56,12 @@ export function registerIpcHandlers({
       // carries, and persisting them would put a second, staleable copy in `loot-cache.json`.
       pseudoStats: item && !isWaystone(item) ? derivePseudoStats(item) : [],
       pseudoMinRatio: settings.trade2.pseudoMinRatio,
+      // What each mod will actually be searched at, so the prefilled min boxes say the same thing
+      // the query does. Shipped rather than recomputed over there for the reason `pseudoMinRatio` is
+      // — the renderer is a plain <script>, and a second copy of the rule would disagree the moment
+      // one of them was tuned. Without it a Reprice with untouched boxes would send the item's own
+      // rolls back as bounds and silently undo the floor.
+      modFloors: item ? searchFloorsByMod(modsOf(item)) : [],
       // Empty for anything that isn't a waystone, which is what makes the editor fall back to the
       // ordinary mod rows without needing to know the difference.
       mapRows: item && settings.trade2.useMapFilters ? mapRowsOf(item) : [],
@@ -91,6 +99,10 @@ export function registerIpcHandlers({
         modFilters,
         pseudoFilters,
         mapFilters,
+        // Written on every reprice, outside the conditional below, because it has to be *cleared* as
+        // well as set: an item that was rate-limited an hour ago and has just priced would otherwise
+        // keep the badge for good, and one that failed for a new reason would keep the old one.
+        unpricedReason: estimate.rateLimited ? ("rateLimited" as const) : undefined,
         ...(estimate.chaosValue !== null
           ? {
               chaosValue: estimate.chaosValue,
@@ -106,12 +118,19 @@ export function registerIpcHandlers({
               // decision rather than the ladder's; carrying the old automatic set forward as well
               // would let the two accumulate until the search had nothing left to send.
               autoDroppedMods: estimate.autoDroppedMods,
+              // Overwritten wholesale for the same reason, and it has to move in step with the two
+              // lists above: it is what the editor ticks from, so a stale copy would credit this
+              // price to the mods the *previous* search asked for.
+              searchedMods: estimate.searchedMods,
               // Inside the conditional on purpose: a reprice that found nothing leaves the displayed
               // price alone, so the link has to keep pointing at the search that produced it. Only a
               // new number gets a new query — and, for the same reason, only a new number gets a new
               // median. The pair on the row must come from one sample or it describes no listing set.
               tradeSearchId: estimate.searchId,
-              tradeMedianChaosValue: estimate.medianChaosValue ?? undefined
+              tradeMedianChaosValue: estimate.medianChaosValue ?? undefined,
+              // Same conditional and the same reason: a new price gets a new quote, since the
+              // unit shown has to describe the listing the number came from.
+              tradeListingQuote: estimate.listingQuote
             }
           : {})
       });
@@ -134,7 +153,10 @@ export function registerIpcHandlers({
         // leave that looking like mods had gone missing.
         pseudoDropped: estimate.pseudoDropped,
         pseudoStats: estimate.pseudoStats,
-        mapDropped: estimate.mapDropped
+        mapDropped: estimate.mapDropped,
+        // The panel words its own status line from this: pressing Reprice into a spent budget should
+        // read as "not looked up yet", not as "no listings match".
+        rateLimited: estimate.rateLimited
       };
     }
   );
@@ -147,6 +169,27 @@ export function registerIpcHandlers({
     if (!url) return false;
     await shell.openExternal(url);
     return true;
+  });
+
+  // Read off `getStatus()` rather than through a dep of its own: `OverlayStatus.update` is already
+  // the value the header rendered the line from, so there is no second source that could disagree
+  // with what the user clicked. False when nothing is being advertised, like the handler above.
+  ipcMain.handle(IPC.OPEN_RELEASES_PAGE, async () => {
+    const update = getStatus().update;
+    if (!update) return false;
+    await shell.openExternal(update.url);
+    return true;
+  });
+
+  ipcMain.handle(IPC.REFRESH_PRICES, async () => {
+    // Success is `getLastRefreshAt()` having moved, rather than a new return type on `refresh()`.
+    // That field is advanced only when a category actually answered, which is precisely the question
+    // the button needs answered — so the two share one rule instead of growing a second one that
+    // could disagree. A refresh where every request failed leaves it alone, and the button says so.
+    const before = poeNinja.getLastRefreshAt();
+    await poeNinja.refresh();
+    const refreshedAt = poeNinja.getLastRefreshAt();
+    return { refreshedAt, updated: refreshedAt !== before };
   });
 
   ipcMain.handle(IPC.SET_MANUAL_PRICE, async (_event, itemId: string, value: number | null) => {

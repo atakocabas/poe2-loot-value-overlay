@@ -34,37 +34,62 @@ export function isWaystone(item: Pick<ParsedItem, "itemClass">): boolean {
 }
 
 /**
- * The reward totals worth searching on, keyed to GGG's `map_filters` ids — confirmed against
+ * The printed totals worth searching on, keyed to GGG's `map_filters` ids — confirmed against
  * `/api/trade2/data/filters`, where the group is titled "Endgame Filters".
  *
- * Only the four rewards. `map_magic_monsters` (Monster Effectiveness) and `map_revives` are published
- * and parsed but deliberately absent: they describe difficulty, which is a cost to the buyer rather
- * than a benefit, so a `min` floor on them would exclude the easier waystones that are worth *more*.
- * `map_tier` is absent for a different reason — the base type is per-tier, and measured live,
- * `type: "Waystone (Tier 15)"` plus `map_tier: { min: 16 }` returns zero listings, so the tier is
- * already exact without it.
+ * **The direction is the whole design here.** Every reward is a floor: a buyer choosing between
+ * waystones wants at least this much rarity, pack size, drop chance. Revives is a floor for the same
+ * reason — more attempts is a benefit. Monster Effectiveness is the one that inverts, and it used to
+ * be excluded outright on the grounds that "a `min` floor would exclude the easier waystones that are
+ * worth more". That reasoning was right about the direction and wrong about the remedy: difficulty is
+ * a cost to the buyer, so the comparables are the waystones at **most** this dangerous, which is a
+ * ceiling rather than an absence. Sending nothing priced a 5% waystone against 50% ones.
+ *
+ * `map_tier` stays absent, for a different reason that has not changed — the base type is per-tier,
+ * and measured live, `type: "Waystone (Tier 15)"` plus `map_tier: { min: 16 }` returns zero listings,
+ * so the tier is already exact without it. `map_gold` and `map_experience` are published too but
+ * nothing parses them; they are not printed on the clipboard's property block.
  */
-const MAP_FILTERS: Array<{ key: keyof ItemMapStats; id: string; label: string }> = [
-  { key: "itemRarity", id: "map_iir", label: "Item Rarity" },
-  { key: "packSize", id: "map_packsize", label: "Pack Size" },
-  { key: "monsterRarity", id: "map_rare_monsters", label: "Monster Rarity" },
-  { key: "dropChance", id: "map_bonus", label: "Waystone Drop Chance" }
+const MAP_FILTERS: Array<{
+  key: keyof ItemMapStats;
+  id: string;
+  label: string;
+  direction: "min" | "max";
+}> = [
+  { key: "itemRarity", id: "map_iir", label: "Item Rarity", direction: "min" },
+  { key: "packSize", id: "map_packsize", label: "Pack Size", direction: "min" },
+  { key: "monsterRarity", id: "map_rare_monsters", label: "Monster Rarity", direction: "min" },
+  { key: "dropChance", id: "map_bonus", label: "Waystone Drop Chance", direction: "min" },
+  { key: "revives", id: "map_revives", label: "Revives Available", direction: "min" },
+  {
+    key: "monsterEffectiveness",
+    id: "map_magic_monsters",
+    label: "Monster Effectiveness",
+    direction: "max"
+  }
 ];
 
 /**
- * A waystone's searchable reward totals. Empty for anything that isn't one, and for a waystone whose
- * property block was never parsed — both mean "no reward constraint", which is the pre-feature query.
+ * A waystone's searchable totals. Empty for anything that isn't one, and for a waystone whose property
+ * block was never parsed — both mean "no constraint", which is the pre-feature query.
+ *
+ * **The zero test is direction-aware, and that asymmetry is deliberate.** A floor of 0 asks for
+ * nothing and is culled, which is what keeps a waystone printing `Revives Available: 0` from carrying
+ * a filter every listing already satisfies. A *ceiling* of 0 is the opposite: it is the best possible
+ * case, the one worth the most, and culling it would drop the constraint on exactly the waystones this
+ * exists to price.
  *
  * Shared by the client that builds the filters and the editor that shows the rows, so the two can't
- * drift on which totals are searched or what they're called.
+ * drift on which totals are searched, what they're called, or which way they point.
  */
 export function mapRowsOf(item: Pick<ParsedItem, "itemClass" | "mapStats">): MapRow[] {
   if (!isWaystone(item)) return [];
 
   const stats = mapStatsOf(item);
-  return MAP_FILTERS.filter(({ key }) => stats[key] !== null && stats[key]! > 0).map(
-    ({ key, id, label }) => ({ id, label, value: stats[key]! })
-  );
+  return MAP_FILTERS.filter(({ key, direction }) => {
+    const value = stats[key];
+    return value !== null && (direction === "max" || value > 0);
+  }).map(({ key, id, label, direction }) => ({ id, label, value: stats[key]!, direction }));
 }
 
 /** Display name for a `map_filters` id, for the log lines and no-match messages. */

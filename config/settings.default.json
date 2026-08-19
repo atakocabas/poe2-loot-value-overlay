@@ -36,6 +36,10 @@
   "stash": {
     "selectedTabIds": []
   },
+  "updates": {
+    "checkForUpdates": true,
+    "checkIntervalMs": 21600000
+  },
   "poeNinja": {
     "baseUrl": "https://poe.ninja/poe2/api/economy",
     "refreshIntervalMs": 600000,
@@ -89,8 +93,9 @@
     "minSearchIntervalMs": 10000,
     "maxListings": 5,
     "listingStatus": "securable",
+    "listingStatusMigrated": false,
+    "minListingsThresholdMigrated": false,
     "saleType": "buyout",
-    "maxModLadderSearches": 3,
     "useModDropLadder": true,
     "maxModDropSearches": 5,
     "modDropTierThreshold": 3,
@@ -98,10 +103,14 @@
     "minModMatchRatio": 0.5,
     "useDefenceFilters": true,
     "defenceMinRatio": 0.9,
+    "useWeaponFilters": true,
     "usePseudoFilters": true,
     "pseudoMinRatio": 0.9,
     "useMapFilters": true,
     "mapMinRatio": 0.9,
+    "useBaseItemSearch": true,
+    "baseItemMinLevel": 81,
+    "minListingPrice": 1,
     "maxTransientRetries": 1
   }
 }

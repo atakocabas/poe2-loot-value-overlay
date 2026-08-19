@@ -25,7 +25,7 @@ export interface RepriceResult {
   listings: number;
   /** Listings the search matched in total, which the sample was drawn from the middle of. */
   matches: number;
-  /** Mods the priced listings all shared, and how many the item offered. See `modLadder()`. */
+  /** Mods every priced listing carried, and how many the item offered. See `searchRungs()`. */
   matchedMods: number;
   totalMods: number;
   /** Nothing matched at this item's own defence totals, so the search dropped that constraint. */
@@ -36,6 +36,8 @@ export interface RepriceResult {
   pseudoStats: PseudoStat[];
   /** A waystone's reward floors matched nothing, so the price is off the base type alone. */
   mapDropped: boolean;
+  /** No search went out — the rate-limit budget declined it. Distinct from "nothing matched". */
+  rateLimited: boolean;
 }
 
 /** The editor's non-mod rows, plus the ratios their floors are derived from. */
@@ -43,6 +45,12 @@ export interface EditorRowsResult {
   pseudoStats: PseudoStat[];
   /** `trade2.pseudoMinRatio`, so the editor shows the floor the search will actually use. */
   pseudoMinRatio: number;
+  /**
+   * The roll each mod is searched at, keyed by its display text — `searchFloor()` applied to the
+   * item's own mods. The editor prefills its min boxes from this rather than from the printed roll,
+   * so the boxes report the query rather than the item.
+   */
+  modFloors: Array<{ text: string; min: number }>;
   /** A waystone's reward totals; empty for everything else. */
   mapRows: MapRow[];
   mapMinRatio: number;
@@ -51,6 +59,17 @@ export interface EditorRowsResult {
 export interface SetManualPriceResult {
   item: PricedItem | null;
   session: Session | null;
+}
+
+export interface RefreshPricesResult {
+  /** Epoch ms of the prices now in use — unchanged from before when nothing came back. */
+  refreshedAt: number | null;
+  /**
+   * Whether this pull actually replaced anything. False means every category failed, which leaves
+   * the cache exactly as stale as it was — a distinction the button has to make, since "the request
+   * finished" and "there are new prices" look identical from the renderer otherwise.
+   */
+  updated: boolean;
 }
 
 contextBridge.exposeInMainWorld("poe2Overlay", {
@@ -86,8 +105,15 @@ contextBridge.exposeInMainWorld("poe2Overlay", {
   /** False when the item has no search to open — priced off poe.ninja, or captured before the id was. */
   openTradeSearch: (itemId: string): Promise<boolean> =>
     ipcRenderer.invoke(IPC.OPEN_TRADE_SEARCH, itemId),
+  /**
+   * Opens the release page for the update the header is advertising. Takes nothing — main holds the
+   * URL, and the renderer never handles one. False when there is no update to open.
+   */
+  openReleasesPage: (): Promise<boolean> => ipcRenderer.invoke(IPC.OPEN_RELEASES_PAGE),
   setManualPrice: (itemId: string, value: number | null): Promise<SetManualPriceResult> =>
-    ipcRenderer.invoke(IPC.SET_MANUAL_PRICE, itemId, value)
+    ipcRenderer.invoke(IPC.SET_MANUAL_PRICE, itemId, value),
+  /** Pulls poe.ninja now. Resolves when the pull finishes — the header updates itself off the push. */
+  refreshPrices: (): Promise<RefreshPricesResult> => ipcRenderer.invoke(IPC.REFRESH_PRICES)
 });
 
 // The setup window loads this same preload — a second one would duplicate the wiring to expose

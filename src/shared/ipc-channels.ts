@@ -41,7 +41,26 @@ export const IPC = {
    * origin — the renderer never handles one at all.
    */
   OPEN_TRADE_SEARCH: "open-trade-search",
+  /**
+   * Opens the GitHub release page for the update the header is advertising, in the system browser.
+   *
+   * Takes no argument at all, for the reason above one line for one: the URL came from GitHub's API
+   * rather than from anything this app assembled, so handing it to the renderer and taking it back
+   * would be the one place `shell.openExternal` is reached with a string that made a round trip
+   * through a page. Main already holds the `AvailableUpdate` behind `OverlayStatus.update`; the
+   * renderer only has to say "that one".
+   */
+  OPEN_RELEASES_PAGE: "open-releases-page",
   SET_MANUAL_PRICE: "set-manual-price",
+  /**
+   * Pulls poe.ninja now instead of waiting out the 10-minute timer, for the panel's Refresh button.
+   *
+   * Answers whether prices actually came back, which is not the same as "the request finished" — a
+   * refresh that fetched nothing leaves the cache exactly as stale as it was. It needs no companion
+   * push: `PoeNinjaClient.onRefresh` already broadcasts `OVERLAY_STATUS`, which is what carries the
+   * new age and rates to the header.
+   */
+  REFRESH_PRICES: "refresh-prices",
 
   // The setup window's three channels. Registered separately from the overlay's, because on first
   // run setup runs to completion *before* the pricing clients and watchers those handlers need

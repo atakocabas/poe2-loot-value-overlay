@@ -49,6 +49,77 @@ export function foldLegacyProcessName(settings: Settings, loaded: unknown): Sett
 }
 
 /**
+ * Takes an install still carrying the old shipped `listingStatus` default to the new one, once.
+ *
+ * `mergeWithDefaults` only fills in keys that are *missing*, so changing a default in
+ * `settings.default.json` reaches new installs and nobody else. When the default moved from
+ * `"online"` (GGG's *In Person (Online)*) to `"securable"` (*Instant Buyout*), every existing
+ * settings.json went on searching in-person listings — which is invisible: the app quietly prices
+ * against listings you cannot buy on demand, and "View search" faithfully reopens that same query,
+ * so the site agrees with the app and neither says anything is wrong.
+ *
+ * Only an exact `"online"` is rewritten. That was the old default, so it is the one value a user
+ * cannot have arrived at by choosing it from a dropdown that did not exist yet; `"any"`,
+ * `"available"` and `"onlineleague"` could only have been typed deliberately and are left alone.
+ * The marker is stamped either way, so this runs exactly once and a deliberate `"online"` picked in
+ * the settings window afterwards is never overridden.
+ */
+export function adoptInstantBuyoutDefault(settings: Settings): Settings {
+  if (settings.trade2.listingStatusMigrated) return settings;
+  return {
+    ...settings,
+    trade2: {
+      ...settings.trade2,
+      listingStatus: settings.trade2.listingStatus === "online" ? "securable" : settings.trade2.listingStatus,
+      listingStatusMigrated: true
+    }
+  };
+}
+
+/**
+ * The old shipped `minListingsForMatch`. See `adoptListingThresholdDefault`.
+ *
+ * A literal rather than a lookup into git history, obviously — but it is the *only* value that fold
+ * may touch, so it is named here rather than buried in the condition.
+ */
+const LEGACY_LISTING_THRESHOLD = 10;
+
+/**
+ * Takes an install still carrying the old shipped `minListingsForMatch` to the current one, once.
+ *
+ * Same failure as `adoptInstantBuyoutDefault` above and, unlike that one, this default really did
+ * change under existing installs: `settings.default.json` shipped **10** until "Drop low-tier mods to
+ * find a market", which took it to **1**. `mergeWithDefaults` only fills in keys that are *missing*,
+ * so every settings.json written before that commit still holds 10 and always would.
+ *
+ * What that costs is not subtle. The ladder walks past the rung carrying the item's **whole** mod set
+ * whenever fewer than 10 listings have it, and prices off a looser rung instead — a real four-mod
+ * Sapphire had 9 listings at all four mods and was priced at 0.12 chaos off 147 listings sharing
+ * three, while the four-mod market started at 4 divine. It reported this correctly and looked, from
+ * the outside, exactly like a search that had failed to find listings that plainly existed.
+ *
+ * Only an exact 10 is rewritten: there is no UI for this key, so 10 is the one value an install can
+ * be carrying without anyone having chosen it. The marker is stamped either way, so a deliberate 10
+ * hand-edited afterwards is never overridden — the same reasoning that makes the fold above safe to
+ * keep. The target comes from `defaults` rather than a second literal, so it cannot drift from the
+ * file it exists to adopt.
+ */
+export function adoptListingThresholdDefault(settings: Settings, defaults: Settings): Settings {
+  if (settings.trade2.minListingsThresholdMigrated) return settings;
+  return {
+    ...settings,
+    trade2: {
+      ...settings.trade2,
+      minListingsForMatch:
+        settings.trade2.minListingsForMatch === LEGACY_LISTING_THRESHOLD
+          ? defaults.trade2.minListingsForMatch
+          : settings.trade2.minListingsForMatch,
+      minListingsThresholdMigrated: true
+    }
+  };
+}
+
+/**
  * Unions the poe.ninja category lists with the defaults. `mergeWithDefaults` treats arrays as
  * leaves, so an install whose settings.json predates a newly added category would never fetch it
  * and every item in that category would stay silently unpriced — the same failure mode that hid
@@ -97,10 +168,18 @@ export function loadSettings(): Settings {
   const defaults = JSON.parse(fs.readFileSync(defaultSettingsPath(), "utf-8")) as Settings;
   const loaded = JSON.parse(fs.readFileSync(userPath, "utf-8")) as unknown;
   cachedSettings = unionPoeNinjaCategories(
-    foldLegacyProcessName(mergeWithDefaults(defaults, loaded), loaded),
+    adoptListingThresholdDefault(
+      adoptInstantBuyoutDefault(foldLegacyProcessName(mergeWithDefaults(defaults, loaded), loaded)),
+      defaults
+    ),
     defaults
   );
   fs.writeFileSync(userPath, JSON.stringify(cachedSettings, null, 2));
+  // Which file the values came from, once per process. Every knob printed at boot is read from here,
+  // and more than one settings.json can exist on a machine — an unpackaged run and a packaged one
+  // resolve `app.getPath("userData")` differently — so "the settings say X" is not a checkable claim
+  // without the path beside it. It cost an afternoon of guessing once.
+  console.log(`[settings] loaded ${userPath}`);
   return cachedSettings;
 }
 
