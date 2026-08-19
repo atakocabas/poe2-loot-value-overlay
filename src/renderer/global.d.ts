@@ -1,5 +1,10 @@
 import type { PricedItem, Session } from "../shared/types";
-import type { EditorRowsResult, RepriceResult, SetManualPriceResult } from "../preload/index";
+import type {
+  EditorRowsResult,
+  RefreshPricesResult,
+  RepriceResult,
+  SetManualPriceResult
+} from "../preload/index";
 
 declare global {
   type PricedItem = import("../shared/types").PricedItem;
@@ -39,7 +44,9 @@ declare global {
         mapFilters: ModFilter[]
       ) => Promise<RepriceResult>;
       openTradeSearch: (itemId: string) => Promise<boolean>;
+      openReleasesPage: () => Promise<boolean>;
       setManualPrice: (itemId: string, value: number | null) => Promise<SetManualPriceResult>;
+      refreshPrices: () => Promise<RefreshPricesResult>;
     };
     /** Exposed by the same preload, but only ever called from setup.html. */
     poe2Setup: {

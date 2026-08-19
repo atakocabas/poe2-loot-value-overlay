@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
-import { foldLegacyProcessName, mergeWithDefaults, unionPoeNinjaCategories } from "../main/settings";
+import {
+  adoptInstantBuyoutDefault,
+  adoptListingThresholdDefault,
+  foldLegacyProcessName,
+  mergeWithDefaults,
+  unionPoeNinjaCategories
+} from "../main/settings";
 import type { Settings } from "../shared/settings";
 
 function makeDefaults(): Settings {
@@ -34,6 +40,10 @@ function makeDefaults(): Settings {
     stash: {
       selectedTabIds: []
     },
+    updates: {
+      checkForUpdates: true,
+      checkIntervalMs: 21600000
+    },
     poeNinja: {
       baseUrl: "https://poe.ninja/poe2/api/economy",
       refreshIntervalMs: 900000,
@@ -63,18 +73,23 @@ function makeDefaults(): Settings {
       saleType: "buyout" as const,
       maxListings: 5,
       listingStatus: "online" as const,
-      maxModLadderSearches: 3,
+      listingStatusMigrated: false,
+      minListingsThresholdMigrated: false,
       useModDropLadder: true,
       maxModDropSearches: 5,
       modDropTierThreshold: 3,
       minListingsForMatch: 10,
       minModMatchRatio: 0.5,
       useDefenceFilters: true,
+      useWeaponFilters: true,
       defenceMinRatio: 0.9,
       usePseudoFilters: true,
       pseudoMinRatio: 0.9,
       useMapFilters: true,
       mapMinRatio: 0.9,
+      useBaseItemSearch: true,
+      baseItemMinLevel: 81,
+      minListingPrice: 1,
       maxTransientRetries: 1
     }
   };
@@ -160,6 +175,161 @@ test("fills in the panel's side for a settings.json written before it was config
   assert.equal(merged.overlay.panel.position, "right");
   assert.equal(merged.overlay.panel.width, 520);
   assert.equal(merged.overlay.panel.maxHeightPercent, 60);
+});
+
+test("the shipped listing status is the one that matches what the price claims to mean", () => {
+  // Read from the file for the same reason as the sale type above, and with more riding on it: this
+  // is the value `adoptInstantBuyoutDefault` migrates existing installs *to*, so a typo here would
+  // rewrite every settings.json to something GGG rejects rather than leaving them alone.
+  const defaults = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  ) as { trade2: { listingStatus: string; listingStatusMigrated: boolean } };
+
+  assert.equal(defaults.trade2.listingStatus, "securable");
+  // False as shipped, which is what makes an existing install migrate: `mergeWithDefaults` fills the
+  // key in as false and the fold then runs once. A fresh install is already on "securable", so the
+  // fold has nothing to rewrite and only stamps the marker.
+  assert.equal(defaults.trade2.listingStatusMigrated, false);
+});
+
+test("an install still on the old listing status default is moved to instant buyout", () => {
+  const settings = makeDefaults();
+
+  const migrated = adoptInstantBuyoutDefault(settings);
+
+  assert.equal(migrated.trade2.listingStatus, "securable");
+  assert.equal(migrated.trade2.listingStatusMigrated, true);
+});
+
+test("a listing status the user can only have chosen deliberately survives the migration", () => {
+  // "online" was the old shipped default and is the one value nobody had to pick. Every other option
+  // had to be typed into settings.json by hand, so rewriting one would discard a real decision.
+  for (const status of ["any", "available", "onlineleague"] as const) {
+    const settings = makeDefaults();
+    settings.trade2.listingStatus = status;
+
+    const migrated = adoptInstantBuyoutDefault(settings);
+
+    assert.equal(migrated.trade2.listingStatus, status);
+    // Stamped anyway, so the migration is spent and can never revisit this install.
+    assert.equal(migrated.trade2.listingStatusMigrated, true);
+  }
+});
+
+test("an online listing status picked after the migration ran is left alone", () => {
+  // The whole reason the marker exists. Now that the settings window can set this, "online" is a
+  // choice like any other, and a fold that kept correcting it would make the dropdown silently
+  // not work.
+  const settings = makeDefaults();
+  settings.trade2.listingStatusMigrated = true;
+
+  const migrated = adoptInstantBuyoutDefault(settings);
+
+  assert.equal(migrated.trade2.listingStatus, "online");
+  assert.equal(migrated, settings);
+});
+
+test("a settings.json predating the marker migrates on the next load", () => {
+  // The real upgrade path, and the reason this needs a fold at all: the key is absent entirely, so
+  // `mergeWithDefaults` supplies the false that lets the migration fire — but it leaves the stale
+  // `listingStatus` exactly as it found it, because that key is present. Composed the way
+  // `loadSettings` composes them.
+  const defaults = makeDefaults();
+  defaults.trade2.listingStatus = "securable";
+  const { listingStatusMigrated, ...trade2WithoutMarker } = makeDefaults().trade2;
+  const loaded = { ...defaults, trade2: trade2WithoutMarker };
+
+  const merged = mergeWithDefaults(defaults, loaded as typeof defaults);
+  assert.equal(merged.trade2.listingStatus, "online");
+
+  const migrated = adoptInstantBuyoutDefault(merged);
+
+  assert.equal(migrated.trade2.listingStatus, "securable");
+  assert.equal(migrated.trade2.listingStatusMigrated, true);
+});
+
+test("the shipped listing threshold stops at the first rung that matched anything", () => {
+  // Read from the file, like the listing status above and for the same reason: this is the value
+  // `adoptListingThresholdDefault` migrates existing installs *to*.
+  const defaults = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  ) as { trade2: { minListingsForMatch: number; minListingsThresholdMigrated: boolean } };
+
+  assert.equal(defaults.trade2.minListingsForMatch, 1);
+  assert.equal(defaults.trade2.minListingsThresholdMigrated, false);
+});
+
+test("an install still on the old listing threshold is moved to the shipped one", () => {
+  // 10 was the shipped value until "Drop low-tier mods to find a market" took it to 1. Every
+  // settings.json written before that kept 10, and with it a ladder that walked past the rung
+  // carrying the item's whole mod set whenever fewer than ten listings had it.
+  const settings = makeDefaults();
+  const defaults = makeDefaults();
+  defaults.trade2.minListingsForMatch = 1;
+
+  const migrated = adoptListingThresholdDefault(settings, defaults);
+
+  assert.equal(migrated.trade2.minListingsForMatch, 1);
+  assert.equal(migrated.trade2.minListingsThresholdMigrated, true);
+});
+
+test("the fold adopts whatever the defaults file currently says, not a second copy of it", () => {
+  // A literal target here would drift the moment the default was retuned, and this fold rewrites
+  // every existing install — the one place a stale number does the most damage.
+  const settings = makeDefaults();
+  const defaults = makeDefaults();
+  defaults.trade2.minListingsForMatch = 3;
+
+  assert.equal(adoptListingThresholdDefault(settings, defaults).trade2.minListingsForMatch, 3);
+});
+
+test("a listing threshold that isn't the old default is a deliberate value and survives", () => {
+  // There is no UI for this key, so 10 is the one number an install can carry without anyone having
+  // chosen it. Anything else was typed into settings.json by hand.
+  for (const threshold of [1, 3, 5, 25]) {
+    const settings = makeDefaults();
+    settings.trade2.minListingsForMatch = threshold;
+    const defaults = makeDefaults();
+    defaults.trade2.minListingsForMatch = 1;
+
+    const migrated = adoptListingThresholdDefault(settings, defaults);
+
+    assert.equal(migrated.trade2.minListingsForMatch, threshold);
+    // Stamped anyway, so the migration is spent and can never revisit this install.
+    assert.equal(migrated.trade2.minListingsThresholdMigrated, true);
+  }
+});
+
+test("a threshold of 10 set after the migration ran is left alone", () => {
+  // The whole reason the marker exists: once the fold has run, 10 is a choice like any other and a
+  // fold that kept correcting it would make that choice silently not work.
+  const settings = makeDefaults();
+  settings.trade2.minListingsThresholdMigrated = true;
+  const defaults = makeDefaults();
+  defaults.trade2.minListingsForMatch = 1;
+
+  const migrated = adoptListingThresholdDefault(settings, defaults);
+
+  assert.equal(migrated.trade2.minListingsForMatch, 10);
+  assert.equal(migrated, settings);
+});
+
+test("a settings.json predating the threshold marker migrates on the next load", () => {
+  // The real upgrade path, composed the way `loadSettings` composes it: the marker is absent, so
+  // `mergeWithDefaults` supplies the false that lets the fold fire, while leaving the stale
+  // `minListingsForMatch` exactly as it found it because that key *is* present.
+  const defaults = makeDefaults();
+  defaults.trade2.minListingsForMatch = 1;
+  const { minListingsThresholdMigrated, ...trade2WithoutMarker } = makeDefaults().trade2;
+  const loaded = { ...defaults, trade2: trade2WithoutMarker };
+
+  const merged = mergeWithDefaults(defaults, loaded as typeof defaults);
+  assert.equal(merged.trade2.minListingsForMatch, 10, "the stale value survives the merge");
+
+  const migrated = adoptListingThresholdDefault(merged, defaults);
+
+  assert.equal(migrated.trade2.minListingsForMatch, 1);
+  assert.equal(migrated.trade2.minListingsThresholdMigrated, true);
 });
 
 test("preserves a user's customized value instead of overwriting it with the default", () => {

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { convertFromChaos, formatHubRates, formatNumber, formatValue } from "../shared/format-value";
+import {
+  convertFromChaos,
+  formatHubRates,
+  formatNumber,
+  formatValue,
+  pickDisplayUnit
+} from "../shared/format-value";
 import type { CurrencyRates } from "../shared/format-value";
 
 // Copied from a live poe.ninja response: rates are per divine, so 1 divine = 7.86c = 374.7ex.
@@ -14,11 +20,43 @@ test("chaos converts to the unit players actually quote", () => {
   assert.ok(Math.abs(convertFromChaos(1, RATES, "exalted") - 47.67) < 0.01);
 });
 
-test("auto picks divine once an item is worth one, exalted below that", () => {
+test("auto steps divine, then chaos, then exalted as the value gets smaller", () => {
   assert.equal(formatValue(78.6, RATES), "10div");
   assert.equal(formatValue(7.86, RATES), "1div");
-  assert.equal(formatValue(1, RATES), "47.7ex");
+  // Chaos used to be skipped here, which sent everything under a divine into three-digit exalted
+  // figures the moment a chaos was worth ~33 exalted rather than the ~48 this fixture predates.
+  assert.equal(formatValue(2, RATES), "2c");
+  assert.equal(formatValue(1, RATES), "1c");
+  // Below one chaos the exalted figure is the readable one again.
   assert.equal(formatValue(0.05, RATES), "2.38ex");
+});
+
+test("a listing's own currency decides the unit, whatever size the number is", () => {
+  // The point of persisting the quote: a row priced off a seller asking 2 chaos should read as the
+  // market reads, not as the same value restated in another unit.
+  assert.equal(formatValue(2, RATES, "auto", { amount: 2, currency: "chaos" }), "2c");
+  assert.equal(formatValue(0.05, RATES, "auto", { amount: 1, currency: "chaos" }), "0.05c");
+  assert.equal(formatValue(78.6, RATES, "auto", { amount: 150, currency: "exalted" }), "3,747ex");
+
+  // The number still comes from the stored chaos value, never from the seller's amount — otherwise
+  // the row and the map total would disagree about the same item the moment the rates moved.
+  assert.equal(formatValue(7.86, RATES, "auto", { amount: 999, currency: "divine" }), "1div");
+});
+
+test("an explicit setting outranks the listing, and an unlabelled currency falls back", () => {
+  const quote = { amount: 2, currency: "chaos" };
+  assert.equal(formatValue(2, RATES, "exalted", quote), "95.3ex");
+  // A quote in something with no unit label — an alch, a fragment — would otherwise print a unit
+  // the header's rate line cannot explain.
+  assert.equal(formatValue(2, RATES, "auto", { amount: 5, currency: "alch" }), "2c");
+});
+
+test("pickDisplayUnit is the rule both the headline and its median read", () => {
+  assert.equal(pickDisplayUnit(2, RATES, "auto"), "chaos");
+  assert.equal(pickDisplayUnit(0.5, RATES, "auto"), "exalted");
+  assert.equal(pickDisplayUnit(100, RATES, "auto"), "divine");
+  assert.equal(pickDisplayUnit(100, RATES, "auto", { amount: 2, currency: "chaos" }), "chaos");
+  assert.equal(pickDisplayUnit(100, RATES, "chaos", { amount: 1, currency: "divine" }), "chaos");
 });
 
 test("small values are no longer flattened to zero", () => {

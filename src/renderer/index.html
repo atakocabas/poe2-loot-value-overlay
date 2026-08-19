@@ -26,6 +26,16 @@
         <div id="price-status"></div>
         <!-- Starts hidden so the header doesn't reserve a blank row before poe.ninja first answers. -->
         <div id="rate-status" class="hidden"></div>
+        <!--
+          Ships hidden and is revealed, like #rate-status above and for the same reason: there is
+          nothing to say until the release check answers, and a current install never gets a line at
+          all — so reserving the row would leave a permanent blank one on most machines.
+
+          A button because it is the only thing in this header you can press. Hidden in the minimal
+          form (see style.css), which also means it is only ever on screen while the panel is
+          interactive — it can never look live while clicks are passing through.
+        -->
+        <button id="update-status" class="hidden" type="button"></button>
       </div>
       <!--
         Static rather than rebuilt per render: these used to be recreated on every keystroke, which
@@ -51,6 +61,12 @@
       <div id="item-list"></div>
       <div id="list-empty" class="empty-note">No drops captured yet — Ctrl+C an item in game.</div>
       <div id="panel-footer">
+        <!--
+          Forces the poe.ninja pull that otherwise happens on a 10-minute timer. Here rather than
+          beside the header's price-age line because this is a between-maps action, and the footer is
+          where the panel-wide ones already live — it inherits the minimal-mode hide with them.
+        -->
+        <button id="refresh-prices" type="button">Refresh prices</button>
         <button id="export-csv" type="button">Export CSV</button>
         <button id="clear-history" type="button">Clear all</button>
       </div>

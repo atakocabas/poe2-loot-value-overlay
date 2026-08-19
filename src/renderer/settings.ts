@@ -1,5 +1,5 @@
 /*
- * The settings window: hotkeys, overlay behaviour, display currency and the trade search's sale type.
+ * The settings window: hotkeys, overlay behaviour, display currency and the trade search filters.
  *
  * The whole body is an IIFE on purpose, exactly as in setup.ts. The renderer has no bundler — every
  * page loads compiled JS as a plain <script> — so tsc treats common.ts, index.ts, setup.ts and this
@@ -19,7 +19,10 @@
   const panelHeightInput = document.getElementById("panel-height") as HTMLInputElement;
   const panelPositionSelect = document.getElementById("panel-position") as HTMLSelectElement;
   const currencySelect = document.getElementById("currency") as HTMLSelectElement;
+  const listingStatusSelect = document.getElementById("listing-status") as HTMLSelectElement;
   const saleTypeSelect = document.getElementById("sale-type") as HTMLSelectElement;
+  const useMapFiltersInput = document.getElementById("use-map-filters") as HTMLInputElement;
+  const mapRatioInput = document.getElementById("map-min-ratio") as HTMLInputElement;
 
   /** Working copy of the hotkeys. The recorder edits this; Save sends it. */
   const hotkeys: Record<HotkeyName, string> = {
@@ -257,7 +260,12 @@
     panelHeightInput.value = String(config.overlay.panel.maxHeightPercent);
     panelPositionSelect.value = config.overlay.panel.position;
     currencySelect.value = config.display.currency;
+    listingStatusSelect.value = config.trade2.listingStatus;
     saleTypeSelect.value = config.trade2.saleType;
+    useMapFiltersInput.checked = config.trade2.useMapFilters;
+    // Edited as a percentage and stored as a ratio. `readNumber` rounds to whole numbers, so a ratio
+    // typed directly would be unusable — 0.9 rounds to 1, i.e. silently "no widening at all".
+    mapRatioInput.value = String(Math.round(config.trade2.mapMinRatio * 100));
   }
 
   async function load(): Promise<void> {
@@ -287,7 +295,13 @@
         }
       },
       display: { currency: currencySelect.value as SettingsConfig["display"]["currency"] },
-      trade2: { saleType: saleTypeSelect.value as SettingsConfig["trade2"]["saleType"] }
+      trade2: {
+        saleType: saleTypeSelect.value as SettingsConfig["trade2"]["saleType"],
+        listingStatus: listingStatusSelect.value as SettingsConfig["trade2"]["listingStatus"],
+        useMapFilters: useMapFiltersInput.checked,
+        mapMinRatio:
+          readNumber(mapRatioInput, Math.round(loaded.trade2.mapMinRatio * 100), 50, 100) / 100
+      }
     });
 
     saveButton.disabled = false;

@@ -1,4 +1,4 @@
-import { app } from "electron";
+import { app, shell } from "electron";
 import fs from "node:fs";
 import { IPC } from "../shared/ipc-channels";
 import { useAsciiConsoleOnWindows } from "./console-encoding";
@@ -16,6 +16,7 @@ import {
 } from "./window";
 import { registerHotkeys, unregisterAllHotkeys, type HotkeyHandlers } from "./hotkeys";
 import { createTray } from "./tray";
+import { UpdateChecker, type AvailableUpdate } from "./update-check";
 import { ClipboardWatcher } from "./clipboard-watch";
 import { ClientLogWatcher } from "./logwatch";
 import { ProcessWatcher } from "./process-watch";
@@ -59,6 +60,14 @@ let panelExpanded = false;
 let statusDeps: { poeNinja: PoeNinjaClient; settings: Settings } | null = null;
 let processWatcher: ProcessWatcher | null = null;
 let logWatcher: ClientLogWatcher | null = null;
+let updateChecker: UpdateChecker | null = null;
+/**
+ * A GitHub release newer than this one, or null until the check says otherwise.
+ *
+ * Held here rather than read back off `updateChecker` for the same reason `statusDeps` is nullable:
+ * `buildStatus()` is called before the checker is constructed, on the very first `GET_STATUS`.
+ */
+let availableUpdate: AvailableUpdate | null = null;
 /** False while first-run setup is still deciding what to boot with. See `onSetupSaved`. */
 let bootCompleted = false;
 
@@ -125,7 +134,8 @@ function buildStatus(): OverlayStatus {
     displayCurrency: statusDeps?.settings.display.currency ?? "auto",
     interactive: overlayInteractive,
     expanded: panelExpanded,
-    panel: statusDeps?.settings.overlay.panel ?? { width: 380, maxHeightPercent: 80, position: "right" }
+    panel: statusDeps?.settings.overlay.panel ?? { width: 380, maxHeightPercent: 80, position: "right" },
+    update: availableUpdate
   };
 }
 
@@ -331,7 +341,7 @@ app.whenReady().then(async () => {
   hideDelayMs = settings.overlay.hideDelayMs;
 
   createOverlayWindow();
-  createTray({
+  const tray = createTray({
     // A tray choice has to survive focus-following, otherwise the overlay would flip back a
     // fraction of a second later; it's cleared once PoE2 next takes focus, and on game exit.
     onShowOverlay: () => {
@@ -351,6 +361,11 @@ app.whenReady().then(async () => {
       void showSettingsWindow().then(() => applyHotkeys());
     },
     onOpenSetup: () => void showSetupWindow(),
+    // The URL is opened here rather than in tray.ts, so this process has exactly one place that
+    // hands a link to the browser — see the `onOpenReleases` note on `TrayActions`.
+    onOpenReleases: () => {
+      if (availableUpdate) void shell.openExternal(availableUpdate.url);
+    },
     onQuit: () => app.quit()
   });
 
@@ -393,11 +408,14 @@ app.whenReady().then(async () => {
       settings.hotkeys = next.hotkeys;
       settings.overlay = next.overlay;
       settings.display = next.display;
-      // One field, not the whole block: `Trade2Client` reads `saleType` when it builds a query, so
-      // this reaches the next lookup — but `createPublicGggFetch` and `TradeSearchBudget` captured
-      // their trade2 values at construction, and reassigning around them would look applied and
-      // silently not be.
+      // Four fields, not the whole block: `Trade2Client` reads `saleType` and `listingStatus` when
+      // it builds a query and the two map keys when it builds a waystone's filters, so these reach
+      // the next lookup — but `createPublicGggFetch` and `TradeSearchBudget` captured their trade2
+      // values at construction, and reassigning around them would look applied and silently not be.
       settings.trade2.saleType = next.trade2.saleType;
+      settings.trade2.listingStatus = next.trade2.listingStatus;
+      settings.trade2.useMapFilters = next.trade2.useMapFilters;
+      settings.trade2.mapMinRatio = next.trade2.mapMinRatio;
 
       hideDelayMs = settings.overlay.hideDelayMs;
       startForegroundWatcher(settings);
@@ -511,6 +529,22 @@ app.whenReady().then(async () => {
   console.log(`[process] watching for ${settings.poe2ProcessNames.join(", ")}...`);
   processWatcher.start();
 
+  // Last, and deliberately: this is the one thing at boot that talks to a host the app doesn't need
+  // in order to work, so it starts once everything that does is already running. It never rejects —
+  // see `UpdateChecker.check` — because this chain's `.catch` reports a failed *startup*.
+  updateChecker = new UpdateChecker({
+    settings,
+    currentVersion: app.getVersion(),
+    onUpdate: (update) => {
+      availableUpdate = update;
+      tray.setUpdateAvailable(update);
+      // The header line rides OVERLAY_STATUS, which the renderer reapplies wholesale — so this is
+      // the whole of getting it on screen.
+      broadcastStatus();
+    }
+  });
+  updateChecker.start();
+
   // Past this point a save from the tray's Settings… has to restart the app rather than hope the
   // new values reach everything constructed above.
   bootCompleted = true;
@@ -530,6 +564,7 @@ app.on("will-quit", () => {
   unregisterAllHotkeys();
   processWatcher?.stop();
   logWatcher?.stop();
+  updateChecker?.stop();
   // Without this the PowerShell helper is orphaned and keeps polling after we're gone.
   foregroundWatcher?.stop();
 });

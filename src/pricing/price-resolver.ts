@@ -58,11 +58,19 @@ function explainUnpriced(
       ? `"${item.name}" has no entry in exchange-metadata-ids.ts`
       : `not traded on the currency exchange (${metadataId}; ${exchangeEntries} priced ids loaded)`;
 
+  // A Normal base is the one rarity that reaches all three sources, so all three have to be
+  // accounted for or the line reads as "no data anywhere" when trade search is the only one that
+  // could ever have priced it. The exchange note stays ahead of it because a missing metadata id is
+  // a fixable bug while "this base has no market" is not, and the two are worth telling apart.
+  const tradeNote =
+    item.rarity === "Normal" ? ` Trade search: ${tradeReason ?? "returned nothing"}.` : "";
+
   return (
     `not found in poe.ninja data (tried: ${keysTried.join(", ")}; ${entriesLoaded} entries loaded), ` +
     `and ${exchangeNote}. ` +
     "If that id looks wrong, the name->id mapping needs fixing; if it looks right, the category " +
-    "may not be in poeNinja.exchangeOverviewTypes"
+    "may not be in poeNinja.exchangeOverviewTypes." +
+    tradeNote
   );
 }
 
@@ -102,7 +110,9 @@ function explainStrictMiss(
 /** How specific the search that produced a price was, for the log line. See also describeDefences. */
 function describeModMatch({ matched, total }: { matched: number; total: number }): string {
   if (total === 0) return "base type only";
-  return matched >= total ? `all ${total} mods` : `only ${matched} of ${total} mods`;
+  // Every rung requires all of its own filters now, so a shortfall means mods were *dropped* rather
+  // than that the threshold was lowered — the survivors were all demanded of every listing.
+  return matched >= total ? `all ${total} mods` : `${matched} of ${total} mods, ${total - matched} dropped`;
 }
 
 export class PriceResolver {
@@ -164,10 +174,16 @@ export class PriceResolver {
       return { ...base, chaosValue: direct, priceSource: "poeninja" };
     }
 
-    // Rares only. The Trade2Client itself owns the enabled/budget checks, so there is exactly one
-    // place that decides whether a lookup happens and exactly one place that words the refusal.
+    // Rares, plus white bases — which are priced on item level alone and so are gated by
+    // `trade2.baseItemMinLevel` rather than by anything here. The Trade2Client owns that check
+    // along with the enabled/budget ones, so there is exactly one place that decides whether a
+    // lookup happens and exactly one place that words the refusal.
+    //
+    // Magic stays out and always will: PoE2 glues the affixes onto the base on one header line, so
+    // `baseType` for a Magic item is the affixed name and there is nothing to search on.
     let tradeReason: string | null = null;
-    if (item.rarity === "Rare") {
+    let tradeRateLimited = false;
+    if (item.rarity === "Rare" || item.rarity === "Normal") {
       console.log(`[pricing] "${item.name}" not in poe.ninja — querying trade2...`);
       onTradeSearch?.();
       const estimate = await this.trade2.estimateRareValue(item, new Set(), (amount, currency) =>
@@ -183,10 +199,16 @@ export class PriceResolver {
           estimate.medianChaosValue === null
             ? ""
             : `, median ${formatNumber(estimate.medianChaosValue)}`;
+        // What the cheapest seller was actually asking, in their own currency. The chaos figure is
+        // this app's conversion of it and the two are easy to mistake for a discrepancy — printing
+        // the quote beside it is what lets a number on the panel be matched to a row on the site.
+        const quoteNote = estimate.listingQuote
+          ? `, cheapest listed at ${formatNumber(estimate.listingQuote.amount)} ${estimate.listingQuote.currency}`
+          : "";
         console.log(
           `[pricing] "${item.name}" priced via trade2: ${formatNumber(estimate.chaosValue)} chaos ` +
             `(cheapest of ${estimate.listings} sampled from ${estimate.matches} listings` +
-            `${medianNote}; matching ${describeModMatch(modMatch)}${defenceNote})`
+            `${medianNote}${quoteNote}; matching ${describeModMatch(modMatch)}${defenceNote})`
         );
         // Warned about separately rather than folded into the line above, because a relaxed match is
         // the difference between a price for this item and a price for its base with some mods on it.
@@ -221,20 +243,38 @@ export class PriceResolver {
           modMatch,
           tradeSearchId: estimate.searchId,
           tradeMedianChaosValue: estimate.medianChaosValue ?? undefined,
+          // Kept in step with the reprice path, like every other field on the estimate: it is
+          // what decides the unit the row is displayed in, so dropping it here would leave an
+          // automatically priced item reading in exalted until the user pressed Reprice once.
+          tradeListingQuote: estimate.listingQuote,
           defencesDropped: estimate.defencesDropped,
           pseudoDropped: estimate.pseudoDropped,
           mapDropped: estimate.mapDropped,
           statCoverage: estimate.statCoverage,
           coverageSample: estimate.coverageSample,
-          autoDroppedMods: estimate.autoDroppedMods
+          autoDroppedMods: estimate.autoDroppedMods,
+          // Same reason as the rest of this block: the search has already paid for it, and it is what
+          // the row editor ticks from. Dropping it here would leave an automatically priced rare
+          // ticking every mod while a repriced one ticked only the searched set.
+          searchedMods: estimate.searchedMods
         };
       }
       tradeReason = estimate.reason;
+      tradeRateLimited = estimate.rateLimited;
     }
 
     console.log(
       `[pricing] "${item.name}" unpriced — ${explainUnpriced(item, this.poeNinja, this.exchange, tradeReason)}`
     );
-    return { ...base, chaosValue: null, priceSource: "unpriced" };
+    // Recorded so the row can say the item was never actually looked up, rather than showing the
+    // same "unpriced" it shows for an item the market genuinely has no listing for. The two need
+    // different things from the user — one waits, the other doesn't — and the row is where that
+    // difference has to be visible, since the reason above only ever reaches the log.
+    return {
+      ...base,
+      chaosValue: null,
+      priceSource: "unpriced",
+      ...(tradeRateLimited ? { unpricedReason: "rateLimited" as const } : {})
+    };
   }
 }

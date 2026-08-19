@@ -6,7 +6,7 @@ import type { Trade2Client } from "../pricing/trade2-client";
 import type { CurrencyExchangeClient } from "../pricing/currency-exchange-client";
 import type { Settings } from "../shared/settings";
 import { parseItemText } from "../parser/item-text-parser";
-import type { ParsedItem } from "../shared/types";
+import type { ParsedItem, PricedItem } from "../shared/types";
 
 const CORE = { rates: { exalted: 374.7, chaos: 7.86 }, primary: "divine", secondary: "chaos" };
 
@@ -58,6 +58,8 @@ function makeTrade2(estimate: {
   listings: number;
   /** The median of the same sample. Defaults to the price, i.e. a sample with no spread. */
   medianChaosValue?: number | null;
+  /** Whether the rate limit is why there is no price. Defaults to false, the ordinary miss. */
+  rateLimited?: boolean;
 }): Trade2Client {
   return {
     isAvailable: true,
@@ -65,6 +67,7 @@ function makeTrade2(estimate: {
     // and they all price off a four-mod item whose strictest rung hit.
     estimateRareValue: async () => ({
       ...estimate,
+      rateLimited: estimate.rateLimited ?? false,
       medianChaosValue: estimate.medianChaosValue ?? estimate.chaosValue,
       matches: estimate.listings,
       matchedMods: 4,
@@ -124,13 +127,15 @@ const UNKNOWN_CURRENCY = parse(
 async function resolveCapturingLog(
   resolver: PriceResolver,
   item: ParsedItem
-): Promise<{ lines: string[]; chaosValue: number | null }> {
+): Promise<{ lines: string[]; chaosValue: number | null; item: Omit<PricedItem, "id"> }> {
   const lines: string[] = [];
   const original = console.log;
   console.log = (...args: unknown[]) => void lines.push(args.join(" "));
   try {
     const result = await resolver.resolve(item, "session-1");
-    return { lines, chaosValue: result.chaosValue };
+    // The whole stored item, not just its price: what the resolver persists alongside a null value is
+    // as much a part of its contract as the number is.
+    return { lines, chaosValue: result.chaosValue, item: result };
   } finally {
     console.log = original;
   }
@@ -168,6 +173,48 @@ test("an unpriced rare repeats trade2's own reason rather than inventing one", a
   assert.match(log, /manual price/);
   // It must not claim a poe.ninja lookup failure — there was nothing to look a rare up in.
   assert.doesNotMatch(log, /not found in poe\.ninja data/);
+});
+
+test("a rate-limited rare records why, so the row can say it wasn't looked up", async () => {
+  const poeNinja = makeClient(["Currency"]);
+  await poeNinja.refresh();
+
+  const budgetSpent = makeTrade2({
+    chaosValue: null,
+    reason: "trade2 search budget spent (10 per 5min; GGG rate-limits by IP) — retry in ~90s",
+    listings: 0,
+    rateLimited: true
+  });
+  const { item } = await resolveCapturingLog(
+    makeResolver(poeNinja, INERT_EXCHANGE, ONE_HOUR, budgetSpent),
+    RARE
+  );
+
+  assert.equal(item.priceSource, "unpriced");
+  // The reason only ever reached the log before this. The row shows "unpriced" for an item the
+  // market genuinely has nothing for and for one nobody has looked at yet, and those need different
+  // things from the user — one of them resolves by waiting.
+  assert.equal(item.unpricedReason, "rateLimited");
+});
+
+test("an ordinary unpriced rare records no reason, since waiting won't help", async () => {
+  const poeNinja = makeClient(["Currency"]);
+  await poeNinja.refresh();
+
+  const noListings = makeTrade2({
+    chaosValue: null,
+    reason: "no listings match this Sapphire Ring on 4 of its mods",
+    listings: 0
+  });
+  const { item } = await resolveCapturingLog(
+    makeResolver(poeNinja, INERT_EXCHANGE, ONE_HOUR, noListings),
+    RARE
+  );
+
+  assert.equal(item.priceSource, "unpriced");
+  // A search that went out and found an empty market is a fact about the item, not a state that
+  // expires — badging it "rate limited" would send the user to press Reprice forever.
+  assert.equal(item.unpricedReason, undefined);
 });
 
 test("a rare is priced from trade2 when poe.ninja and the exchange both miss", async () => {
@@ -309,4 +356,72 @@ test("an unpriced item says which of the two ways the exchange came up short", a
   );
   assert.match(mappedButUntraded.lines.join("\n"), /not traded on the currency exchange/);
   assert.match(mappedButUntraded.lines.join("\n"), /CurrencyThing/);
+});
+
+const WHITE_BASE = parse(
+  "Item Class: Foci\nRarity: Normal\nSacred Focus\n--------\nEnergy Shield: 152\n--------\n" +
+    "Item Level: 82"
+);
+
+test("a white base reaches trade2, which is the only source that can price one", async () => {
+  // The reported bug: the resolver gated on Rare alone, so a base item tried poe.ninja and the
+  // currency exchange — neither of which publishes base items — and stored unpriced without ever
+  // asking the one API that lists them. Whether it is *worth* asking is the client's call now.
+  let asked = false;
+  const trade2 = {
+    isAvailable: true,
+    estimateRareValue: async () => {
+      asked = true;
+      return {
+        chaosValue: 12,
+        medianChaosValue: 12,
+        reason: null,
+        listings: 3,
+        matches: 3,
+        matchedMods: 0,
+        totalMods: 0,
+        rungs: [],
+        defences: [],
+        defencesDropped: false,
+        pseudoStats: [],
+        pseudoDropped: false,
+        mapDropped: false,
+        statCoverage: [],
+        coverageSample: 3,
+        autoDroppedMods: [],
+        searchedMods: []
+      };
+    }
+  } as unknown as Trade2Client;
+
+  const resolver = makeResolver(makeClient([]), INERT_EXCHANGE, ONE_HOUR, trade2);
+  const priced = await resolver.resolve(WHITE_BASE, "session-1");
+
+  assert.ok(asked, "a Normal-rarity base must be offered to trade2");
+  assert.equal(priced.chaosValue, 12);
+  assert.equal(priced.priceSource, "trade2");
+});
+
+test("a refused base item says why, instead of reading as no data anywhere", async () => {
+  const trade2 = {
+    isAvailable: true,
+    estimateRareValue: async () => ({
+      chaosValue: null,
+      medianChaosValue: null,
+      reason: "item level 65 is below trade2.baseItemMinLevel (81), so no search was made",
+      listings: 0,
+      matches: 0,
+      matchedMods: 0,
+      totalMods: 0,
+      rungs: [],
+      defences: [],
+      defencesDropped: false
+    })
+  } as unknown as Trade2Client;
+
+  const resolver = makeResolver(makeClient([]), INERT_EXCHANGE, ONE_HOUR, trade2);
+  const priced = await resolver.resolve(WHITE_BASE, "session-1");
+
+  assert.equal(priced.chaosValue, null);
+  assert.equal(priced.priceSource, "unpriced");
 });

@@ -451,6 +451,31 @@ test("an item with no property block gets all-null defences rather than throwing
     energyShield: null,
     ward: null
   });
+  assert.deepEqual(parseItemText(CHAOS_ORB)!.weapon, {
+    elementalDamage: null,
+    attacksPerSecond: null
+  });
+});
+
+test("a weapon's damage lines are read, and stay out of the mod list", () => {
+  // Same argument as the defence totals one line up: PROPERTY_LINE already keeps these out of the
+  // mods, and their product is the elemental DPS GGG indexes as `equipment_filters.edps`.
+  // Verbatim shape of a real listing: a Bolting Quarterstaff returned by a live `edps >= 300`
+  // search, printing two elemental ranges at 1.54 attacks per second.
+  const staff = parseItemText(
+    "Item Class: Quarterstaves\nRarity: Rare\nBrood Song\nBolting Quarterstaff\n--------\n" +
+      "Physical Damage: 29-117\nElemental Damage: 45-69 (augmented), 17-370 (augmented)\n" +
+      "Critical Hit Chance: 10.00%\nAttacks per Second: 1.54 (augmented)\n--------\n" +
+      "Item Level: 79\n--------\nAdds 45 to 69 Fire Damage\n+80 to maximum Life"
+  )!;
+
+  // 57 + 193.5: a weapon can roll two elements, and taking only the first range would understate
+  // this one by three quarters. The `(augmented)` suffix sits after the digits, as everywhere else.
+  assert.deepEqual(staff.weapon, { elementalDamage: 250.5, attacksPerSecond: 1.54 });
+  assert.deepEqual(staff.mods.map((mod) => mod.text), [
+    "Adds 45 to 69 Fire Damage",
+    "+80 to maximum Life"
+  ]);
 });
 
 /**
@@ -529,8 +554,16 @@ test("a (rune) line keeps its own kind rather than inheriting the enclosing head
   // The trailing marker has to win: the stat id for a rune-granted mod lives in GGG's `rune` group,
   // and 60% of that group's texts don't exist under `explicit` at all. The tier goes with it — a
   // header that isn't describing this line's kind isn't describing its tier either.
+  // `rollRange` is null rather than absent, and unlike the tier it is *not* invalidated by the
+  // marker: the bracket is printed by the roll itself, not by the header, so a rune that carried one
+  // would keep it. This one prints none.
   assert.deepEqual(rune, [
-    { text: "18% increased Armour, Evasion and Energy Shield", kind: "rune", tier: null }
+    {
+      text: "18% increased Armour, Evasion and Energy Shield",
+      kind: "rune",
+      tier: null,
+      rollRange: null
+    }
   ]);
 });
 
@@ -553,4 +586,107 @@ test("the flattened arrays stay consistent with mods, since the store and UI rea
       item.mods.filter((mod) => mod.kind !== "implicit").map((mod) => mod.text)
     );
   }
+});
+
+/**
+ * The reported capture: a Rare jewel whose trailing usage line was being stored as a fifth explicit
+ * mod and offered in the row editor as something to untick.
+ */
+const ADVANCED_JEWEL = [
+  "Item Class: Jewels",
+  "Rarity: Rare",
+  "Rapture Blood",
+  "Ruby",
+  "--------",
+  "Item Level: 79",
+  "--------",
+  '{ Prefix Modifier "Rapturous" (Tier: 1) — Damage }',
+  "15(14-16)% increased Damage with Plant Skills",
+  '{ Prefix Modifier "Plated" (Tier: 1) — Defences }',
+  "12(11-13)% increased Armour",
+  '{ Suffix Modifier "of Steadiness" (Tier: 1) — Stun }',
+  "16(15-17)% increased Stun Threshold",
+  '{ Suffix Modifier "of Concussion" (Tier: 1) — Stun, Attack }',
+  "15(14-16)% increased Stun Buildup with Maces",
+  "--------",
+  "Place into an allocated Jewel Socket on the Passive Skill Tree. Right click to remove from the Socket."
+].join("\n");
+
+/** The same jewel copied without Advanced Item Descriptions, so there are no headers to believe. */
+const PLAIN_JEWEL = [
+  "Item Class: Jewels",
+  "Rarity: Rare",
+  "Rapture Blood",
+  "Ruby",
+  "--------",
+  "Item Level: 79",
+  "--------",
+  "15% increased Damage with Plant Skills",
+  "12% increased Armour",
+  "16% increased Stun Threshold",
+  "15% increased Stun Buildup with Maces",
+  "--------",
+  "Place into an allocated Jewel Socket on the Passive Skill Tree. Right click to remove from the Socket."
+].join("\n");
+
+const JEWEL_AFFIXES = [
+  "15% increased Damage with Plant Skills",
+  "12% increased Armour",
+  "16% increased Stun Threshold",
+  "15% increased Stun Buildup with Maces"
+];
+
+test("a jewel's socket instructions are not an affix", () => {
+  // Two sentences, and only the second starts with "Right click", so the click guard missed it —
+  // and it carries no colon, so PROPERTY_LINE missed it too.
+  const item = parseItemText(ADVANCED_JEWEL)!;
+
+  assert.deepEqual(item.explicitMods, JEWEL_AFFIXES);
+  // Where a jewel's jewel-ness actually lives, which is why none of it belongs in the mod list.
+  assert.equal(item.itemClass, "Jewels");
+});
+
+test("the same jewel without Advanced Item Descriptions loses the line too", () => {
+  // No headers anywhere, so the gate never arms and `isKnownNonModLine` is the only thing left. This
+  // is what fails if someone deletes the "Place into" entry on the grounds the gate covers it.
+  assert.deepEqual(parseItemText(PLAIN_JEWEL)!.explicitMods, JEWEL_AFFIXES);
+});
+
+/** A unique's flavour text — prose that no blocklist entry names, which is the point of the gate. */
+const ADVANCED_UNIQUE = [
+  "Item Class: Rings",
+  "Rarity: Unique",
+  "Sign of the Sin Eater",
+  "Sapphire Ring",
+  "--------",
+  "Item Level: 80",
+  "--------",
+  "{ Implicit Modifier }",
+  "+20% to Cold Resistance",
+  "--------",
+  '{ Prefix Modifier "Sanguine" (Tier: 1) — Life }',
+  "+109(100-119) to maximum Life",
+  "--------",
+  "The winter that never ended taught them to burn what they loved."
+].join("\n");
+
+test("once an item names its affixes, a headerless section is prose whatever it says", () => {
+  // The gate needs no entry per wording, which is the reason it replaced growing the blocklist one
+  // item class at a time. Nothing in `isKnownNonModLine` mentions this line.
+  const item = parseItemText(ADVANCED_UNIQUE)!;
+
+  assert.deepEqual(item.explicitMods, ["+109 to maximum Life"]);
+  assert.deepEqual(item.implicitMods, ["+20% to Cold Resistance"]);
+});
+
+test("an unheaded rune line survives the gate, because its suffix names its kind", () => {
+  // A rune prints no "{ ... Modifier }" header of its own — it sits in its own section above them and
+  // says "(rune)" instead — so the suffix escape is the only thing keeping it once the gate is armed.
+  // Delete that escape and every runeforged item silently loses its rune.
+  const item = parseItemText(ADVANCED_GLOVES)!;
+
+  assert.deepEqual(
+    item.mods.filter((mod) => mod.kind === "rune").map((mod) => mod.text),
+    ["18% increased Armour, Evasion and Energy Shield"]
+  );
 });

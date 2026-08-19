@@ -77,6 +77,7 @@ body {
 #panel.minimal #session-status,
 #panel.minimal #price-status,
 #panel.minimal #rate-status,
+#panel.minimal #update-status,
 #panel.minimal #list-filters,
 #panel.minimal #panel-footer,
 #panel.minimal #disclaimer {
@@ -165,6 +166,29 @@ body {
   font-weight: normal;
   opacity: 0.6;
   white-space: nowrap;
+}
+
+/*
+ * Reset off the panel's `button` rule below and restyled as a header line, because that is what it
+ * reads as — the border and padding of a real button would make the header look like a toolbar.
+ * Coloured rather than dimmed, unlike its neighbours: this one is worth noticing once.
+ */
+#update-status {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 10px;
+  font-weight: normal;
+  color: #9ec7a0;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#update-status:hover {
+  text-decoration: underline;
 }
 
 button {
@@ -281,6 +305,13 @@ select option {
   color: #d3b98f;
 }
 
+/* Cooler than the unpriced hue and not italicised, because it is a state of the *app* rather than a
+   verdict on the item — the row is waiting on a rate-limit window, not reporting an empty market. */
+.badge-ratelimited {
+  border-color: rgba(143, 175, 211, 0.45);
+  color: #8fafd3;
+}
+
 /* A trade2 price found on fewer than all of the item's mods — same warm hue as unpriced, since it
    means the same thing to the reader: don't lean on this number. */
 .badge-partial {
@@ -312,7 +343,8 @@ select option {
 /* Derived rather than read off the item, so it gets its own hue and full opacity — this row is the
    one the search actually sends, and it should not read as a footnote to the mods below it. */
 .badge-kind-pseudo,
-.badge-kind-reward {
+.badge-kind-reward,
+.badge-kind-difficulty {
   color: #d3b98f;
   opacity: 0.85;
 }
@@ -438,6 +470,13 @@ select option {
 .item-value.unpriced {
   opacity: 0.6;
   font-style: italic;
+}
+
+/* Upright and a touch brighter than plain unpriced: this row still has a price coming. */
+.item-value.unpriced.rate-limited {
+  opacity: 0.75;
+  font-style: normal;
+  color: #8fafd3;
 }
 
 /*

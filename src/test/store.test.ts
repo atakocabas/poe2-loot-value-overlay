@@ -20,6 +20,7 @@ function makeParsedItem(overrides: Partial<ParsedItem> = {}): ParsedItem {
     waystoneTier: null,
     socketCount: null,
     defences: { armour: null, evasion: null, energyShield: null, ward: null },
+    weapon: { elementalDamage: null, attacksPerSecond: null },
     mapStats: {
       itemRarity: null,
       packSize: null,
@@ -113,6 +114,26 @@ test("updateItem persists the trade median alongside the price it annotates", as
   // The annotation must not leak into the total — that sums the price, which is the floor.
   const sessions = await store.getSessions();
   assert.equal(sessions.find((s) => s.id === session.id)?.totalChaosValue, 2);
+});
+
+test("updateItem persists the mods the search asked for, which is what the editor ticks", async () => {
+  await freshStore();
+
+  const session = await store.startSession("Standard", null);
+  const item = await addItem(session.id);
+
+  // Same silent failure as the median above: a key missing from `updateItem`'s `Pick<>` allowlist is
+  // dropped rather than rejected, and the editor would quietly fall back to ticking every mod.
+  await store.updateItem(item.id, {
+    chaosValue: 2,
+    priceSource: "trade2",
+    searchedMods: ["+80 to maximum Life"],
+    autoDroppedMods: ["15% increased Rarity of Items found"]
+  });
+
+  const stored = (await store.getAllItems()).find((i) => i.id === item.id);
+  assert.deepEqual(stored?.searchedMods, ["+80 to maximum Life"]);
+  assert.deepEqual(stored?.autoDroppedMods, ["15% increased Rarity of Items found"]);
 });
 
 test("updateItem returns null for an unknown item id", async () => {

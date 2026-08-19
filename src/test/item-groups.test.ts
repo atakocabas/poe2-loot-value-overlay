@@ -46,6 +46,7 @@ function makeItem(overrides: Partial<PricedItem> = {}): PricedItem {
     waystoneTier: null,
     socketCount: null,
     defences: { armour: null, evasion: null, energyShield: null, ward: null },
+    weapon: { elementalDamage: null, attacksPerSecond: null },
     mapStats: {
       itemRarity: null,
       packSize: null,
