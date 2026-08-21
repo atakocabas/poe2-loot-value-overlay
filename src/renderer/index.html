@@ -18,6 +18,13 @@
         <!-- Starts hidden so the header doesn't reserve a blank row before poe.ninja first answers. -->
         <div id="rate-status" class="hidden"></div>
         <!--
+          The trade2 rate-limit countdown. Hidden like the two lines around it, and for the same
+          reason: most of the time there is no cooldown to report, and a permanent blank row is worse
+          than an appearing one. Note this is the *rate limit*, not #rate-status above, which is the
+          currency conversion rates — "rate" means two different things in this header.
+        -->
+        <div id="cooldown-status" class="hidden"></div>
+        <!--
           Ships hidden and is revealed, like #rate-status above and for the same reason: there is
           nothing to say until the release check answers, and a current install never gets a line at
           all — so reserving the row would leave a permanent blank one on most machines.

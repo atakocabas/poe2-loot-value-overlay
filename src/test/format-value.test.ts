@@ -51,7 +51,7 @@ test("an explicit setting outranks the listing, and an unlabelled currency falls
   assert.equal(formatValue(2, RATES, "auto", { amount: 5, currency: "alch" }), "2c");
 });
 
-test("pickDisplayUnit is the rule both the headline and its median read", () => {
+test("pickDisplayUnit is the rule the headline price reads", () => {
   assert.equal(pickDisplayUnit(2, RATES, "auto"), "chaos");
   assert.equal(pickDisplayUnit(0.5, RATES, "auto"), "exalted");
   assert.equal(pickDisplayUnit(100, RATES, "auto"), "divine");

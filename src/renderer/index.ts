@@ -16,6 +16,7 @@
 const panel = document.getElementById("panel")!;
 const priceStatusEl = document.getElementById("price-status")!;
 const rateStatusEl = document.getElementById("rate-status")!;
+const cooldownStatusEl = document.getElementById("cooldown-status")!;
 const updateStatusEl = document.getElementById("update-status") as HTMLButtonElement;
 const itemListEl = document.getElementById("item-list")!;
 const pendingListEl = document.getElementById("pending-list")!;
@@ -94,6 +95,21 @@ function renderRateStatus(): void {
 }
 
 /**
+ * How long until trade2 lookups resume. Hidden whenever there is nothing to wait for, which is most
+ * of the time — the budget is only ever spent by a burst of rares.
+ *
+ * The header half of the countdown; `.item-value-cooldown` on the rows is the other. Both are wanted:
+ * this one is visible even when no rate-limited row is scrolled into view, while the rows carry it
+ * into the minimal panel, where the whole header is hidden.
+ */
+function renderCooldownStatus(): void {
+  const remaining = cooldownRemainingMs();
+  cooldownStatusEl.textContent =
+    remaining > 0 ? `Trade searches: ready in ${formatCountdown(remaining)}` : "";
+  cooldownStatusEl.classList.toggle("hidden", remaining === 0);
+}
+
+/**
  * A newer release, or nothing. Hidden in both the "no update" and the "haven't checked yet" cases —
  * they look identical from here, and neither has anything to say.
  *
@@ -144,6 +160,7 @@ function applyStatus(status: OverlayStatus): void {
   rates = status.rates;
   displayCurrency = status.displayCurrency;
   pricesFetchedAt = status.pricesFetchedAt;
+  tradeCooldownUntil = status.tradeCooldownUntil;
   availableUpdate = status.update;
   panel.classList.toggle("interactive", status.interactive);
   setMinimalMode(!status.expanded);
@@ -154,7 +171,11 @@ function applyStatus(status: OverlayStatus): void {
   panel.classList.toggle("left", status.panel.position === "left");
   renderPriceStatus();
   renderRateStatus();
+  renderCooldownStatus();
   renderUpdateStatus();
+  // A push can start a cooldown (a lookup just spent the last slot) or end one, so the ticker is
+  // re-evaluated here rather than only when a row is drawn.
+  syncCooldownTimer();
   // Every value on screen was formatted with the old rates.
   scheduleRender();
 }
@@ -166,6 +187,13 @@ function refreshElapsedLabels(): void {
   itemListEl.querySelectorAll<HTMLElement>(".feed-time").forEach((el) => {
     const at = Number(el.dataset.at);
     if (Number.isFinite(at)) el.textContent = relativeTime(at);
+  });
+  // Kept as its own pass rather than folded into the selector above: the listing age carries a
+  // "listed" prefix that tells it apart from the capture time on the line below, and the bare
+  // rewrite that loop does would strip the word every tick.
+  itemListEl.querySelectorAll<HTMLElement>(".item-value-listed").forEach((el) => {
+    const at = Number(el.dataset.at);
+    if (Number.isFinite(at)) el.textContent = `(listed ${relativeTime(at)})`;
   });
 }
 
@@ -203,6 +231,49 @@ const PENDING_GRACE_MS = 300;
  * window is hidden whenever PoE2 isn't in front, and a hidden window never paints.
  */
 const PENDING_TICK_MS = 250;
+
+/**
+ * How often the rate-limit countdown advances. Once a second, because it is displayed to the second.
+ *
+ * Runs only while a cooldown is actually running, like the pending timer above — this window sits on
+ * top of a game, and an idle overlay should not burn a wakeup every second forever. `setInterval` for
+ * the same reason as that one: a hidden window never paints, so rAF would stall while PoE2 is in
+ * front, which is exactly when the countdown matters.
+ */
+const COOLDOWN_TICK_MS = 1000;
+
+let cooldownTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Advances every countdown on screen, in place.
+ *
+ * **Deliberately not `scheduleRender()`.** That rebuilds the list wholesale and has to restore
+ * `scrollTop` and the open editor by hand; doing it once a second would fight the user's scrolling
+ * and their half-ticked mod boxes. Same approach as `refreshElapsedLabels` — find the labels, rewrite
+ * their text, touch nothing else.
+ */
+function tickCooldown(): void {
+  renderCooldownStatus();
+  // Read once, so every row on screen reports the same second even if the tick straddles one.
+  const remaining = cooldownRemainingMs();
+  const text = remaining > 0 ? `retry in ${formatCountdown(remaining)}` : "ready to reprice";
+  itemListEl.querySelectorAll<HTMLElement>(".item-value-cooldown").forEach((el) => {
+    el.textContent = text;
+  });
+  // Stops the ticker on the tick that reaches zero, leaving "ready to reprice" on screen.
+  syncCooldownTimer();
+}
+
+/** Starts the ticker while a cooldown is running and stops it once one isn't. */
+function syncCooldownTimer(): void {
+  const running = cooldownRemainingMs() > 0;
+  if (running && cooldownTimer === null) {
+    cooldownTimer = setInterval(tickCooldown, COOLDOWN_TICK_MS);
+  } else if (!running && cooldownTimer !== null) {
+    clearInterval(cooldownTimer);
+    cooldownTimer = null;
+  }
+}
 
 window.poe2Overlay.onPricingStatus((pending) => {
   pendingCaptures = pending;
@@ -391,19 +462,23 @@ function renderItemRow({ item, count, total }: ItemGroup): HTMLElement {
   top.className = "item-row-top";
 
   const value = document.createElement("span");
-  // A rate-limited item is unpriced *and* recoverable, so it says so where the number would go. The
-  // badge beside it says the same thing; this is the half that is visible in the minimal panel, where
-  // a row reading "unpriced" mid-map is the difference between binning a rare and repricing it.
-  const rateLimited = total === null && item.unpricedReason === "rateLimited";
+  // The reason goes where the number would go, not just on the badge: this is the half that is
+  // visible in the minimal panel, where a row reading "unpriced" mid-map is the difference between
+  // binning a rare and repricing it. Guarded on `priceSource` as well as `total`, since a null total
+  // can arrive from a group whose members weren't all unpriced.
+  const unpriced = total === null && item.priceSource === "unpriced";
+  const reason = unpriced ? unpricedLabel(item) : null;
   value.className = total === null ? "item-value unpriced" : "item-value";
-  if (rateLimited) value.classList.add("rate-limited");
+  if (reason?.recoverable) value.classList.add("recoverable");
+  // Marked so `tickCooldown` can rewrite this one cell every second without re-rendering the list.
+  // Only the rate-limited rows carry something that changes on its own.
+  if (unpriced && item.unpricedReason === "rateLimited") value.classList.add("item-value-cooldown");
   // The cheapest listing's own currency when there is one, so a row priced off a seller asking
   // 2 chaos reads "2c" rather than the same value restated as 66ex. See `rowQuote`.
-  value.textContent =
-    total === null
-      ? rateLimited
-        ? "rate limited"
-        : "unpriced"
+  value.textContent = unpriced
+    ? unpricedValueText(item)
+    : total === null
+      ? "unpriced"
       : formatValue(total, rowQuote(item, count));
 
   // Offered for every item, not just unpriced ones: a price that resolved to the wrong unique
@@ -430,8 +505,8 @@ function renderItemRow({ item, count, total }: ItemGroup): HTMLElement {
   });
 
   top.append(itemNameEl(item, count), value);
-  const median = medianValueEl(item, count, total);
-  if (median) top.append(median);
+  const listedAge = listedAgeEl(item, count, total);
+  if (listedAge) top.append(listedAge);
   top.append(viewSearchIconButton(item));
   top.append(toggle);
   row.append(top);
@@ -1004,7 +1079,7 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
         return;
       }
 
-      // Both numbers, because they answer different questions: the sample is what the median came
+      // Both numbers, because they answer different questions: the sample is what the price came
       // from, the match count is how wide the search that produced it had to cast.
       const relaxed = result.totalMods > 0 && result.matchedMods < result.totalMods;
       // A waystone has no mod filters by design, so the generic "base type only" would report its

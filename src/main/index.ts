@@ -52,7 +52,7 @@ let overlayInteractive = false;
  */
 let panelExpanded = false;
 /** Set once at startup; `buildStatus()` reads through it so it can be called before construction. */
-let statusDeps: { poeNinja: PoeNinjaClient; settings: Settings } | null = null;
+let statusDeps: { poeNinja: PoeNinjaClient; trade2: Trade2Client; settings: Settings } | null = null;
 let processWatcher: ProcessWatcher | null = null;
 let updateChecker: UpdateChecker | null = null;
 /**
@@ -120,12 +120,21 @@ function buildStatus(): OverlayStatus {
   return {
     rates: statusDeps?.poeNinja.getRates() ?? null,
     pricesFetchedAt: statusDeps?.poeNinja.getLastRefreshAt() ?? null,
+    // Converted from a duration to a deadline here, at the one point both are equivalent. See the
+    // field's doc comment for why the panel must not be handed the duration.
+    tradeCooldownUntil: cooldownDeadline(),
     displayCurrency: statusDeps?.settings.display.currency ?? "auto",
     interactive: overlayInteractive,
     expanded: panelExpanded,
     panel: statusDeps?.settings.overlay.panel ?? { width: 380, maxHeightPercent: 80, position: "right" },
     update: availableUpdate
   };
+}
+
+/** `Trade2Client.cooldownMs()` as an absolute time, or null when a search could go out now. */
+function cooldownDeadline(): number | null {
+  const remaining = statusDeps?.trade2.cooldownMs() ?? 0;
+  return remaining > 0 ? Date.now() + remaining : null;
 }
 
 function broadcastStatus(): void {
@@ -260,15 +269,17 @@ app.whenReady().then(async () => {
   });
 
   const poeNinja = new PoeNinjaClient(settings);
-  statusDeps = { poeNinja, settings };
+  const currencyExchange = new CurrencyExchangeClient(settings, createPublicGggFetch(settings));
+  const trade2 = new Trade2Client(settings);
+
+  // Assigned once all three exist, because the status carries the trade2 rate-limit deadline as well
+  // as poe.ninja's rates — `buildStatus` reads both and `onRefresh` below can fire immediately.
+  statusDeps = { poeNinja, trade2, settings };
   // Rates and price age both change on refresh, and the panel shows both.
   poeNinja.onRefresh(() => broadcastStatus());
   poeNinja.startAutoRefresh();
-
-  const currencyExchange = new CurrencyExchangeClient(settings, createPublicGggFetch(settings));
   currencyExchange.startAutoRefresh();
 
-  const trade2 = new Trade2Client(settings);
   const resolver = new PriceResolver(
     poeNinja,
     currencyExchange,
@@ -317,6 +328,10 @@ app.whenReady().then(async () => {
     async (item) => {
       const stored = await addPricedItem(item);
       sendToOverlay(IPC.PRICED_ITEM, stored);
+      // A finished lookup is the only thing that spends a search, so this is the one moment the
+      // rate-limit deadline moves. Cheap despite riding a full status push: the send above already
+      // triggers a render for this item, and `scheduleRender` coalesces to one rebuild per frame.
+      broadcastStatus();
     },
     // Pushed whole on every transition, so the panel can show a captured item straight away rather
     // than staying blank through a trade2 lookup that can run for half a minute.

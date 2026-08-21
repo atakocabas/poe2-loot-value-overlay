@@ -24,6 +24,14 @@ type DisplayCurrency = "auto" | "exalted" | "chaos" | "divine";
 /** Set from OVERLAY_STATUS on both pages; every value on screen is formatted through them. */
 let rates: Rates | null = null;
 let displayCurrency: DisplayCurrency = "auto";
+/**
+ * When a trade2 search could next go out, from OVERLAY_STATUS. Null when one could go now.
+ *
+ * A deadline rather than a countdown: the main process sends it once when a lookup spends the last
+ * slot, and everything on screen counts down against `Date.now()` from there. Pushing the remaining
+ * seconds instead would mean a full list rebuild every second — see the field's doc comment.
+ */
+let tradeCooldownUntil: number | null = null;
 
 function effectiveValue(item: PricedItem): number | null {
   return item.manualChaosValue ?? item.chaosValue;
@@ -89,12 +97,12 @@ function formatValue(chaos: number | null, quote?: ListingQuote | null): string 
 }
 
 /**
- * The unit a *row* is shown in, and the one its median parenthetical has to share.
+ * The unit a *row* is shown in.
  *
  * Only a single, unfolded, trade2-priced item follows its listing: `count > 1` means the headline is
  * a summed group total, `stackSize > 1` means it is a stack, and a manual price replaces the trade
  * figure entirely — in all three the quote no longer describes the number on screen. Those are the
- * same guards `medianValueEl` applies, for the same reason.
+ * same guards `listedAgeEl` applies, for the same reason.
  */
 function rowQuote(item: PricedItem, count: number): ListingQuote | null {
   if (count !== 1 || item.stackSize !== 1) return null;
@@ -163,6 +171,97 @@ const SOURCE_LABEL: Record<string, string> = {
   unpriced: "unpriced"
 };
 
+/**
+ * What each `PricedItem.unpricedReason` says on the row, and what it means.
+ *
+ * One bare "unpriced" covered seven situations that ask completely different things of the reader:
+ * some resolve by waiting, one wants a setting changed, and the rest are final. `word` replaces the
+ * badge text and the value cell; `hint` is the generic half of the tooltip, with the item's own
+ * `unpricedDetail` appended under it.
+ *
+ * `recoverable` picks between the two existing badge colours rather than adding new ones, and it is
+ * the distinction worth keeping visible above all the others — blue means nobody has looked yet and
+ * the answer arrives on its own, tan means the market has been asked and this is its answer.
+ *
+ * "search skipped" rather than "not searched" on purpose: the row editor already badges individual
+ * mod rows `not searched` for an unrelated reason, and one word meaning two things across two
+ * surfaces of the same panel is what this whole table exists to stop.
+ */
+const UNPRICED_REASON: Record<string, { word: string; hint: string; recoverable: boolean }> = {
+  rateLimited: {
+    word: "rate limited",
+    hint:
+      "No trade search went out for this item — GGG rate-limits by IP and the budget was spent. " +
+      "Press Edit and Reprice once the window refills; nothing about the item itself is wrong.",
+    recoverable: true
+  },
+  pricesLoading: {
+    word: "prices loading",
+    hint:
+      "poe.ninja's first refresh hadn't finished when this was captured, so there was nothing to " +
+      "look it up in. Press Edit and Reprice now that prices are in.",
+    recoverable: true
+  },
+  searchFailed: {
+    word: "search failed",
+    hint:
+      "The trade search went out and broke rather than coming back empty. This is a fault, not a " +
+      "finding about the item — press Edit and Reprice to try again.",
+    recoverable: true
+  },
+  noListings: {
+    word: "no listings",
+    hint:
+      "The search ran and the market has nothing matching this item. Repricing will return the " +
+      "same answer; the detail below names the constraint that came up empty.",
+    recoverable: false
+  },
+  unconvertible: {
+    word: "no chaos price",
+    hint:
+      "Listings exist, but none of them quoted a currency this app could convert to chaos — " +
+      "unpriced stash tabs, or something poe.ninja isn't tracking. Open the trade search to look.",
+    recoverable: false
+  },
+  notSearchable: {
+    word: "not searchable",
+    hint:
+      "There is nothing reliable to search this item on, so no lookup is possible at all. Set a " +
+      "price by hand with the row's Edit button.",
+    recoverable: false
+  },
+  notSearched: {
+    word: "search skipped",
+    hint:
+      "No search was sent, because a setting says not to for items like this one. The detail " +
+      "below names which setting to change.",
+    recoverable: false
+  },
+  noPriceData: {
+    word: "no price data",
+    hint:
+      "This item isn't in poe.ninja's data and isn't traded on the currency exchange, and nothing " +
+      "else could price it. Set a price by hand with the row's Edit button.",
+    recoverable: false
+  }
+};
+
+/** The row's word for an item with no price, and the tooltip under it. See `UNPRICED_REASON`. */
+function unpricedLabel(item: PricedItem): { word: string; title: string; recoverable: boolean } {
+  const reason = item.unpricedReason ? UNPRICED_REASON[item.unpricedReason] : undefined;
+  if (!reason) {
+    // Absent, or a code written by a newer build than this renderer. Either way the honest answer is
+    // the word this all started as, plus whatever detail did survive.
+    return { word: "unpriced", title: item.unpricedDetail ?? "", recoverable: false };
+  }
+  return {
+    word: reason.word,
+    // Same blank-line join the partial-match titles below use.
+    title: item.unpricedDetail ? `${reason.hint}\n\n${item.unpricedDetail}` : reason.hint,
+    recoverable: reason.recoverable
+  };
+}
+
 function sourceBadge(item: PricedItem): HTMLElement {
   const badge = document.createElement("span");
   badge.className = "badge";
@@ -174,18 +273,13 @@ function sourceBadge(item: PricedItem): HTMLElement {
 
   badge.textContent = SOURCE_LABEL[item.priceSource] ?? item.priceSource;
   if (item.priceSource === "unpriced") {
-    // "unpriced" reads as a fact about the item — that nothing on the market matches it. A rate limit
-    // means the opposite: nobody has looked yet, and the answer arrives by waiting. Same badge slot,
-    // different word, because the two ask different things of the reader.
-    if (item.unpricedReason === "rateLimited") {
-      badge.textContent = "rate limited";
-      badge.classList.add("badge-ratelimited");
-      badge.title =
-        "No trade search went out for this item — GGG rate-limits by IP and the budget was spent. " +
-        "Press Edit and Reprice once the window refills; nothing about the item itself is wrong.";
-    } else {
-      badge.classList.add("badge-unpriced");
-    }
+    // "unpriced" reads as a fact about the item — that nothing on the market matches it. Half of the
+    // reasons mean the opposite: nobody has looked yet, and the answer arrives by waiting. Same badge
+    // slot, different word, because they ask different things of the reader.
+    const reason = unpricedLabel(item);
+    badge.textContent = reason.word;
+    badge.classList.add(reason.recoverable ? "badge-ratelimited" : "badge-unpriced");
+    if (reason.title) badge.title = reason.title;
   }
 
   // A trade2 price that couldn't find every mod is a price for items *like* this one, and there is
@@ -238,43 +332,100 @@ function sourceBadge(item: PricedItem): HTMLElement {
 }
 
 /**
- * The `(18ex)` beside a trade2 price — the median of the same sampled listings the headline is the
- * cheapest of. The gap between the two is the point: a floor far below the median of its own sample
- * is one optimistic seller rather than a market, and a single number cannot say that.
+ * The `(listed 3d ago)` beside a trade2 price — when the cheapest listing, the one the headline *is*,
+ * was posted. The same number three days stale and an hour fresh are different facts about how much
+ * the floor is worth trusting, and the price alone cannot say which.
+ *
+ * Says "listed" rather than a bare age because the row already carries one relative time: the capture
+ * time on the line below. Two unlabelled "3d ago"s on one row read as the same clock.
  *
  * Returns null in every case where the parenthetical would assert something untrue:
  *
- * - No other price source has a sample to take a median over.
- * - A manual price *replaces* the trade figure, so pairing it with the leftover median would read as
- *   a range the user never set.
- * - Items priced before this existed carry no median (nothing migrates `loot-cache.json`).
- * - `count > 1` means the headline is a summed group total, and a median printed beside a sum
- *   describes nothing. Trade2 only ever prices Rares and `groupItems` refuses to fold anything
- *   carrying mods, so this is a guard rather than a live case — but it is also what makes comparing
- *   the two numbers valid at all, since an unfolded row's `total` is one item at `stackSize` 1.
- * - The two agreeing (a one-listing sample) makes `12ex (12ex)`, which is noise.
+ * - No other price source has a listing behind it to be the age of.
+ * - A manual price *replaces* the trade figure, so the old listing's date annotates a number that is
+ *   no longer on screen.
+ * - Items priced before this existed carry no date (nothing migrates `loot-cache.json`), and so do
+ *   listings whose date GGG didn't send or that wouldn't parse. Both mean "say nothing".
+ * - `count > 1` means the headline is a summed group total, and one listing's date describes nothing
+ *   about a sum. Trade2 only ever prices Rares and `groupItems` refuses to fold anything carrying
+ *   mods, so this is a guard rather than a live case.
+ * - An unpriced row has no headline for the date to qualify.
  */
-function medianValueEl(item: PricedItem, count: number, total: number | null): HTMLElement | null {
-  const median = item.tradeMedianChaosValue;
+function listedAgeEl(item: PricedItem, count: number, total: number | null): HTMLElement | null {
+  const indexedAt = item.tradeListingIndexedAt;
   if (item.priceSource !== "trade2" || item.manualChaosValue !== null) return null;
-  if (median === undefined || count !== 1 || total === null || median === total) return null;
+  if (indexedAt === undefined || count !== 1 || total === null) return null;
 
   const el = document.createElement("span");
-  el.className = "item-value-median";
-  // The same unit as the headline it sits beside — a floor in chaos next to a median in exalted is
-  // two numbers the eye cannot compare, which is the one thing the pair exists to let it do.
-  el.textContent = `(${formatValue(median, rowQuote(item, count))})`;
+  el.className = "item-value-listed";
+  // Read back by refreshElapsedLabels, which re-prefixes rather than reusing `.feed-time`: that
+  // scanner overwrites textContent with a bare relativeTime, which would eat the word.
+  el.dataset.at = String(indexedAt);
+  el.textContent = `(listed ${relativeTime(indexedAt)})`;
   el.title =
-    "Median of the listings this price was sampled from. The headline is the cheapest one " +
-    "currently listed — the wider the gap, the thinner that floor.";
+    "When the cheapest listing this price came from was posted. An old listing is one nobody has " +
+    "bought at that price, which is worth knowing before undercutting it.";
   return el;
+}
+
+/**
+ * A coarse "how long ago", for both the row's capture time and its listing age.
+ *
+ * The day tier exists for listings: they are routinely days old, and `72h ago` is a number the reader
+ * has to divide before it means anything. Capture times get it too — the list grows unbounded, so old
+ * rows read in days as well, which is the same improvement rather than a side effect.
+ */
+/** How long is left on the trade2 cooldown, in ms. 0 when there is none, or it has just run out. */
+function cooldownRemainingMs(): number {
+  if (tradeCooldownUntil === null) return 0;
+  return Math.max(0, tradeCooldownUntil - Date.now());
+}
+
+/**
+ * A countdown, in the coarsest form that still reads at a glance.
+ *
+ * Three tiers because the range genuinely spans them: the short budget window is five minutes, but
+ * `cooldownMs()` reports the longest wait across *both* windows and the long one is six hours, so a
+ * heavy session can produce a real multi-hour number. A plain `mm:ss` would render that as `360:00`.
+ */
+function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  if (total < 60) return `${total}s`;
+
+  const seconds = String(total % 60).padStart(2, "0");
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  if (hours === 0) return `${minutes}:${seconds}`;
+  return `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`;
+}
+
+/**
+ * What an unpriced row prints where the number would go.
+ *
+ * Only `rateLimited` differs from its badge word, and it is the one reason with something live to
+ * say: the cooldown is global — GGG limits by IP, so one window covers every item at once — which is
+ * why this reads the current deadline rather than anything stored on the item. That is also the right
+ * answer for a row rate-limited an hour ago: if the budget has refilled it says so, and if a new map
+ * has spent it again then pressing Reprice really would fail, so the countdown is still this row's
+ * honest answer.
+ *
+ * Nothing here retries anything. The row says when it is worth pressing Reprice; pressing it stays
+ * the user's decision, because the budget is shared with every other rare in the map.
+ */
+function unpricedValueText(item: PricedItem): string {
+  const label = unpricedLabel(item);
+  if (item.unpricedReason !== "rateLimited") return label.word;
+
+  const remaining = cooldownRemainingMs();
+  return remaining > 0 ? `retry in ${formatCountdown(remaining)}` : "ready to reprice";
 }
 
 function relativeTime(timestamp: number): string {
   const seconds = Math.round((Date.now() - timestamp) / 1000);
   if (seconds < 60) return `${Math.max(0, seconds)}s ago`;
   if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-  return `${Math.round(seconds / 3600)}h ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86400)}d ago`;
 }
 
 /*
@@ -384,7 +535,13 @@ function groupItems(items: PricedItem[]): ItemGroup[] {
       item.explicitMods.length === 0 &&
       item.manualChaosValue === null &&
       (item.rarity === "Currency" || item.rarity === "Normal");
-    const key = groupable ? `${item.name}|${item.priceSource}` : item.id;
+    // `unpricedReason` is part of the key because the group shows only its newest member's badge:
+    // two stacks of the same currency that went unpriced for different reasons would otherwise fold
+    // into one row claiming both had the newer one's reason. Undefined on everything priced, so it
+    // changes no existing fold.
+    const key = groupable
+      ? `${item.name}|${item.priceSource}|${item.unpricedReason ?? ""}`
+      : item.id;
 
     const existing = groups.get(key);
     if (existing) {

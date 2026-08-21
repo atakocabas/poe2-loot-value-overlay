@@ -70,12 +70,92 @@ test("a rate-limited item says so instead of reading as an empty market", () => 
   assert.match(badge.title, /Reprice/, "the badge has to name the way out");
 });
 
-test("an ordinary unpriced item is unchanged", () => {
+test("an item stored before the reason existed still reads 'unpriced'", () => {
+  // The no-migration contract. Nothing rewrites `loot-cache.json`, so every item captured before
+  // this field must keep rendering exactly as it did — absent means "no price, and nothing more to
+  // say about it", which is the honest reading of a reason that old.
   const badge = loadSourceBadge()(unpricedItem());
 
   assert.equal(badge.textContent, "unpriced");
   assert.ok(badge.classes.includes("badge-unpriced"));
-  assert.equal(badge.title, "", "there is nothing recoverable to explain");
+  assert.equal(badge.title, "", "there is nothing recorded to explain");
+});
+
+test("a reason from a newer build falls back rather than showing a raw code", () => {
+  // The renderer and the store are versioned together, but a downgrade leaves items carrying codes
+  // this table has never heard of. Printing `someNewReason` on the row would be worse than the one
+  // word this all started as — and the detail, which is prose either way, still survives.
+  const badge = loadSourceBadge()(
+    unpricedItem({
+      unpricedReason: "somethingThisBuildPredates" as PricedItem["unpricedReason"],
+      unpricedDetail: "whatever the newer build had to say"
+    })
+  );
+
+  assert.equal(badge.textContent, "unpriced");
+  assert.ok(badge.classes.includes("badge-unpriced"));
+  assert.equal(badge.title, "whatever the newer build had to say");
+});
+
+test("each reason gets its own word, and none of them is 'unpriced'", () => {
+  // The point of the change: one word covered seven situations that ask different things of the
+  // reader. If two of these ever collide, the badge has stopped distinguishing what it exists to.
+  const sourceBadge = loadSourceBadge();
+  const reasons: NonNullable<PricedItem["unpricedReason"]>[] = [
+    "rateLimited",
+    "pricesLoading",
+    "searchFailed",
+    "noListings",
+    "unconvertible",
+    "notSearchable",
+    "notSearched",
+    "noPriceData"
+  ];
+
+  const words = reasons.map((reason) => sourceBadge(unpricedItem({ unpricedReason: reason })).textContent);
+
+  assert.equal(new Set(words).size, reasons.length, `two reasons share a word: ${words.join(", ")}`);
+  assert.ok(!words.includes("unpriced"), "a mapped reason must say more than the word it replaced");
+  // "not searched" is what the row editor badges individual mod rows, for an entirely different
+  // reason. One word meaning two things across two surfaces of one panel is the confusion this
+  // table exists to prevent.
+  assert.ok(!words.includes("not searched"), "collides with the editor's per-mod marker");
+});
+
+test("only the reasons that resolve on their own are coloured as recoverable", () => {
+  // The distinction worth carrying in colour, and the one that survived from the rate-limit badge:
+  // blue means the answer is still coming, tan means the market has already given it. Getting this
+  // backwards sends the user to press Reprice forever on an item that will never price.
+  const sourceBadge = loadSourceBadge();
+  const hue = (reason: NonNullable<PricedItem["unpricedReason"]>): string =>
+    sourceBadge(unpricedItem({ unpricedReason: reason })).classes.includes("badge-ratelimited")
+      ? "recoverable"
+      : "final";
+
+  assert.equal(hue("rateLimited"), "recoverable");
+  assert.equal(hue("pricesLoading"), "recoverable");
+  assert.equal(hue("searchFailed"), "recoverable");
+  assert.equal(hue("noListings"), "final");
+  assert.equal(hue("unconvertible"), "final");
+  assert.equal(hue("notSearchable"), "final");
+  assert.equal(hue("notSearched"), "final");
+  assert.equal(hue("noPriceData"), "final");
+});
+
+test("the item's own detail is appended under the reason's generic hint", () => {
+  // The generic sentence says what the state means; the detail says what happened to *this* item —
+  // which ids were tried, how many mods had no listing. The badge is nearly useless without it, and
+  // it has to be the resolver's own wording rather than a second one written here.
+  const badge = loadSourceBadge()(
+    unpricedItem({
+      unpricedReason: "noListings",
+      unpricedDetail: "no online listings match this Sapphire Ring on as few as 3 of its 5 mods"
+    })
+  );
+
+  assert.match(badge.title, /the market has nothing matching this item/);
+  assert.match(badge.title, /as few as 3 of its 5 mods/);
+  assert.ok(badge.title.includes("\n\n"), "the two halves are separated, not run together");
 });
 
 test("a manual price wins over the rate-limit badge", () => {
@@ -89,9 +169,9 @@ test("a manual price wins over the rate-limit badge", () => {
   assert.ok(!badge.classes.includes("badge-ratelimited"));
 });
 
-test("a stale flag on a priced item never shows", () => {
+test("a stale reason on a priced item never shows", () => {
   // Nothing migrates `loot-cache.json`, and the reprice path clears the field rather than leaving it
-  // — but the badge is keyed on `priceSource` first, so a leftover flag can't surface as a label.
+  // — but the badge is keyed on `priceSource` first, so a leftover reason can't surface as a label.
   const badge = loadSourceBadge()(
     unpricedItem({ chaosValue: 5, priceSource: "trade2", unpricedReason: "rateLimited" })
   );

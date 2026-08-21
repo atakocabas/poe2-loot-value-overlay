@@ -18,7 +18,7 @@ export interface RepriceResult {
   item: PricedItem | null;
   /** Why no price came back, already worded for display. null when the reprice succeeded. */
   reason: string | null;
-  /** Listings the median was taken over — the sample, not every listing that matched. */
+  /** Listings the price was taken from — the sample, not every listing that matched. */
   listings: number;
   /** Listings the search matched in total, which the sample was drawn from the middle of. */
   matches: number;

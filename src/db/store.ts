@@ -53,6 +53,7 @@ export async function updateItem(
       | "chaosValue"
       | "priceSource"
       | "unpricedReason"
+      | "unpricedDetail"
       | "ignoredMods"
       | "modFilters"
       | "pseudoFilters"
@@ -67,7 +68,8 @@ export async function updateItem(
       | "autoDroppedMods"
       | "searchedMods"
       | "tradeSearchId"
-      | "tradeMedianChaosValue"
+      | "tradeListingQuote"
+      | "tradeListingIndexedAt"
     >
   >
 ): Promise<PricedItem | null> {

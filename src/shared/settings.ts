@@ -225,7 +225,7 @@ export interface Settings {
      */
     minSearchIntervalMs: number;
     /**
-     * How many of the **cheapest** price-sorted listings the median is taken over (see
+     * How many of the **cheapest** price-sorted listings the price is taken from (see
      * `priceSample`). Capped at 10 by GGG's fetch endpoint, which rejects longer id lists outright.
      *
      * The price this yields is the market floor — what undercutters are currently asking — not what
@@ -295,7 +295,7 @@ export interface Settings {
      * dropdown is in when nothing is sent. **Don't try to send that `null` explicitly**: the API
      * rejects `{ option: null }` with `400 Invalid sale type`.
      *
-     * Unpriced listings are worth excluding by default because this app takes a median of the
+     * Unpriced listings are worth excluding by default because this app prices off the
      * *cheapest* listings, and an unpriced one carries no number to sort by — it can only dilute the
      * sample or occupy a slot that a real asking price would have filled.
      */
@@ -359,8 +359,14 @@ export interface Settings {
      * item than the one in your stash.
      *
      * Neither is wrong; they answer different questions. Raise this toward 10 to prefer a real market
-     * over an exact match, and read `medianChaosValue` alongside the price either way — on a thin
-     * rung the two figures being close is the only evidence the number means anything.
+     * over an exact match.
+     *
+     * **The row no longer signals a thin rung.** This used to be safe at 1 partly because the price
+     * carried a median in parentheses, and the two figures being close was the reader's evidence that
+     * a one-listing rung meant anything. That parenthetical was replaced by the listing's age, so a
+     * price off one listing now looks exactly like a price off twenty. The sample size survives only
+     * in the `[pricing] … cheapest of N sampled` log line. Worth revisiting this default, or putting
+     * the count back on the row, before treating 1 as obviously correct.
      */
     minListingsForMatch: number;
     /**
@@ -390,11 +396,11 @@ export interface Settings {
     useDefenceFilters: boolean;
     /**
      * The defence floor to search on, as a fraction of the item's own total: 0.9 turns 1081 armour
-     * into `"ar": { "min": 973 }`. There is no maximum — the middle-window median already handles a
+     * into `"ar": { "min": 973 }`. There is no maximum — the cheap-window sample already handles a
      * wide spread, and a ceiling mostly just turns priced items into unpriced ones.
      *
      * Below 1 on purpose. At parity the only matches are items strictly *better* than this one, so
-     * the median prices something the item isn't. It also absorbs a skew that can't be corrected
+     * the price describes something the item isn't. It also absorbs a skew that can't be corrected
      * exactly: GGG indexes these values "including maximum quality" while the clipboard prints them
      * at the item's current quality, and separating the base value from `increased%` to normalise
      * that needs a base-item table this app doesn't have. At 20% quality — the normal case for
@@ -439,8 +445,8 @@ export interface Settings {
     /**
      * The aggregate floor to search on, as a fraction of the item's own total: 0.9 turns 83% total
      * elemental resistance into `{ "min": 74 }`. Below 1 for the same reason as `defenceMinRatio` —
-     * at parity the only matches are items strictly better than this one, and a median over those
-     * prices something the item isn't. No maximum, for the same reason either.
+     * at parity the only matches are items strictly better than this one, and a price off those
+     * describes something the item isn't. No maximum, for the same reason either.
      */
     pseudoMinRatio: number;
     /**
@@ -502,7 +508,7 @@ export interface Settings {
      *
      * PoE2's cheap end is a wall of dump listings, and `priceSample` deliberately reads that end —
      * so without a floor a rare's reported value is routinely some fraction of a chaos. A real
-     * capture priced at **0.09 chaos** against a median of 0.6 over the same ten listings, which is
+     * capture priced at **0.09 chaos** where the same ten listings ran to 0.6, which is
      * not a price so much as evidence that nobody is really selling one.
      *
      * Sent to GGG as `trade_filters.filters.price`, so it constrains the **search** rather than the

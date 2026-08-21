@@ -240,23 +240,72 @@ export interface ParsedItem {
   capturedAt: number;
 }
 
+/**
+ * Why a trade lookup produced no value, in the terms the user has to act on. Each member asks for
+ * something different: wait, change a setting, look at the trade site by hand, or nothing at all.
+ *
+ * Deliberately a closed set rather than free text, and deliberately not derived from
+ * `TradeEstimate.reason` — that string is user-facing prose that gets reworded, and several call
+ * sites produce the same kind sharing no wording. Lives here rather than in `trade2-client.ts` so
+ * `UnpricedReason` can build on it without `shared/` importing from `pricing/`.
+ */
+export type TradeFailure =
+  /** The budget declined the search, the ladder ran out of slots, or GGG answered 429. Waiting fixes it. */
+  | "rateLimited"
+  /** No search was ever sent: trade2 off, base search off, or the item level below the floor. */
+  | "notSearched"
+  /** Searched, and the market has nothing — no match, or nothing at or above the price floor. */
+  | "noListings"
+  /** Listings exist, but none quoted a currency this app could convert to chaos. */
+  | "unconvertible"
+  /** The search went out and broke: an HTTP error, a thrown fetch, or retries exhausted. */
+  | "searchFailed";
+
+/**
+ * Why an item has no price — every trade failure, plus the three situations that never reach trade2
+ * at all. `PriceResolver.explainUnpriced` is the one place that decides which of these applies.
+ */
+export type UnpricedReason =
+  | TradeFailure
+  /** poe.ninja's first refresh is still in flight, so nothing could be looked up yet. */
+  | "pricesLoading"
+  /** A Magic item: PoE2 glues its affixes onto the base type, leaving nothing to search on. */
+  | "notSearchable"
+  /** Not in poe.ninja's data and not traded on the currency exchange. */
+  | "noPriceData";
+
 export interface PricedItem extends ParsedItem {
   id: string;
   chaosValue: number | null;
   priceSource: "poeninja" | "currencyExchange" | "trade2" | "unpriced";
   /**
-   * Why an unpriced item is unpriced, where the answer is recoverable and worth showing on the row.
+   * Why an unpriced item is unpriced, as the closed set of situations the row can tell apart.
    *
-   * Only `"rateLimited"` so far: the trade search was declined by `TradeSearchBudget`, ran out of
-   * slots mid-ladder, or came back 429. Deliberately **not** a fifth `priceSource` — that field says
-   * where a price *came from*, and a rate limit is not a source. It also scales: `explainUnpriced`
-   * already distinguishes four situations, and only this one resolves by waiting.
+   * Deliberately **not** a fifth `priceSource` — that field says where a price *came from*, and none
+   * of these is a source. It is what turns one word covering seven situations into a badge that says
+   * which: `"rateLimited"` and `"pricesLoading"` resolve on their own, `"notSearched"` wants a
+   * setting changed, `"noListings"` and `"notSearchable"` are facts about the item that no amount of
+   * retrying will change, and `"searchFailed"` is a fault worth seeing.
+   *
+   * Set by both write paths — `PriceResolver.resolve()` and `REPRICE_ITEM` — and *cleared* by the
+   * second, which is why that one writes it outside its priced-only conditional.
    *
    * Optional and never migrated, like everything else here. Absent means "no price, and nothing more
    * to say about it", which is how every item stored before this existed reads — the honest fallback,
-   * since a rate limit that old has long since expired.
+   * since a reason that old has long since stopped describing anything.
    */
-  unpricedReason?: "rateLimited";
+  unpricedReason?: UnpricedReason;
+  /**
+   * The full sentence behind `unpricedReason`, shown on the badge's tooltip.
+   *
+   * The code above picks the badge word and is stable; this is the item-specific half that makes it
+   * useful — which poe.ninja ids were tried, how many mods had no listing between them, how many
+   * seconds until the budget refills. It is the same string the `[pricing] "…" unpriced — …` log line
+   * prints, produced once and reused verbatim rather than reworded per surface.
+   *
+   * Optional and never migrated. Absent means the badge shows its own generic sentence and no more.
+   */
+  unpricedDetail?: string;
   /** Mod lines (exact text) excluded from the trade2 search when this item was last (re)priced. */
   ignoredMods: string[];
   /**
@@ -279,15 +328,17 @@ export interface PricedItem extends ParsedItem {
   /** User-entered override; takes precedence over chaosValue when set. See `effectiveValue()` in renderer/common.ts. */
   manualChaosValue: number | null;
   /**
-   * The median of the same sampled listings `chaosValue` is the cheapest of — shown in parentheses
-   * beside the price so a floor propped up by one optimistic seller is visible as one.
+   * When the cheapest sampled listing was posted, as epoch ms — shown in parentheses beside the
+   * price, so how *old* the floor is stands next to what it is. The same number three days stale and
+   * an hour fresh are different facts, and the price alone cannot say which.
    *
-   * Named apart from `manualChaosValue` deliberately: that one *replaces* the price, this one only
-   * annotates it, and nothing should ever read this as a value the item is worth. Optional for the
-   * same reason as `tradeSearchId` — nothing migrates `loot-cache.json`, and only trade2-priced
-   * items ever set it.
+   * Never read it as a value; it annotates the price rather than replacing it, which is the same
+   * separation `tradeListingQuote` has. Optional for the usual two reasons — nothing migrates
+   * `loot-cache.json`, so items priced before this existed have none, and a listing whose date GGG
+   * didn't send or that wouldn't parse deliberately stores none rather than a guess. The row draws
+   * no parenthetical at all in either case.
    */
-  tradeMedianChaosValue?: number;
+  tradeListingIndexedAt?: number;
   /**
    * What the cheapest sampled listing was actually asking — `{ amount: 2, currency: "chaos" }`.
    *
@@ -297,7 +348,7 @@ export interface PricedItem extends ParsedItem {
    * `chaosValue`, so nothing here can drift from the totals — see `pickDisplayUnit`.
    *
    * Never read it as a value. Chaos is the storage unit throughout and this is a label on one, in the
-   * same way `tradeMedianChaosValue` annotates rather than replaces. Optional for the usual reason:
+   * same way `tradeListingIndexedAt` annotates rather than replaces. Optional for the usual reason:
    * nothing migrates `loot-cache.json`, and only a trade2-priced item ever has a listing behind it.
    */
   tradeListingQuote?: { amount: number; currency: string };
@@ -356,7 +407,7 @@ export interface PricedItem extends ParsedItem {
    * the row editor's checkboxes and re-sent on the next Reprice; this one is the app's, recomputed
    * from scratch by every search. Folding them together would make an automatic guess indistinguish-
    * able from a deliberate exclusion and permanent by accident. It's the same separation
-   * `tradeMedianChaosValue` has from `manualChaosValue`: one annotates the price, the other replaces
+   * `tradeListingIndexedAt` has from `manualChaosValue`: one annotates the price, the other replaces
    * it.
    *
    * The editor unticks these rows so the mods that produced the price come back selected, and marks
@@ -420,6 +471,20 @@ export interface OverlayStatus {
   rates: { chaosPerDivine: number; exaltedPerDivine: number } | null;
   /** Epoch ms of the last successful price refresh, for the "prices Nm old" line. */
   pricesFetchedAt: number | null;
+  /**
+   * Epoch ms at which a trade2 search could next go out, or null when one could go now.
+   *
+   * **An absolute deadline, not a remaining duration**, so the renderer counts down against its own
+   * clock rather than against whatever the number was when it was sent. A duration would freeze
+   * between pushes, which is precisely the staleness this exists to fix — the "retry in ~Ns" baked
+   * into an item's `unpricedDetail` is exactly that frozen string, and the two must not be confused.
+   * Both processes share one machine clock, so there is no skew to correct for.
+   *
+   * Null rather than 0 for "nothing to wait for", so the panel has one value to test rather than a
+   * deadline sitting in the past. The countdown is ticked entirely in the renderer: pushing it per
+   * second would rebuild the whole list every second, since `applyStatus` ends in `scheduleRender`.
+   */
+  tradeCooldownUntil: number | null;
   displayCurrency: "auto" | "exalted" | "chaos" | "divine";
   /**
    * Whether the overlay currently accepts clicks. In click-through mode the buttons are inert but

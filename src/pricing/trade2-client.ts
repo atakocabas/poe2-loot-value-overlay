@@ -4,7 +4,13 @@
 // `option`, the strict rung never being walked past, the drop ladder's ordering, the pseudo
 // aggregates. Four repeat regressions came from changing these without reading it.
 import type { Settings } from "../shared/settings";
-import type { ItemDefences, ModFilter, ParsedItem, PseudoStat } from "../shared/types";
+import type {
+  ItemDefences,
+  ModFilter,
+  ParsedItem,
+  PseudoStat,
+  TradeFailure
+} from "../shared/types";
 import type { ListingQuote } from "../shared/format-value";
 import { createPublicGggFetch, type GggFetch } from "./ggg-fetch";
 import { modsOf } from "../shared/mods";
@@ -51,6 +57,14 @@ export function listingsLabelFor(status: ListingStatus): string {
 interface TradeListing {
   listing: {
     price: { amount: number; currency: string } | null;
+    /**
+     * ISO-8601, when GGG indexed the listing — how old the asking price is.
+     *
+     * Optional because the app has never verified it against a live response, and because a listing
+     * with no usable date has to behave exactly like an item stored before this was read: the row
+     * says nothing rather than guessing. See `TradeEstimate.listingIndexedAt`.
+     */
+    indexed?: string;
   };
   /**
    * `extended.hashes` names the exact stat ids this listing carries, grouped by kind. It is the only
@@ -172,16 +186,18 @@ export interface TradeEstimate {
    * The **cheapest** convertible listing in the sample — what you could undercut into today, which
    * is the number someone deciding whether to list an item actually wants.
    *
-   * Read `medianChaosValue` beside it: the two together say how thin the floor is. A floor far
-   * below the median of the same five listings is one optimistic seller, not a market.
+   * Read `listingIndexedAt` beside it: a floor from a listing posted three days ago is a different
+   * fact from the same number posted an hour ago, and the number alone cannot say which.
    */
   chaosValue: number | null;
   /**
-   * The median of the same sampled window `chaosValue` is the floor of. Carried rather than chosen
-   * because it answers a different question — the floor is what you can sell into now, the median
-   * is what the cheap end is actually asking. null whenever there is no price.
+   * When the cheapest listing was posted, as epoch ms — the age of the quote behind `chaosValue`.
+   *
+   * Parsed here rather than carried as GGG's ISO string, so one representation reaches the row and
+   * `relativeTime` can take it directly. Absent whenever there is no price, and whenever the listing
+   * carried no date this could parse — the row draws nothing in both cases rather than guessing.
    */
-  medianChaosValue: number | null;
+  listingIndexedAt?: number;
   /**
    * What the cheapest listing was asking, in its own currency — the quote behind `chaosValue`.
    *
@@ -192,23 +208,24 @@ export interface TradeEstimate {
   /** Why there is no value. null when `chaosValue` is set. */
   reason: string | null;
   /**
-   * Whether the *rate limit* is why there is no value — the budget declined the search, the ladder
-   * ran out of slots before it could try looser rungs, or GGG answered 429.
+   * *Which kind* of failure is why there is no value. null when `chaosValue` is set.
    *
-   * Carried as a flag rather than left for the caller to pattern-match out of `reason`, because that
-   * string is user-facing prose that gets reworded. It is what separates "nothing on the market
-   * matches this item" from "nobody looked yet" — the first is a fact about the item and the second
-   * expires on its own, and the row has to be able to say which.
+   * Carried as a typed kind rather than left for the caller to pattern-match out of `reason`, because
+   * that string is user-facing prose that gets reworded — several call sites produce the same kind
+   * sharing no wording. It is what separates "nothing on the market matches this item" from "nobody
+   * looked yet" — the first is a fact about the item and the second expires on its own, and the row
+   * has to be able to say which. See `TradeFailure` for the full set and what each one asks of the
+   * user; `PricedItem.unpricedReason` is where it lands.
    */
-  rateLimited: boolean;
-  /** How many listings both figures were taken over — the sample, not the whole match set. */
+  failure: TradeFailure | null;
+  /** How many listings the price was taken over — the sample, not the whole match set. */
   listings: number;
   /** How many online listings the search matched in total, which the sample is drawn from. */
   matches: number;
   /**
    * GGG's id for the search this price came from — the rung that was actually fetched, not the
-   * stricter ones the ladder passed over, so opening it shows the listings the median was taken
-   * over rather than a query that returned nothing.
+   * stricter ones the ladder passed over, so opening it shows the listings the price was taken
+   * from rather than a query that returned nothing.
    *
    * Absent whenever there was no successful search to point at. Feed it to `tradeSearchUrl`.
    */
@@ -299,12 +316,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function noPrice(reason: string, rateLimited = false): TradeEstimate {
+function noPrice(reason: string, failure: TradeFailure): TradeEstimate {
   return {
     chaosValue: null,
-    medianChaosValue: null,
     reason,
-    rateLimited,
+    failure,
     listings: 0,
     matches: 0,
     matchedMods: 0,
@@ -375,9 +391,9 @@ export function describePseudo(stats: PseudoStat[], filters: StatFilter[]): stri
 /** A settled "no price" - retrying would produce the same answer. */
 function definitive(
   reason: string,
-  rateLimited = false
+  failure: TradeFailure
 ): { estimate: TradeEstimate; transient: boolean } {
-  return { estimate: noPrice(reason, rateLimited), transient: false };
+  return { estimate: noPrice(reason, failure), transient: false };
 }
 
 /**
@@ -605,6 +621,21 @@ export class Trade2Client {
     return this.settings.trade2.enabled;
   }
 
+  /**
+   * How long until a search could go out, in ms; 0 when one could go now.
+   *
+   * Delegated rather than exposing `budget`, for the reason this file already states about the
+   * enabled and item-level gates: one place decides whether a lookup happens. The panel counts down
+   * against this so a rate-limited row can say *when* pressing Reprice is worth it — the "retry in
+   * ~Ns" inside `TradeEstimate.reason` is frozen at the moment the refusal was worded and goes stale
+   * within seconds.
+   *
+   * 0 covers both "budget free" and "nothing ever reserved". They are the same thing to a caller.
+   */
+  cooldownMs(): number {
+    return this.budget.cooldownMs();
+  }
+
   /** Which listings were counted, so callers can word "no listings" without contradicting the query. */
   get listingStatus(): ListingStatus {
     return this.settings.trade2.listingStatus;
@@ -642,10 +673,16 @@ export class Trade2Client {
     mapBounds: ModFilterMap = new Map()
   ): Promise<TradeEstimate> {
     if (!this.settings.trade2.enabled) {
-      return noPrice("trade2 lookups are switched off (trade2.enabled is false in settings)");
+      return noPrice(
+        "trade2 lookups are switched off (trade2.enabled is false in settings)",
+        "notSearched"
+      );
     }
     if (!item.baseType) {
-      return noPrice("no base type to search on — trade2 searches by base type plus mod filters");
+      return noPrice(
+        "no base type to search on — trade2 searches by base type plus mod filters",
+        "notSearched"
+      );
     }
     // A white base is priced on its item level and nothing else, so it is only worth a request once
     // that level is high enough to be worth crafting on. The refusal lives here rather than in the
@@ -656,19 +693,22 @@ export class Trade2Client {
       if (!useBaseItemSearch) {
         return noPrice(
           "base items aren't searched (trade2.useBaseItemSearch is false in settings) — set a " +
-            "manual price with the row's Edit button"
+            "manual price with the row's Edit button",
+          "notSearched"
         );
       }
       if (item.itemLevel === null) {
         return noPrice(
           "this base printed no item level, which is the only thing a white item is priced on — " +
-            "set a manual price with the row's Edit button"
+            "set a manual price with the row's Edit button",
+          "notSearched"
         );
       }
       if (item.itemLevel < baseItemMinLevel) {
         return noPrice(
           `item level ${item.itemLevel} is below trade2.baseItemMinLevel (${baseItemMinLevel}), so ` +
-            "no search was made — lower that setting, or set a manual price with the row's Edit button"
+            "no search was made — lower that setting, or set a manual price with the row's Edit button",
+          "notSearched"
         );
       }
     }
@@ -687,12 +727,12 @@ export class Trade2Client {
         // A spent budget mid-retry shouldn't hide what actually went wrong first. Still flagged as
         // rate-limited: the transient error is why the first attempt failed, but the budget is why
         // there was no second one, and waiting for the window is what the user has to do either way.
-        if (lastTransient) return noPrice(`${lastTransient}; no budget left to retry`, true);
+        if (lastTransient) return noPrice(`${lastTransient}; no budget left to retry`, "rateLimited");
         return noPrice(
           `trade2 search budget spent (${this.settings.trade2.maxSearchesPerWindow} per ` +
             `${Math.round(this.settings.trade2.windowMs / 60000)}min; GGG rate-limits by IP) - ` +
             `retry in ~${seconds}s with the row's Reprice button`,
-          true
+          "rateLimited"
         );
       }
       // Doubles as the retry backoff: the budget already spaces searches by minSearchIntervalMs.
@@ -716,7 +756,8 @@ export class Trade2Client {
 
     return noPrice(
       `${lastTransient} (gave up after ${this.settings.trade2.maxTransientRetries + 1} attempts) - ` +
-        "retry later with the row's Reprice button"
+        "retry later with the row's Reprice button",
+      "searchFailed"
     );
   }
 
@@ -734,7 +775,10 @@ export class Trade2Client {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // A thrown fetch is DNS/socket/TLS — the network, not a rejected query.
-      return { estimate: noPrice(`trade2 request failed: ${message}`), transient: true };
+      return {
+        estimate: noPrice(`trade2 request failed: ${message}`, "searchFailed"),
+        transient: true
+      };
     }
   }
 
@@ -744,8 +788,8 @@ export class Trade2Client {
    *
    * "Strictest that matched anything" is the wrong stopping rule, and the item that prompted this
    * shows why: a real four-mod Ruby jewel had exactly **one** online listing carrying all four mods,
-   * at 30 chaos, while eleven listings shared three of them and ran 1-500 exalted. A median over one
-   * listing is that listing, so the exact-match rung would have reported one stranger's asking price
+   * at 30 chaos, while eleven listings shared three of them and ran 1-500 exalted. A price taken from
+   * one listing is that listing, so the exact-match rung would have reported one stranger's asking price
    * as the item's value — a different way of being wrong from the market floor this replaced, not a
    * better one. A rung has to clear `minListingsForMatch` to be taken at face value.
    *
@@ -880,7 +924,8 @@ export class Trade2Client {
       // rung: when listings carry the item's whole mod set, those listings **are** its comparables,
       // and walking past them prices a different item. A real four-mod Sapphire had 9 listings at all
       // four mods and was priced at 0.12 chaos off 147 sharing three, where the four-mod market
-      // started at 4 divine. How thin the sample is, is what `medianChaosValue` is printed to say.
+      // started at 4 divine. How thin the sample is, the row no longer says — the median that used
+      // to carry that signal was removed, so `listings` in the log is the only place it survives.
       const exactHit = candidate.dropped.length === 0 && rung.total > 0;
 
       // Why the ladder stopped where it did, in the same line as the count it decided on. Two
@@ -1029,7 +1074,7 @@ export class Trade2Client {
           `${withDefences} on ${lastRung?.filters ?? statFilters.length} of its mods, and the ` +
           `search budget ran out before trying fewer - retry in ` +
           `~${Math.ceil(this.budget.cooldownMs() / 1000)}s with the row's Reprice button`,
-        true
+        "rateLimited"
       );
     }
 
@@ -1047,7 +1092,8 @@ export class Trade2Client {
               `(tried ${triedLabel} mods) - ` +
               'press Edit on the row, untick the rare mods, then "Reprice via trade"'
           : `no ${this.listingsLabel}${this.describePriceFloor()} for base type ` +
-              `"${item.baseType}"${withDefences}`
+              `"${item.baseType}"${withDefences}`,
+        "noListings"
       );
     }
 
@@ -1125,7 +1171,7 @@ export class Trade2Client {
    * all-but-one, purely because `+N to Armour` and `N% increased Armour` were pinned to its rolls.
    *
    * `min` sits below the item's own value (`defenceMinRatio`) rather than at it: at parity the only
-   * matches are items strictly better than this one, and a median over those prices something the
+   * matches are items strictly better than this one, and a price off those describes something the
    * item isn't. It also absorbs the quality skew — GGG indexes these "including maximum quality"
    * while the clipboard prints them at the item's *current* quality, and separating the base value
    * from `increased%` to correct that needs a base-item table this app doesn't have.
@@ -1225,7 +1271,7 @@ export class Trade2Client {
    * The derived aggregates as trade2 stat filters, floored below the item's own total.
    *
    * `pseudoMinRatio` is below 1 for the reason `defenceMinRatio` is: at parity the only matches are
-   * items strictly better than this one, and a median over those prices something the item isn't.
+   * items strictly better than this one, and a price off those describes something the item isn't.
    */
   private buildPseudoFilters(stats: PseudoStat[], bounds: ModFilterMap): StatFilter[] {
     const ratio = this.settings.trade2.pseudoMinRatio;
@@ -1604,46 +1650,57 @@ export class Trade2Client {
     // `PricedItem.tradeListingQuote`. Pairing them is the whole reason this isn't a flat `.map()`:
     // the sort below is on the chaos figure, and the quote has to survive it attached to its own.
     const priced = fetchBody.result
-      .map((entry) => entry.listing.price)
-      .filter((price): price is { amount: number; currency: string } => price !== null)
-      // Rebuilt to the two fields rather than kept whole: GGG's price object also carries a `type`
+      .map((entry) => ({
+        price: entry.listing.price,
+        // Parsed here, at the only point the raw listing is in scope. `Date.parse` returns NaN
+        // rather than throwing on a missing or malformed value, and NaN is filtered to `undefined`
+        // below — an unusable date has to reach the row as "say nothing", never as a wrong number.
+        indexedAt: entry.listing.indexed ? Date.parse(entry.listing.indexed) : Number.NaN
+      }))
+      .filter(
+        (entry): entry is { price: { amount: number; currency: string }; indexedAt: number } =>
+          entry.price !== null
+      )
+      // Rebuilt to the named fields rather than kept whole: GGG's price object also carries a `type`
       // ("~b/o"), and this one is persisted into `loot-cache.json`, where anything beyond what the
       // display needs is a field nothing reads and everything has to keep tolerating.
-      .map((price) => ({
+      .map(({ price, indexedAt }) => ({
         chaos: toChaos(price.amount, price.currency),
-        quote: { amount: price.amount, currency: price.currency }
+        quote: { amount: price.amount, currency: price.currency },
+        indexedAt: Number.isFinite(indexedAt) ? indexedAt : undefined
       }))
-      .filter((entry): entry is { chaos: number; quote: ListingQuote } => entry.chaos !== null);
-    const chaosValues = priced.map((entry) => entry.chaos);
+      .filter(
+        (entry): entry is { chaos: number; quote: ListingQuote; indexedAt: number | undefined } =>
+          entry.chaos !== null
+      );
 
-    if (chaosValues.length === 0) {
+    if (priced.length === 0) {
       return definitive(
         `${fetchBody.result.length} listing(s) found but none had a price this app could convert ` +
-          "to chaos (unpriced stash tabs, or a currency poe.ninja isn't tracking)"
+          "to chaos (unpriced stash tabs, or a currency poe.ninja isn't tracking)",
+        "unconvertible"
       );
     }
 
-    // Both ends of the cheap window `priceSample` selected, because they answer different questions.
-    // The reported price is the **floor** — the cheapest listing, i.e. what you can undercut into
-    // today. The median of the same window rides along as the check on how thin that floor is: a
-    // floor far below it is one optimistic seller, and the two figures side by side say so, which a
-    // single number never could. The median still earns its keep as the *second* number for the
-    // reason it earned it as the first — one mispriced or unconverted-currency outlier among five
-    // would drag a mean, and the cheap end is exactly where those live.
+    // The reported price is the **floor** of the cheap window `priceSample` selected — the cheapest
+    // listing, i.e. what you can undercut into today.
     //
     // Re-sorted rather than trusting GGG's order, because the ids came back sorted by GGG's own
     // cross-currency normalisation while these are this app's chaos conversions, which can disagree.
+    // This sort is what makes `priced[0]` the cheapest, which the price, its quote and its date all
+    // read from — they have to describe one listing or the row annotates a number with another
+    // seller's details.
     priced.sort((a, b) => a.chaos - b.chaos);
-    chaosValues.sort((a, b) => a - b);
     return {
       estimate: {
-        chaosValue: chaosValues[0],
-        medianChaosValue: chaosValues[Math.floor(chaosValues.length / 2)],
+        chaosValue: priced[0]!.chaos,
         // The cheapest listing's own asking price, which is the one the headline figure is.
         listingQuote: priced[0]!.quote,
+        // And when that same listing went up, which is how old the headline actually is.
+        listingIndexedAt: priced[0]!.indexedAt,
         reason: null,
-        rateLimited: false,
-        listings: chaosValues.length,
+        failure: null,
+        listings: priced.length,
         matches: rung.total,
         searchId: rung.searchId,
         matchedMods: rung.required,
@@ -1676,13 +1733,16 @@ export class Trade2Client {
       return definitive(
         `trade2 rate-limited this IP (HTTP 429${retryAfter ? `, retry after ${retryAfter}s` : ""}) - ` +
           "lower trade2.maxSearchesPerWindow in settings if this keeps happening",
-        true
+        "rateLimited"
       );
     }
     const body = (await response.json().catch(() => null)) as GggErrorBody | null;
     const detail = body?.error ? `: ${body.error.message} (code ${body.error.code})` : "";
     const reason = `trade2 ${stage} returned HTTP ${response.status}${detail}`;
     // 5xx is GGG being briefly unwell; 4xx means the query itself was rejected and will be again.
-    return { estimate: noPrice(reason), transient: response.status >= 500 };
+    return {
+      estimate: noPrice(reason, "searchFailed"),
+      transient: response.status >= 500
+    };
   }
 }
