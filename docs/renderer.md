@@ -109,6 +109,27 @@ Anything with no ASCII reading at all becomes a single `?` instead of a run of m
 - **Edit is hidden in minimal mode, not omitted.** The row stays single-shaped in `renderItemRow`
   and CSS hides the button, so there is no second row builder to keep in sync. The hover tooltip
   still works, so the item is still readable at a glance; the `toggleList` hotkey is how you reach it.
+- **An unpriced row says *which* kind of unpriced it is, and there is one table deciding that.**
+  `UNPRICED_REASON` in `common.ts` maps each `PricedItem.unpricedReason` to the badge word, the
+  generic half of the tooltip, and whether it is recoverable; `unpricedLabel()` reads it and both
+  `sourceBadge` and `renderItemRow`'s value cell go through that one function, so the badge and the
+  number's slot can never disagree. The item's own `unpricedDetail` — the resolver's sentence,
+  verbatim — is appended under the generic half. Three traps: the value cell keys on
+  `total === null`, so it also guards on `priceSource === "unpriced"` (a group's total goes null
+  when *any* member is unpriced); an unrecognised code falls back to the plain word rather than
+  printing the raw identifier, which is what a downgrade produces; and the badge word **must not** be
+  `not searched`, which the editor already uses on individual mod rows for an unrelated reason.
+  `groupItems` folds on `unpricedReason` as well, since a group shows only its newest member's badge.
+  See [pricing-trade2.md](pricing-trade2.md) for where the kinds come from.
+- **Anything that ticks with the clock rewrites labels; it never calls `renderList()`.** Three do it
+  now — `refreshElapsedLabels` (30s, capture times and listing ages) and `tickCooldown` (1s, the
+  rate-limit countdown). Each finds its own elements by class, reads a timestamp off the element or a
+  module global, and rewrites `textContent`. A wholesale rebuild on a timer would fight the user's
+  scrolling and reset a half-filled row editor, since `renderList()` restores both by hand. Two rules
+  that come with it: each label needs its **own** pass when its text has a prefix (`listed …`,
+  `retry in …`) — the bare-rewrite loop strips the word — and any 1s timer must start and stop with
+  the thing it is counting (`syncCooldownTimer`, mirroring the pending timer), because this window
+  sits on top of a game.
 - **The row's globe icon button is a shortcut to the editor's "View search" button, not a second
   implementation of it.** Both call `window.poe2Overlay.openTradeSearch(itemId)` — no new IPC
   channel. `viewSearchIconButton` hides itself when `item.tradeSearchId` is unset, same rule as the

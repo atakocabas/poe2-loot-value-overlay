@@ -52,6 +52,11 @@ test("an item whose resolution throws is still recorded, as unpriced", async () 
   assert.equal(priced[0].name, "Divine Orb");
   assert.equal(priced[0].chaosValue, null);
   assert.equal(priced[0].priceSource, "unpriced");
+  // A crash and an empty market are the two things that must never read the same on the row: one is
+  // a fault worth seeing, the other is the market's answer. The thrown message is the only record of
+  // what actually broke, since nothing else survives the catch.
+  assert.equal(priced[0].unpricedReason, "searchFailed");
+  assert.match(priced[0].unpricedDetail!, /poe\.ninja unreachable/);
 });
 
 test("a failure does not stall the items queued behind it", async () => {

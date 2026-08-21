@@ -108,6 +108,20 @@ body {
   opacity: 0.9;
 }
 
+/*
+ * The rate-limit countdown. Warm like the other "something is not right yet" text on the panel —
+ * `.badge-unpriced` and `#price-status.stale` share this hue — because it says the same kind of
+ * thing: a lookup you might have expected isn't going to happen for a while.
+ */
+#cooldown-status {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: normal;
+  color: #8fafd3;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
 /* Slightly stronger than #price-status: these are numbers to read, not a footnote about them. */
 #rate-status {
   margin-top: 2px;
@@ -273,7 +287,9 @@ select option {
 }
 
 /* Cooler than the unpriced hue and not italicised, because it is a state of the *app* rather than a
-   verdict on the item — the row is waiting on a rate-limit window, not reporting an empty market. */
+   verdict on the item — the row is waiting on something, not reporting an empty market. Worn by
+   every `recoverable` reason in `UNPRICED_REASON`, which is the one distinction among the seven
+   worth carrying in colour: this answer is still coming, the tan ones have already arrived. */
 .badge-ratelimited {
   border-color: rgba(143, 175, 211, 0.45);
   color: #8fafd3;
@@ -439,25 +455,27 @@ select option {
   font-style: italic;
 }
 
-/* Upright and a touch brighter than plain unpriced: this row still has a price coming. */
-.item-value.unpriced.rate-limited {
+/* Upright and a touch brighter than plain unpriced: this row still has a price coming. Every
+ * `recoverable` reason in `UNPRICED_REASON` lands here — rate limited, prices loading, search
+ * failed — as against the ones that are the market's final answer. */
+.item-value.unpriced.recoverable {
   opacity: 0.75;
   font-style: normal;
   color: #8fafd3;
 }
 
 /*
- * The median beside a trade2 price. Subordinate to the headline on purpose — it annotates the
+ * The listing age beside a trade2 price. Subordinate to the headline on purpose — it annotates the
  * number rather than competing with it.
  *
  * The negative margin cancels most of `.item-row-top`'s 8px gap: that gap separates the row's three
  * independent parts, while this reads as attached to the price it qualifies, not as a fourth column.
  *
- * Deliberately absent from the `#panel.minimal` hide list at the top of this file — the pair is
- * wanted in the heads-up form too. It needs no rule there: the only thing minimal strips from a row
- * is `.item-row button`, and this is a span.
+ * Deliberately absent from the `#panel.minimal` hide list at the top of this file — how stale the
+ * floor is matters just as much in the heads-up form. It needs no rule there: the only thing minimal
+ * strips from a row is `.item-row button`, and this is a span.
  */
-.item-value-median {
+.item-value-listed {
   white-space: nowrap;
   margin-left: -4px;
   font-size: 11px;

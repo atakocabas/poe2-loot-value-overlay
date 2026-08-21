@@ -46,6 +46,12 @@ interface StubOptions {
   searchStatus?: number;
   fetchStatus?: number;
   listings?: Array<{ amount: number; currency: string } | null>;
+  /**
+   * `listing.indexed` per listing, in the same order as `listings` — GGG's ISO-8601 for when the
+   * listing went up. Omitted entirely by default, which is the case the row has to survive: a
+   * response with no dates must price normally and simply draw no age.
+   */
+  indexedSequence?: Array<string | undefined>;
   retryAfter?: string;
   stats?: unknown;
   /** Per-attempt search statuses, so a transient failure can be followed by a success. */
@@ -111,7 +117,12 @@ function stubFetch(options: StubOptions = {}): { fetch: GggFetch; calls: Call[] 
     return new Response(
       JSON.stringify({
         result: listings.map((price, index) => ({
-          listing: { price },
+          listing: {
+            price,
+            ...(options.indexedSequence?.[index] !== undefined
+              ? { indexed: options.indexedSequence[index] }
+              : {})
+          },
           ...(options.hashesSequence
             ? { item: { extended: { hashes: options.hashesSequence[index] ?? {} } } }
             : {})
@@ -132,6 +143,13 @@ function makeSettings(overrides: Partial<Settings["trade2"]> = {}): Settings {
       contactEmail: "someone@example.com",
       maxSearchesPerWindow: 10,
       windowMs: 300000,
+      // Both halves of the budget, at their real defaults. Omitting these left `TradeSearchBudget`
+      // with `{ max: undefined, windowMs: undefined }` for its second window, which makes
+      // `longestWindowMs` NaN — so its pruning loop never ran and `cooldownMs()` returned NaN. The
+      // long window is loose enough (240 per 6h) never to bind in a test, which is why it went
+      // unnoticed: nothing asked the budget a question the short window couldn't answer.
+      maxSearchesPerLongWindow: 240,
+      longWindowMs: 21600000,
       // 0 so the tests never actually sleep; the spacing itself is covered in trade-budget.test.ts.
       minSearchIntervalMs: 0,
       maxListings: 5,
@@ -236,26 +254,15 @@ const firstStatsGroup = (call: Call): { type: string; filters: Array<{ disabled?
 const fetchCall = (calls: Call[]): Call | undefined =>
   calls.find((call) => call.url.includes("/fetch/"));
 
-test("prices a rare at the cheapest listing, and carries the median of the same sample", async () => {
+test("prices a rare at the cheapest listing of the sample", async () => {
   const { fetch } = stubFetch();
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
-  // 1, 5, 10 exalted -> 2, 10, 20 chaos. The price is the floor; the median rides along beside it,
-  // and the gap between the two is what the row's `2c (10c)` exists to show.
+  // 1, 5, 10 exalted -> 2, 10, 20 chaos. The price is the floor: what you could undercut into today.
   assert.equal(estimate.chaosValue, 2);
-  assert.equal(estimate.medianChaosValue, 10);
   assert.equal(estimate.reason, null);
   assert.equal(estimate.listings, 3);
   assert.equal(estimate.matches, 3);
-});
-
-test("a one-listing sample makes both figures the same, which the row then suppresses", async () => {
-  const { fetch } = stubFetch({ listings: [{ amount: 5, currency: "exalted" }] });
-  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
-
-  assert.equal(estimate.chaosValue, 10);
-  assert.equal(estimate.medianChaosValue, 10, "medianValueEl drops the parenthetical on this");
-  assert.equal(estimate.listings, 1);
 });
 
 test("reports the full match count alongside the sample the price came from", async () => {
@@ -1198,7 +1205,7 @@ test("an armour piece is searched on its total, not on the rolls that produced i
   const { query } = JSON.parse(String(searchCall(calls).init.body));
 
   // floor(1081 * 0.9). Below the item's own value on purpose: at parity the only matches are items
-  // strictly better than this one, and a median over those prices something the item isn't.
+  // strictly better than this one, and a price off those describes something the item isn't.
   assert.deepEqual(query.filters.equipment_filters.filters, { ar: { min: 972 } });
 
   // The two armour mods are gone from the stat list — that is the fix. Leaving them would pin this
@@ -1809,7 +1816,7 @@ test("a strict rung that matched anything is never walked past, however high the
 });
 
 test("the estimate carries the search id of the rung the price came from", async () => {
-  // The point of the link is showing the listings the median was actually taken over. The rungs above
+  // The point of the link is showing the listings the price was actually taken from. The rungs above
   // here were searched and passed over — one empty, one holding a single listing — so pointing at
   // either id would open a query that explains nothing about the number next to it.
   const { fetch } = stubFetch({
@@ -1889,10 +1896,8 @@ test("at the shipped default the ladder stops on the first rung that matched any
   assert.equal(estimate.matches, 3);
   assert.equal(calls.filter((call) => call.url.includes("/search/")).length, 2);
 
-  // Both figures come from that same rung, which is what makes a thin sample readable rather than
-  // just confident: the price is the cheapest of the fetched listings, the median their middle.
+  // The price comes from that same rung: the cheapest of the listings it fetched.
   assert.ok(estimate.chaosValue !== null);
-  assert.ok(estimate.medianChaosValue !== null);
 });
 
 test("an empty rung is not a hit, even at a threshold of 1", async () => {
@@ -1956,7 +1961,7 @@ test("running out of budget mid-ladder says so rather than reporting no market",
   assert.match(estimate.reason!, /budget ran out before trying fewer/);
   // The looser rungs that would have priced this were never sent, so the row must not claim the
   // market has nothing — it hasn't been asked yet.
-  assert.equal(estimate.rateLimited, true);
+  assert.equal(estimate.failure, "rateLimited");
 });
 
 test("samples the cheapest of the price-sorted results", () => {
@@ -2015,7 +2020,7 @@ test("a 429 is reported as a rate limit, naming the setting that controls it", a
   const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
   assert.equal(estimate.chaosValue, null);
-  assert.equal(estimate.medianChaosValue, null, "no price means no median either");
+  assert.equal(estimate.listingIndexedAt, undefined, "no price means no listing to date either");
   assert.match(estimate.reason!, /rate-limited/);
   assert.match(estimate.reason!, /retry after 60s/);
   assert.match(estimate.reason!, /maxSearchesPerWindow/);
@@ -2114,6 +2119,63 @@ test("the cheapest listing's own quote rides along, for the unit the row is show
   assert.deepEqual(Object.keys(estimate.listingQuote!).sort(), ["amount", "currency"]);
 });
 
+test("the listing date comes from the cheapest listing, not GGG's first", async () => {
+  // Same argument as the quote beside it: the row annotates one number, so the date has to describe
+  // the listing that number came from. Taking entry [0] would date this price to a seller whose
+  // asking price was never used.
+  const { fetch } = stubFetch({
+    listings: [
+      { amount: 5, currency: "exalted" },
+      { amount: 1, currency: "divine" },
+      { amount: 2, currency: "exalted" }
+    ],
+    indexedSequence: [
+      "2026-08-01T10:00:00Z",
+      "2026-08-10T10:00:00Z",
+      "2026-08-18T10:00:00Z"
+    ]
+  });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
+
+  assert.equal(estimate.chaosValue, 4, "the 2-exalted listing is the cheapest");
+  assert.equal(estimate.listingIndexedAt, Date.parse("2026-08-18T10:00:00Z"));
+});
+
+test("a response with no dates prices normally and carries none", async () => {
+  // The case every existing capture is in, and the case a GGG response without the field would be
+  // in. Neither may cost the price — the date is an annotation, not a precondition.
+  const { fetch } = stubFetch();
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
+
+  assert.equal(estimate.chaosValue, 2);
+  assert.equal(estimate.listingIndexedAt, undefined);
+});
+
+test("a date that won't parse is dropped rather than stored as NaN", async () => {
+  // `Date.parse` returns NaN instead of throwing, and NaN reaching the row would render "(listed
+  // NaN)" — worse than the nothing an absent date produces.
+  const { fetch } = stubFetch({
+    listings: [{ amount: 5, currency: "exalted" }],
+    indexedSequence: ["not a date at all"]
+  });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
+
+  assert.equal(estimate.chaosValue, 10, "an unusable date must not cost the price");
+  assert.equal(estimate.listingIndexedAt, undefined);
+});
+
+test("a listing this app can't convert never dates the price either", async () => {
+  // Dropped before the sort with its quote, so a listing that can't price the item can't date it.
+  const { fetch } = stubFetch({
+    listings: [{ amount: 3, currency: "some-unknown-orb" }, { amount: 5, currency: "exalted" }],
+    indexedSequence: ["2026-08-01T10:00:00Z", "2026-08-18T10:00:00Z"]
+  });
+  const estimate = await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
+
+  assert.equal(estimate.chaosValue, 10);
+  assert.equal(estimate.listingIndexedAt, Date.parse("2026-08-18T10:00:00Z"));
+});
+
 test("a listing this app can't convert never becomes the quote either", async () => {
   // It is dropped before the sort, so it can neither price the item nor label it.
   const { fetch } = stubFetch({
@@ -2154,11 +2216,34 @@ test("declines once the search budget is spent, rather than stalling on a rate l
   assert.equal(third.chaosValue, null);
   assert.match(third.reason!, /budget spent/);
   assert.match(third.reason!, /Reprice/, "the message must name the way to retry");
-  assert.equal(third.rateLimited, true);
+  assert.equal(third.failure, "rateLimited");
 });
 
-test("rateLimited separates 'nobody looked' from 'nothing matches'", async () => {
-  // The distinction the flag exists for. A search that went out and found an empty market is a fact
+test("cooldownMs is 0 while budget remains and positive once it is spent", async () => {
+  // The panel's countdown reads this through `Trade2Client` rather than reaching into the budget,
+  // which stays private. 0 covers both "budget free" and "nothing reserved yet" — the same thing to
+  // a caller, and what the status field turns into null.
+  const { fetch } = stubFetch();
+  const client = new Trade2Client(makeSettings({ maxSearchesPerWindow: 2 }), fetch);
+
+  assert.equal(client.cooldownMs(), 0, "nothing reserved yet");
+
+  await client.estimateRareValue(RARE, new Set(), toChaos);
+  await client.estimateRareValue(RARE, new Set(), toChaos);
+  const declined = await client.estimateRareValue(RARE, new Set(), toChaos);
+
+  assert.equal(declined.failure, "rateLimited");
+  // The row would otherwise have nothing live to count down to; the "retry in ~Ns" inside `reason`
+  // is frozen at the moment that sentence was built.
+  assert.ok(client.cooldownMs() > 0, "a spent budget has to report a wait the panel can show");
+  assert.ok(
+    client.cooldownMs() <= makeSettings().trade2.windowMs,
+    "and never one longer than the window it is waiting on"
+  );
+});
+
+test("the failure kind separates 'nobody looked' from 'nothing matches'", async () => {
+  // The distinction the field exists for. A search that went out and found an empty market is a fact
   // about the item and waiting changes nothing; a declined one expires on its own. Both store no
   // price, so `reason` — user-facing prose that gets reworded — is the only other thing telling them
   // apart, which is exactly why the caller shouldn't have to read it.
@@ -2169,14 +2254,14 @@ test("rateLimited separates 'nobody looked' from 'nothing matches'", async () =>
     toChaos
   );
   assert.equal(empty.chaosValue, null);
-  assert.equal(empty.rateLimited, false);
+  assert.equal(empty.failure, "noListings");
 
   const priced = await new Trade2Client(makeSettings(), stubFetch().fetch).estimateRareValue(
     RARE,
     new Set(),
     toChaos
   );
-  assert.equal(priced.rateLimited, false, "a priced item is never rate-limited");
+  assert.equal(priced.failure, null, "a priced item has no failure kind at all");
 });
 
 test("a 429 is reported as rate-limited, not as an empty market", async () => {
@@ -2190,7 +2275,7 @@ test("a 429 is reported as rate-limited, not as an empty market", async () => {
 
   assert.equal(estimate.chaosValue, null);
   assert.match(estimate.reason!, /HTTP 429/);
-  assert.equal(estimate.rateLimited, true);
+  assert.equal(estimate.failure, "rateLimited");
 });
 
 // ---------------------------------------------------------------------------

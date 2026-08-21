@@ -125,6 +125,31 @@ describe("groupItems", () => {
     assert.equal(groups[0].total, null);
   });
 
+  test("unpriced stacks that failed differently stay separate rows", () => {
+    // A group shows only its newest member's badge, so folding these would have the older stack
+    // silently claim the newer one's reason — "rate limited" on something the market has already
+    // answered sends the user to press Reprice on an item that will never price.
+    const groupItems = loadGroupItems();
+    const groups = groupItems([
+      makeItem({ id: "a", chaosValue: null, priceSource: "unpriced", unpricedReason: "noListings" }),
+      makeItem({ id: "b", chaosValue: null, priceSource: "unpriced", unpricedReason: "rateLimited" })
+    ]);
+
+    assert.equal(groups.length, 2);
+  });
+
+  test("the reason in the fold key changes no fold between priced items", () => {
+    // `unpricedReason` is undefined on everything that has a price, so adding it to the key must be
+    // inert for every row that isn't unpriced.
+    const groupItems = loadGroupItems();
+    const groups = groupItems([
+      makeItem({ id: "a", chaosValue: 2, capturedAt: 1000 }),
+      makeItem({ id: "b", chaosValue: 2, capturedAt: 2000 })
+    ]);
+
+    assert.equal(groups.length, 1);
+  });
+
   test("items carrying mods or a manual price are never folded together", () => {
     const groupItems = loadGroupItems();
     const groups = groupItems([

@@ -70,6 +70,13 @@ export class PricingQueue {
           ...entry.item,
           chaosValue: null,
           priceSource: "unpriced",
+          // A crashed resolver used to be stored bare, which reads on the row as "the market has
+          // nothing matching this item" — the one thing it definitely does not mean. The error text
+          // is the only record of what actually broke, since nothing else here survives the catch.
+          unpricedReason: "searchFailed",
+          unpricedDetail: `pricing this item threw before it finished: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
           ignoredMods: [],
           manualChaosValue: null
         };

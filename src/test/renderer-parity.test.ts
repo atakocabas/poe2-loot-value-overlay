@@ -17,7 +17,7 @@ import type { ParsedMod, PricedItem } from "../shared/types";
  * renderer's duplicate is the one that actually draws every number on the panel. A fix applied to one
  * and not the other is invisible until a player reads a wrong price.
  *
- * The vm harness is the same one `item-groups.test.ts`, `median-value.test.ts` and
+ * The vm harness is the same one `item-groups.test.ts`, `listed-age.test.ts` and
  * `source-badge.test.ts` use — the compiled file runs as a script in a `vm` context and the functions
  * are read off that context's global, which is how the page itself gets them.
  *

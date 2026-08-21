@@ -38,24 +38,58 @@ Practically:
   **declines** the lookup instead of waiting. Sleeping there would block the serial `PricingQueue`
   for minutes and stall every poe.ninja-priceable drop queued behind a pile of rares. Declined
   items are stored unpriced with a reason; the row's Reprice button retries them at human pace.
-- **A declined lookup is marked on the item, not just logged** — `TradeEstimate.rateLimited`, persisted
-  as `PricedItem.unpricedReason: "rateLimited"` by both write paths, and shown on the row as a
-  **rate limited** badge in place of **unpriced** (`sourceBadge` in `common.ts`, the value text in
-  `renderItemRow`). The two states are opposites dressed the same: "unpriced" is a finding about the
-  item — the market has nothing matching it, and waiting changes nothing — while this one means no
-  search ever went out and the answer arrives on its own. Four things:
-  - **It is a flag on the estimate, not a pattern match on `reason`.** That string is user-facing prose
-    that gets reworded; four separate call sites produce a rate-limited outcome (budget spent up
-    front, budget spent mid-ladder before the looser rungs, a transient failure with no slot left to
-    retry, and GGG answering 429) and they share no wording.
-  - **It is deliberately not a fifth `priceSource`.** That field says where a price *came from*, and a
-    rate limit is not a source. `explainUnpriced` already separates four situations and only this one
-    resolves by waiting, so a reason field scales where a source member wouldn't.
-  - **`REPRICE_ITEM` writes it outside its priced-only conditional**, so it is cleared as well as set.
-    An item rate-limited an hour ago and since priced would otherwise keep the badge for good.
+- **Why a lookup failed is marked on the item, not just logged** — `TradeEstimate.failure`
+  (`TradeFailure` in `shared/types.ts`), persisted as `PricedItem.unpricedReason` by both write paths,
+  and shown on the row as its own badge word in place of **unpriced** (`UNPRICED_REASON` and
+  `sourceBadge` in `common.ts`, the value text in `renderItemRow`). One word used to cover seven
+  situations that ask opposite things of the reader: "unpriced" reads as a finding about the item —
+  the market has nothing matching it, and waiting changes nothing — while a declined lookup means no
+  search ever went out and the answer arrives on its own. Six things:
+  - **It is a typed kind on the estimate, not a pattern match on `reason`.** That string is
+    user-facing prose that gets reworded; four separate call sites produce a rate-limited outcome
+    (budget spent up front, budget spent mid-ladder before the looser rungs, a transient failure with
+    no slot left to retry, and GGG answering 429) and they share no wording. The same goes for the
+    other kinds — `searchFailed` is produced by an HTTP error, a thrown fetch and exhausted retries.
+  - **It is deliberately not a fifth `priceSource`.** That field says where a price *came from*, and
+    none of these is a source. `explainUnpriced` separates the situations that never reach trade2 at
+    all, so a reason field scales where a source member wouldn't.
+  - **`explainUnpriced` returns the kind and the sentence together**, and is the only place either is
+    decided. The sentence is the log line and the badge's tooltip, verbatim, stored as
+    `unpricedDetail`. Two functions would let the badge and the tooltip under it disagree, which is
+    worse than the one word they replaced.
+  - **`REPRICE_ITEM` writes both outside its priced-only conditional**, so they are cleared as well as
+    set. An item that failed an hour ago and has since priced would otherwise keep the badge for good,
+    and one that failed for a new reason would keep the old sentence.
+  - **Only the kinds that resolve on their own get the cool hue** — `rateLimited`, `pricesLoading` and
+    `searchFailed` wear `badge-ratelimited`, the rest `badge-unpriced`. That is the one distinction
+    among them worth carrying in colour: blue means the answer is still coming, tan means the market
+    has already given it. `source-badge.test.ts` pins the split.
   - **Absent is the fallback, and it reads as "nothing more to say".** Nothing migrates
-    `loot-cache.json`, which is the honest direction here — a rate limit old enough to predate the
-    field has long since expired.
+    `loot-cache.json`, which is the honest direction here — a reason old enough to predate the field
+    has long since stopped describing anything. An unrecognised code falls back the same way, so a
+    downgrade shows the old word rather than a raw identifier.
+- **The rate-limit cooldown counts down live, in two places.** `Trade2Client.cooldownMs()` delegates
+  to the budget (which stays private), `buildStatus()` turns it into an **absolute deadline** on
+  `OverlayStatus.tradeCooldownUntil`, and the panel counts down against its own clock — the header's
+  `#cooldown-status` line and every rate-limited row's value cell, which reads `retry in 4:32` and
+  then `ready to reprice`. Five things:
+  - **The status carries a deadline, never a remaining duration.** A duration freezes between pushes,
+    which is the exact bug this fixes. Both processes share one machine clock, so there is no skew.
+  - **The per-second tick never crosses IPC.** `applyStatus` ends in `scheduleRender()`, a wholesale
+    list rebuild — the same reason `PRICING_STATUS` has its own channel. `OVERLAY_STATUS` is pushed
+    only when the deadline *moves*, which is when a lookup finishes and spends a slot.
+  - **`tickCooldown` rewrites labels, it does not re-render.** `renderList()` restores `scrollTop` and
+    the open editor by hand; running that every second would fight the user's scrolling and their
+    half-ticked mod boxes. Same approach as `refreshElapsedLabels`.
+  - **The ticker stops when the cooldown does** (`syncCooldownTimer`), like the pending-capture timer.
+    An overlay sitting on a game should not hold a 1s wakeup forever.
+  - **The countdown is global and stored nowhere.** GGG limits by IP, so one window covers every item;
+    a row rate-limited an hour ago shows the *current* cooldown, which is genuinely what pressing its
+    Reprice button would run into. Nothing per-item is persisted, and nothing auto-retries at zero.
+  - **Do not confuse it with `unpricedDetail`.** The "retry in ~Ns" inside that string is frozen at
+    the moment the refusal was worded and is never updated — it is a record of the decline, while the
+    countdown is the live answer. The formatter has three tiers because `cooldownMs()` reports the
+    longest wait across *both* windows and the long one is six hours; `mm:ss` would say `360:00`.
 - GGG rate-limits trade2 **by IP, not by app** (`5:10:60,15:60:300,30:300:1800,600:21600:3600` —
   and a lookup costs two requests, search then fetch), so a second copy of the app, or a trade tool
   running alongside it, spends the same budget. `TradeStatsMatcher` also draws on it, though only
@@ -227,8 +261,8 @@ Practically:
   listings without naming the constraint sends the user to loosen mods that were never the problem.
 
   It exists because PoE2's cheap end is a wall of dump listings and `priceSample` reads that end
-  deliberately: a real capture priced a rare at **0.09 chaos** against a median of 0.6 over the same
-  ten listings, which is not a price so much as evidence nobody is really selling one.
+  deliberately: a real capture priced a rare at **0.09 chaos** where the same ten listings ran to
+  0.6, which is not a price so much as evidence nobody is really selling one.
 - **Listings with no asking price are excluded by sending nothing**, which is the one filter whose
   default state is an absence rather than a value. `trade2.saleType` is `"buyout"` by default and
   emits no `trade_filters` group at all; only the opt-out (`"any"`) sends
@@ -236,8 +270,8 @@ Practically:
   `unpriced` 93, `any` 332 — exactly 239 + 93. GGG's `/api/trade2/data/filters` agrees, giving
   "Buyout or Fixed Price" the id `null`, i.e. the dropdown's untouched state. **Don't try to send
   that null explicitly** — `{ option: null }` is rejected with `400 Invalid sale type`, so there is
-  no way to say "buyout" other than saying nothing. The default matters because the price is a
-  median of the *cheapest* matches (see `priceSample`) and an unpriced listing has no number to sort
+  no way to say "buyout" other than saying nothing. The default matters because the price is the
+  cheapest of the *cheapest* matches (see `priceSample`) and an unpriced listing has no number to sort
   by; it can only take a slot a real asking price would have filled. This is the second knob after
   `listingStatus` that explains a gap between the app and the trade site.
 - An armour piece is searched on its **defence totals**, via `equipment_filters`
@@ -253,7 +287,7 @@ Practically:
     names rather than "any words", or `10% increased Armour during Soul Gain Prevention` gets folded
     away and its stat searched by nothing.
   - **`min` sits below the item's own value** (`trade2.defenceMinRatio`, default 0.9) with no `max`.
-    At parity the only matches are items strictly better, so the median prices something the item
+    At parity the only matches are items strictly better, so the price describes something the item
     isn't. It also absorbs a skew that *cannot* be corrected exactly: GGG indexes these "including
     maximum quality" while the clipboard prints them at the item's current quality, and separating
     the base value from `increased%` needs a base-item table this app doesn't have. Don't "fix" that
@@ -439,9 +473,11 @@ Practically:
     higher bar is still real: the Ruby jewel this came from had 1 listing matching all 4 mods (30
     chaos), 9 matching 3 (1 divine), and 263 matching 2 (25 exalted — what sellers were actually
     asking). A thin *dropped* rung really can be one stranger's asking price, which is what the
-    threshold is for. What makes 1 workable is that the row prints `medianChaosValue` next to the
-    price, so a rung too thin to mean anything shows it rather than hiding behind a confident single
-    number. **Don't re-raise the default on the strength of "the sample is small" alone** — small is
+    threshold is for. What used to make 1 workable is that the row printed a median next to the
+    price, so a rung too thin to mean anything showed it rather than hiding behind a confident single
+    number — **that signal no longer exists**, and this default is now less defended than it reads.
+    See the price-and-parenthetical section below. **Don't re-raise the default on the strength of
+    "the sample is small" alone** — small is
     the point now; it was changed deliberately after repeatedly pricing 4-mod rares off 2 of their
     mods, and **the change needed `adoptListingThresholdDefault` to reach existing installs at all**
     (see the Settings section).
@@ -463,7 +499,7 @@ Practically:
     something, and which one is the whole explanation for a gap against the trade site. Two real
     jewels matched **0** on all their mods and **16** / **5** once offline sellers were counted.
     `TradeEstimate.rungs` carries each threshold's count so the same function can separate "nobody has
-    one" from "one person does, too thin to take a median over".
+    one" from "one person does, too thin to take a price from".
   `matchedMods`/`totalMods` ride along on `TradeEstimate` and are persisted as `PricedItem.modMatch`
   (optional — nothing migrates `loot-cache.json`), so the log, the reprice status text and the row
   badge can all say a price came from fewer than every mod. Don't drop that: the number looks
@@ -475,29 +511,42 @@ Practically:
   straight through, while ids 45-54 run 29-40 exalted, which is what that jewel was actually selling
   for.
 
-  **`chaosValue` is the cheapest listing in that window; `medianChaosValue` is its median.** Both are
-  carried on `TradeEstimate`, the median is persisted as `PricedItem.tradeMedianChaosValue`, and the
-  row prints them as `12ex (18ex)` via `medianValueEl()` in `common.ts`. The gap between the two is
-  the whole point of showing both: a floor far below the median of its own five listings is one
-  optimistic seller, not a market, and no single number can say that. The price stays the lower one
-  because a floor is what you can sell into today.
+  **`chaosValue` is the cheapest listing in that window** — the floor, i.e. what you can sell into
+  today. The price stays the lower one for that reason. Don't collapse or raise it on the strength of
+  "the prices look too low", because low is the specification: that would change what the number
+  means, not just its accuracy, so it needs asking first.
 
-  One thing follows, deliberately: **`tradeMedianChaosValue` annotates a price, it never is one**.
-  Nothing should read it through `effectiveChaosValue` or sum it. It sits next to `manualChaosValue`
-  in `PricedItem` and does the opposite thing — that one *replaces* the price.
+  **The parenthetical beside it is the cheapest listing's age, not a second price.** A median of the
+  same window used to sit there, on the argument that a floor far below it was one optimistic seller
+  rather than a market. That was removed: the second number answered a question the reader rarely had,
+  and how *stale* the floor is turned out to be the more useful annotation — the same figure three
+  days old and an hour old are different facts about how much to trust it.
 
-  Don't collapse this back to a single number on the strength of "the prices look too low", because
-  low is the specification; and don't promote the median back to the price. Either would change what
-  the number means, not just its accuracy, so it needs asking first. The median is still worth taking
-  over a mean for the reason it was originally chosen: one unconverted-currency or misplaced outlier
-  among five would drag a mean, and the cheap end is exactly where those live.
+  **What that cost, and it is a real cost:** the row no longer signals a thin sample at all, so a
+  price off one listing looks exactly like a price off twenty. `minListingsForMatch` defaulting to 1
+  was partly justified by the median being visible (see above), and that justification is gone. The
+  sample size survives only in the `[pricing] … cheapest of N sampled` log line. Putting the count on
+  the row, or raising that default, are the two honest ways to close it.
 
-  `medianValueEl` returns null wherever the parenthetical would assert something untrue — a non-trade2
-  source, a manual override, an item stored before the field existed, a folded group (the headline is
-  a *sum* there), or the two figures agreeing. It is not in the `#panel.minimal` hide list: the pair
-  is wanted in the heads-up form too.
+  `listingIndexedAt` is carried on `TradeEstimate`, persisted as `PricedItem.tradeListingIndexedAt`
+  (epoch ms, parsed once at the fetch), and printed as `12ex (listed 3d ago)` by `listedAgeEl()` in
+  `common.ts`. Three things:
+  - **It annotates a price, it never is one.** Nothing should read it through `effectiveChaosValue`.
+    It sits where `tradeMedianChaosValue` did and keeps that field's one rule.
+  - **It says "listed" rather than a bare age**, because the row already carries a relative time — the
+    capture time on the line below. Two unlabelled `3d ago`s read as the same clock.
+  - **`listedAgeEl` returns null wherever the parenthetical would assert something untrue** — a
+    non-trade2 source, a manual override, an item stored before the field existed, a listing GGG sent
+    no parseable date for, a folded group (the headline is a *sum* there), or an unpriced row. It is
+    not in the `#panel.minimal` hide list: staleness matters in the heads-up form too.
 
-  **Which unit that pair is printed in comes from the listing, not from the number**
+  **`listing.indexed` is read structurally and has never been verified against a live response.** The
+  app's `TradeListing` interface declares a fraction of what GGG sends — the `price` object carries a
+  `type` the code explicitly discards — so the date is declared optional and an absent or unparseable
+  one degrades to drawing nothing. If GGG renames it, every row silently loses the parenthetical
+  rather than breaking.
+
+  **Which unit the price is printed in comes from the listing, not from the number**
   (`pickDisplayUnit()` in `shared/format-value.ts`, mirrored in `common.ts`). The cheapest listing's
   own asking price is persisted as `PricedItem.tradeListingQuote`, and on `display.currency: "auto"`
   its currency is the unit the row shows: a price taken from a seller asking 2 chaos reads `2c`, which
@@ -507,8 +556,9 @@ Practically:
     disagreeing about one item.
   - **Only a single unfolded item follows its listing** (`rowQuote()`): `count > 1` is a summed group,
     `stackSize > 1` is a stack, and a manual price replaces the trade figure — in each the quote no
-    longer describes the number on screen. Same guards as `medianValueEl`, and the median shares the
-    headline's unit or the two cannot be compared at a glance.
+    longer describes the number on screen. Same guards as `listedAgeEl`, for the same reason: the
+    quote, the date and the price all describe one listing or the row annotates a number with some
+    other seller's details.
   - **A currency with no label falls back**, rather than printing a unit the header's rate line can't
     explain. Only `chaos`, `exalted` and `divine` are labelled.
   - **An explicit `display.currency` still wins outright.** The listing only decides `auto`.

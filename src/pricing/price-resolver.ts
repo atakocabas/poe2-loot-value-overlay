@@ -1,4 +1,9 @@
-import type { ParsedItem, PricedItem } from "../shared/types";
+import type {
+  ParsedItem,
+  PricedItem,
+  TradeFailure,
+  UnpricedReason
+} from "../shared/types";
 import type { PoeNinjaClient } from "./poeninja-client";
 import type { CurrencyExchangeClient } from "./currency-exchange-client";
 import {
@@ -11,42 +16,56 @@ import { toChaos } from "./currency-convert";
 import { formatNumber } from "../shared/format-value";
 
 /**
- * Why an item ended up without a price. "unpriced" covers at least four genuinely different
- * situations — one of which is a bug and three of which are expected — and collapsing them into a
- * single log line made a broken name->id mapping indistinguishable from working as designed.
+ * Why an item ended up without a price. "unpriced" covers seven genuinely different situations —
+ * one of which is a bug and the rest of which are expected — and collapsing them into a single log
+ * line made a broken name->id mapping indistinguishable from working as designed.
+ *
+ * Returns both halves of the answer from one place: `text` is the sentence, printed to the log and
+ * carried to the row's tooltip verbatim; `code` is which situation it was, which picks the badge
+ * word. Two returns rather than two functions because they must never disagree — a badge saying one
+ * thing while the tooltip under it says another is worse than the single word it replaced.
  */
 function explainUnpriced(
   item: ParsedItem,
   poeNinja: PoeNinjaClient,
   exchange: CurrencyExchangeClient,
-  tradeReason: string | null
-): string {
+  tradeReason: string | null,
+  tradeFailure: TradeFailure | null
+): { code: UnpricedReason; text: string } {
   const { keysTried, entriesLoaded } = poeNinja.describeLookup(item);
 
   // Ordered most-fundamental first: no data at all explains every miss, so check it before
   // blaming the item.
   if (entriesLoaded === 0 || poeNinja.getLastRefreshAt() === null) {
-    return (
-      "poe.ninja data hasn't loaded yet (first refresh still in flight) — this item will stay " +
-      "unpriced until it is repriced or given a manual value"
-    );
+    return {
+      code: "pricesLoading",
+      text:
+        "poe.ninja data hasn't loaded yet (first refresh still in flight) — this item will stay " +
+        "unpriced until it is repriced or given a manual value"
+    };
   }
 
   // poe.ninja only publishes uniques and currency-likes. Rares and magic items are not a lookup
   // failure; there is nothing to look them up in.
   if (item.rarity === "Rare") {
     // trade2 was consulted, so it owns the explanation — budget spent, no listings, HTTP error.
-    return `${tradeReason ?? "trade2 returned nothing"} — or set a manual price with the row's Edit button`;
+    return {
+      // trade2 owns the kind as well as the wording; it is the only thing that looked.
+      code: tradeFailure ?? "noListings",
+      text: `${tradeReason ?? "trade2 returned nothing"} — or set a manual price with the row's Edit button`
+    };
   }
   if (item.rarity === "Magic") {
     // PoE2 glues prefix and suffix onto the base on one header line, so `baseType` for a Magic item
     // is the affixed name (see ParsedItem). There is no real base type to search trade2 with, which
     // is why Magic items don't take the Rare path above.
-    return (
-      "poe.ninja doesn't list Magic items, and their clipboard header glues the affixes onto the " +
-      "base type, leaving nothing reliable to search trade2 with — set a manual price with the " +
-      "row's Edit button"
-    );
+    return {
+      code: "notSearchable",
+      text:
+        "poe.ninja doesn't list Magic items, and their clipboard header glues the affixes onto the " +
+        "base type, leaving nothing reliable to search trade2 with — set a manual price with the " +
+        "row's Edit button"
+    };
   }
 
   // The exchange is only ever consulted after poe.ninja misses, so by here it has already been
@@ -65,13 +84,17 @@ function explainUnpriced(
   const tradeNote =
     item.rarity === "Normal" ? ` Trade search: ${tradeReason ?? "returned nothing"}.` : "";
 
-  return (
-    `not found in poe.ninja data (tried: ${keysTried.join(", ")}; ${entriesLoaded} entries loaded), ` +
-    `and ${exchangeNote}. ` +
-    "If that id looks wrong, the name->id mapping needs fixing; if it looks right, the category " +
-    "may not be in poeNinja.exchangeOverviewTypes." +
-    tradeNote
-  );
+  return {
+    // A Normal base reached trade2, so its failure is the specific one; anything else never had a
+    // source that could have priced it.
+    code: item.rarity === "Normal" ? (tradeFailure ?? "noPriceData") : "noPriceData",
+    text:
+      `not found in poe.ninja data (tried: ${keysTried.join(", ")}; ${entriesLoaded} entries loaded), ` +
+      `and ${exchangeNote}. ` +
+      "If that id looks wrong, the name->id mapping needs fixing; if it looks right, the category " +
+      "may not be in poeNinja.exchangeOverviewTypes." +
+      tradeNote
+  };
 }
 
 /**
@@ -82,8 +105,8 @@ function explainUnpriced(
  * is the load-bearing part, since the same search on the trade site with the status left at Any shows
  * a different set. A real Sapphire jewel matched 0 on all four of its mods and 16 once offline sellers
  * were counted, which is exactly the gap between what this reports and what the site appears to show.
- * **A handful** means someone has listed one, but a median over one or two asking prices is that
- * asking price, so the ladder went past it — the trade site is where to look at those by hand.
+ * **A handful** means someone has listed one, but a price taken from one or two listings is just
+ * that seller's asking price, so the ladder went past it — the trade site is where to look by hand.
  */
 function explainStrictMiss(
   rungs: Array<{ required: number; total: number; filters: number }>,
@@ -103,7 +126,7 @@ function explainStrictMiss(
   }
   return (
     `has only ${strict.total} ${label} carrying all ${totalMods} of its mods - too few to take a ` +
-    "median over"
+    "price from"
   );
 }
 
@@ -178,7 +201,7 @@ export class PriceResolver {
     // Magic stays out and always will: PoE2 glues the affixes onto the base on one header line, so
     // `baseType` for a Magic item is the affixed name and there is nothing to search on.
     let tradeReason: string | null = null;
-    let tradeRateLimited = false;
+    let tradeFailure: TradeFailure | null = null;
     if (item.rarity === "Rare" || item.rarity === "Normal") {
       console.log(`[pricing] "${item.name}" not in poe.ninja — querying trade2...`);
       onTradeSearch?.();
@@ -189,12 +212,6 @@ export class PriceResolver {
         const modMatch = { matched: estimate.matchedMods, total: estimate.totalMods };
         const defenceNote =
           estimate.defences.length > 0 ? ` and ${describeDefences(estimate.defences)}` : "";
-        // Both figures, because the price is the floor of the sample and the median says how thin
-        // that floor is — a large gap between them is one cheap seller rather than a market.
-        const medianNote =
-          estimate.medianChaosValue === null
-            ? ""
-            : `, median ${formatNumber(estimate.medianChaosValue)}`;
         // What the cheapest seller was actually asking, in their own currency. The chaos figure is
         // this app's conversion of it and the two are easy to mistake for a discrepancy — printing
         // the quote beside it is what lets a number on the panel be matched to a row on the site.
@@ -204,7 +221,7 @@ export class PriceResolver {
         console.log(
           `[pricing] "${item.name}" priced via trade2: ${formatNumber(estimate.chaosValue)} chaos ` +
             `(cheapest of ${estimate.listings} sampled from ${estimate.matches} listings` +
-            `${medianNote}${quoteNote}; matching ${describeModMatch(modMatch)}${defenceNote})`
+            `${quoteNote}; matching ${describeModMatch(modMatch)}${defenceNote})`
         );
         // Warned about separately rather than folded into the line above, because a relaxed match is
         // the difference between a price for this item and a price for its base with some mods on it.
@@ -238,11 +255,13 @@ export class PriceResolver {
           priceSource: "trade2",
           modMatch,
           tradeSearchId: estimate.searchId,
-          tradeMedianChaosValue: estimate.medianChaosValue ?? undefined,
           // Kept in step with the reprice path, like every other field on the estimate: it is
           // what decides the unit the row is displayed in, so dropping it here would leave an
           // automatically priced item reading in exalted until the user pressed Reprice once.
           tradeListingQuote: estimate.listingQuote,
+          // The same listing's age, moving with the quote for the same reason: both describe the
+          // one listing the headline came from, so they are written and dropped together.
+          tradeListingIndexedAt: estimate.listingIndexedAt,
           defencesDropped: estimate.defencesDropped,
           pseudoDropped: estimate.pseudoDropped,
           mapDropped: estimate.mapDropped,
@@ -256,21 +275,28 @@ export class PriceResolver {
         };
       }
       tradeReason = estimate.reason;
-      tradeRateLimited = estimate.rateLimited;
+      tradeFailure = estimate.failure;
     }
 
-    console.log(
-      `[pricing] "${item.name}" unpriced — ${explainUnpriced(item, this.poeNinja, this.exchange, tradeReason)}`
+    const { code, text } = explainUnpriced(
+      item,
+      this.poeNinja,
+      this.exchange,
+      tradeReason,
+      tradeFailure
     );
-    // Recorded so the row can say the item was never actually looked up, rather than showing the
-    // same "unpriced" it shows for an item the market genuinely has no listing for. The two need
-    // different things from the user — one waits, the other doesn't — and the row is where that
-    // difference has to be visible, since the reason above only ever reaches the log.
+    console.log(`[pricing] "${item.name}" unpriced — ${text}`);
+    // Both halves are recorded, not just logged: the row has to be able to say *which* of the seven
+    // situations this was. "the market has nothing matching this" and "nobody looked yet" ask
+    // opposite things of the user — one is final, the other expires on its own — and read as the
+    // same word otherwise. `code` picks the badge, `text` is the tooltip under it, and this is the
+    // only place either is decided.
     return {
       ...base,
       chaosValue: null,
       priceSource: "unpriced",
-      ...(tradeRateLimited ? { unpricedReason: "rateLimited" as const } : {})
+      unpricedReason: code,
+      unpricedDetail: text
     };
   }
 }

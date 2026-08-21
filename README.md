@@ -139,6 +139,23 @@ base type to search with. When that comes back empty — or the search budget is
 row's **Edit** control lets you type a value in yourself, or uncheck specific mod lines to loosen
 the search and hit "Reprice via trade". That ignore-list is remembered on the item either way.
 
+**The row says which kind of "no price" it hit**, because they ask completely different things of
+you. Hover the badge for the full sentence, including the specifics for that item:
+
+| badge | what happened | what to do |
+|---|---|---|
+| **rate limited** | The search budget was spent, so no lookup went out | Wait for the window, then Reprice |
+| **prices loading** | poe.ninja's first refresh hadn't finished yet | Reprice now that prices are in |
+| **search failed** | The search went out and broke — an HTTP error or a dropped connection | Reprice to try again |
+| **no listings** | The search ran; the market has nothing matching | Nothing — repricing gives the same answer |
+| **no chaos price** | Listings exist, but none quoted a convertible currency | Open the trade search and look |
+| **not searchable** | A Magic item, with nothing reliable to search on | Price it by hand |
+| **search skipped** | A setting says not to search items like this one | Change that setting, or price by hand |
+| **no price data** | Not in poe.ninja and not on the currency exchange | Price it by hand |
+
+The first three are shown in a cooler blue: those resolve on their own. The rest are the market's
+answer, and repricing will not change them.
+
 The mod list opens with **the mods the search actually used already ticked** — not everything. A row
 left unticked is one the query never asked for, and it says which kind it is: `dropped` for a
 low-tier affix the search shed to find a market at all, and `not searched` for one it could not ask
@@ -186,7 +203,7 @@ the item's non-ignored mod lines against GGG's public stat reference (`/api/trad
 searches by those as "at least this roll" filters rather than by base type alone — see
 [trade-stats.ts](src/pricing/trade-stats.ts) for the text-to-stat-id matching (a documented
 heuristic: ambiguous stats sharing identical display text resolve to the first match). It then takes
-the **median of the cheapest five listings**, which is the market floor — what you could sell the
+the **cheapest of the five cheapest listings**, which is the market floor — what you could sell the
 item into today, not what it is nominally worth.
 
 ### It prices at the floor, and that is deliberate
@@ -210,6 +227,20 @@ and the mod ladder below often settles on fewer than every mod. Widening `trade2
 more of the cheap end, not a slice further up the market — there is no setting that moves the sample
 up, by design.
 
+**The row says how old that floor is**, in parentheses after the price:
+
+```
+Torment Knuckle          12ex (listed 3d ago)
+```
+
+That is when the cheapest listing — the one the price *is* — was posted. An old listing is one nobody
+has bought at that price, which is worth knowing before undercutting it. The word "listed" is there
+to separate it from the pickup time on the line below, which is a bare `14s ago`.
+
+It only appears on a single, unfolded, trade2-priced item, and it is absent entirely for items
+captured before this existed, since nothing rewrites the cache. A manual price removes it too — it
+describes the trade figure, and a manual price replaces that.
+
 ### How many of an item's mods it requires
 
 Every one of them, when that produces a real market — and it usually doesn't, which is why this is a
@@ -222,7 +253,7 @@ How far it descends is `minListingsForMatch`, and the default of `1` means **sto
 that matched anything** — the most specific comparison available for the item. The tradeoff is real
 and runs both ways. On a real Ruby jewel:
 
-| mods required | listings | median |
+| mods required | listings | asking price |
 | --- | --- | --- |
 | all 4 | 1 | 30 chaos — one stranger's asking price |
 | 3 of 4 | 9 | 1 divine |
@@ -230,9 +261,9 @@ and runs both ways. On a real Ruby jewel:
 
 Sellers of that jewel were asking around 10–30 exalted, so the deep rung is the one describing a
 market — but it describes it for a looser item than the one you picked up. Raise the setting toward
-`10` to prefer the market over the exact match. Either way the row prints the median of the sampled
-listings next to the price: on a thin rung, those two figures being close is the only evidence the
-number means anything.
+`10` to prefer the market over the exact match. Note that the row does **not** show how many
+listings a price came from, so a price off one listing looks like a price off twenty — the
+`[pricing]` log line is the only place the sample size appears.
 
 Every search is **Instant Buyout only** by default, which is the usual reason the app's answer
 disagrees with the trade site. GGG's `status` filter is not an online/offline toggle — it chooses how
@@ -267,7 +298,7 @@ Widening costs accuracy in a specific way. Two real jewels, all of their mods re
 An offline listing is a price nobody can buy at right now, and may be months stale — but on thin
 items it can be the only comparable there is. Whatever you set, the messages name the listings that
 were actually searched ("no instant-buyout listings…"), so what you read always matches the query.
-The default therefore requires a rung to hold well more listings than the median is sampled over: the
+The default therefore requires a rung to hold well more listings than the price is sampled over: the
 sample only has to be fillable, but the rung has to describe a market before it is worth sampling at
 all. Every price says which rung produced it — the log line, the row's reprice status, and a
 `trade 2/4` badge on the item row when it had to relax.
@@ -337,7 +368,7 @@ rather than giving up, and the row is badged `~def` to say the price compares th
 mods at *any* armour.
 
 **Read the resulting number as a floor, not an appraisal.** Matching 3 of 5 mods finds items that may
-be worse on the other two, and the price is the median of the five cheapest listings, so trade2
+be worse on the other two, and the price is the cheapest of the five cheapest listings, so trade2
 values skew low by design. That is the intended trade for a running loot total — an approximate
 number beats a blank one — but it is well under what the item would fetch listed individually.
 
@@ -395,6 +426,21 @@ poe.ninja-priceable currency drop behind a pile of rares. Instead the extra rare
 unpriced with a reason naming the cooldown, and the row's **Reprice** button picks them up at human
 pace.
 
+**The wait is shown as a live countdown**, so you know when pressing Reprice is worth it. The panel
+header gains a line while a cooldown is running, and every rate-limited row counts down in place:
+
+```
+Trade searches: ready in 4:32          <- panel header
+
+Torment Knuckle       retry in 4:32    rate limited
+Sapphire Ring         retry in 4:32    rate limited
+```
+
+Both reach zero together and flip to **ready to reprice** — the budget is per IP, so one window
+covers every item at once. **Nothing is retried automatically.** A map's worth of rows all firing the
+moment the window refilled would re-exhaust it immediately, so the countdown tells you when, and
+pressing Reprice stays your decision.
+
 Configure it under `trade2` in settings:
 
 | key | default | meaning |
@@ -406,10 +452,10 @@ Configure it under `trade2` in settings:
 | `maxSearchesPerLongWindow` | `240` | A second budget over `longWindowMs`, enforced alongside the short one. GGG's 6-hour bucket is 600 requests with an **hour-long** lockout, and the 5-minute window refills twelve times an hour — so nothing else stops a long session reaching it. |
 | `longWindowMs` | `21600000` | The rolling window for the above, matching GGG's 21600-second bucket. |
 | `minSearchIntervalMs` | `10000` | Spacing between searches, and the only thing shaping a burst against GGG's per-minute bucket: a lookup is one *budgeted* search plus an unbudgeted fetch, so 10 searches are up to 20 requests, and 15 per minute is a 5-minute lockout. Costs nothing in throughput — the window budget is the real ceiling — and a lone drop waits not at all. |
-| `maxListings` | `5` | How many of the **cheapest** results the median is taken over. Raising it widens the slice but keeps it anchored to the cheap end. GGG's fetch endpoint rejects more than 10 ids outright. |
+| `maxListings` | `5` | How many of the **cheapest** results the price is taken from. Raising it widens the slice but keeps it anchored to the cheap end. GGG's fetch endpoint rejects more than 10 ids outright. |
 | `listingStatus` | `"securable"` | Which listings count, via GGG's `status` filter — **not** an online/offline toggle. `"securable"` is Instant Buyout, `"online"` is In Person (Online), `"available"` is both, `"any"` includes sellers who logged off weeks ago. See the table above. In the tray's **Settings…**. |
 | `listingStatusMigrated` | `false` | A migration marker, not a preference. An install that predates the `"securable"` default is moved off `"online"` once and this is stamped, so a deliberate `"online"` chosen in **Settings…** is never overridden. Nothing to set by hand. |
-| `saleType` | `"buyout"` | Whether a listing has to be buyable on the spot. `"any"` also counts listings with no asking price — which have no number to contribute to a median taken over the cheapest matches. In the tray's **Settings…**. |
+| `saleType` | `"buyout"` | Whether a listing has to be buyable on the spot. `"any"` also counts listings with no asking price — which have no number to contribute to a price taken from the cheapest matches. In the tray's **Settings…**. |
 | `minListingPrice` | `1` | The cheapest listing worth counting. PoE2's cheap end is a wall of dump listings and the price is sampled from that end, so without this a rare routinely reports a fraction of a chaos. Sent to GGG, so it filters the search rather than the sample. An item with nothing at or above it is left unpriced rather than given a junk number. `0` switches it off. The unit is GGG's own cross-currency value, roughly one exalted, and deliberately carries no currency name — naming one asks for listings *quoted* in it and hides every other. |
 | `minListingsForMatch` | `1` | Listings a rung needs before the ladder stops there. `1` takes the strictest rung that matched anything, which is the most specific price available. Raise toward `10` to walk past thin rungs to a rung that describes a market, at the cost of pricing a looser item. |
 | `minModMatchRatio` | `0.5` | The fraction of an item's mods that must stay in the query — the floor the drop ladder can't shed past. At `0.5` a five-mod rare never searches on fewer than three. Raise toward 1 for prices that describe your exact item and more unpriced rares; lower to price more items off less of what makes them good. |

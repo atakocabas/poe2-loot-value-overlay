@@ -6,7 +6,7 @@ import type { Trade2Client } from "../pricing/trade2-client";
 import type { CurrencyExchangeClient } from "../pricing/currency-exchange-client";
 import type { Settings } from "../shared/settings";
 import { parseItemText } from "../parser/item-text-parser";
-import type { ParsedItem, PricedItem } from "../shared/types";
+import type { ParsedItem, PricedItem, TradeFailure } from "../shared/types";
 
 const CORE = { rates: { exalted: 374.7, chaos: 7.86 }, primary: "divine", secondary: "chaos" };
 
@@ -56,10 +56,8 @@ function makeTrade2(estimate: {
   chaosValue: number | null;
   reason: string | null;
   listings: number;
-  /** The median of the same sample. Defaults to the price, i.e. a sample with no spread. */
-  medianChaosValue?: number | null;
-  /** Whether the rate limit is why there is no price. Defaults to false, the ordinary miss. */
-  rateLimited?: boolean;
+  /** Which kind of failure left it unpriced. Defaults to "noListings", the ordinary miss. */
+  failure?: TradeFailure | null;
 }): Trade2Client {
   return {
     isAvailable: true,
@@ -67,8 +65,12 @@ function makeTrade2(estimate: {
     // and they all price off a four-mod item whose strictest rung hit.
     estimateRareValue: async () => ({
       ...estimate,
-      rateLimited: estimate.rateLimited ?? false,
-      medianChaosValue: estimate.medianChaosValue ?? estimate.chaosValue,
+      failure:
+        estimate.failure === undefined
+          ? estimate.chaosValue === null
+            ? "noListings"
+            : null
+          : estimate.failure,
       matches: estimate.listings,
       matchedMods: 4,
       totalMods: 4,
@@ -183,7 +185,7 @@ test("a rate-limited rare records why, so the row can say it wasn't looked up", 
     chaosValue: null,
     reason: "trade2 search budget spent (10 per 5min; GGG rate-limits by IP) — retry in ~90s",
     listings: 0,
-    rateLimited: true
+    failure: "rateLimited"
   });
   const { item } = await resolveCapturingLog(
     makeResolver(poeNinja, INERT_EXCHANGE, ONE_HOUR, budgetSpent),
@@ -191,13 +193,16 @@ test("a rate-limited rare records why, so the row can say it wasn't looked up", 
   );
 
   assert.equal(item.priceSource, "unpriced");
-  // The reason only ever reached the log before this. The row shows "unpriced" for an item the
+  // The reason only ever reached the log before this. The row showed "unpriced" for an item the
   // market genuinely has nothing for and for one nobody has looked at yet, and those need different
   // things from the user — one of them resolves by waiting.
   assert.equal(item.unpricedReason, "rateLimited");
+  // The kind is trade2's, and so is the sentence under it: the resolver must not reword a refusal
+  // the client already worded, or the badge and the tooltip end up describing different searches.
+  assert.match(item.unpricedDetail!, /budget spent/);
 });
 
-test("an ordinary unpriced rare records no reason, since waiting won't help", async () => {
+test("an ordinary unpriced rare records an empty market, not a recoverable state", async () => {
   const poeNinja = makeClient(["Currency"]);
   await poeNinja.refresh();
 
@@ -213,26 +218,28 @@ test("an ordinary unpriced rare records no reason, since waiting won't help", as
 
   assert.equal(item.priceSource, "unpriced");
   // A search that went out and found an empty market is a fact about the item, not a state that
-  // expires — badging it "rate limited" would send the user to press Reprice forever.
-  assert.equal(item.unpricedReason, undefined);
+  // expires — badging it "rate limited" would send the user to press Reprice forever. It still
+  // records *which* fact, so the row can say the market was asked rather than just shrugging.
+  assert.equal(item.unpricedReason, "noListings");
+  assert.match(item.unpricedDetail!, /no listings match this Sapphire Ring/);
 });
 
 test("a rare is priced from trade2 when poe.ninja and the exchange both miss", async () => {
   const poeNinja = makeClient(["Currency"]);
   await poeNinja.refresh();
 
-  const trade2 = makeTrade2({ chaosValue: 42, reason: null, listings: 7, medianChaosValue: 60 });
+  const trade2 = makeTrade2({ chaosValue: 42, reason: null, listings: 7 });
   const { lines, chaosValue } = await resolveCapturingLog(
     makeResolver(poeNinja, INERT_EXCHANGE, ONE_HOUR, trade2),
     RARE
   );
 
-  // The stored value is the floor. The median is reported beside it rather than instead of it, so
-  // the log says how thin that floor was without changing what was persisted.
+  // The stored value is the floor of the sample, and the log says how large that sample was — the
+  // only place the sample size survives now that the row's median parenthetical is gone.
   assert.equal(chaosValue, 42);
   assert.match(
     lines.join("\n"),
-    /priced via trade2: 42 chaos \(cheapest of 7 sampled from 7 listings, median 60; matching all 4 mods\)/
+    /priced via trade2: 42 chaos \(cheapest of 7 sampled from 7 listings; matching all 4 mods\)/
   );
 });
 
@@ -374,7 +381,6 @@ test("a white base reaches trade2, which is the only source that can price one",
       asked = true;
       return {
         chaosValue: 12,
-        medianChaosValue: 12,
         reason: null,
         listings: 3,
         matches: 3,
@@ -407,7 +413,6 @@ test("a refused base item says why, instead of reading as no data anywhere", asy
     isAvailable: true,
     estimateRareValue: async () => ({
       chaosValue: null,
-      medianChaosValue: null,
       reason: "item level 65 is below trade2.baseItemMinLevel (81), so no search was made",
       listings: 0,
       matches: 0,

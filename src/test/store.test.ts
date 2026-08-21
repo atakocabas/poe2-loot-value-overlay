@@ -57,21 +57,28 @@ async function addItem(overrides: Partial<Omit<PricedItem, "id">> = {}) {
   });
 }
 
-test("updateItem persists the trade median alongside the price it annotates", async () => {
+test("updateItem persists the cheapest listing's quote and age together", async () => {
   await freshStore();
 
   const item = await addItem();
 
-  // The failure mode this guards is silent: `updateItem`'s patch is a `Pick<>` allowlist, and a key
-  // missing from it is dropped rather than rejected, so the row would just never show the median.
+  // The failure mode this guards is silent: `updateItem`'s patch is a `Pick<>` allowlist, a key
+  // missing from it is dropped rather than rejected, and the spread of a conditional object at the
+  // reprice call site skips excess-property checking — so the type doesn't say so either. That is
+  // exactly how `tradeListingQuote` was being written on every reprice and landing nowhere.
+  //
+  // Both keys in one test on purpose: they describe the same listing, so a reprice that persisted
+  // one without the other would put this price's age next to the previous search's currency.
   await store.updateItem(item.id, {
     chaosValue: 2,
     priceSource: "trade2",
-    tradeMedianChaosValue: 10
+    tradeListingQuote: { amount: 4, currency: "exalted" },
+    tradeListingIndexedAt: 1_700_000_000_000
   });
 
   const stored = (await store.getAllItems()).find((i) => i.id === item.id);
-  assert.equal(stored?.tradeMedianChaosValue, 10);
+  assert.deepEqual(stored?.tradeListingQuote, { amount: 4, currency: "exalted" });
+  assert.equal(stored?.tradeListingIndexedAt, 1_700_000_000_000);
 });
 
 test("updateItem persists the mods the search asked for, which is what the editor ticks", async () => {
@@ -79,7 +86,7 @@ test("updateItem persists the mods the search asked for, which is what the edito
 
   const item = await addItem();
 
-  // Same silent failure as the median above: a key missing from `updateItem`'s `Pick<>` allowlist is
+  // Same silent failure as the listing fields above: a key missing from `updateItem`'s `Pick<>` allowlist is
   // dropped rather than rejected, and the editor would quietly fall back to ticking every mod.
   await store.updateItem(item.id, {
     chaosValue: 2,
@@ -91,6 +98,37 @@ test("updateItem persists the mods the search asked for, which is what the edito
   const stored = (await store.getAllItems()).find((i) => i.id === item.id);
   assert.deepEqual(stored?.searchedMods, ["+80 to maximum Life"]);
   assert.deepEqual(stored?.autoDroppedMods, ["15% increased Rarity of Items found"]);
+});
+
+test("updateItem persists the unpriced reason and its detail, and clears them again", async () => {
+  await freshStore();
+
+  const item = await addItem();
+
+  // Same silent allowlist failure as the two above — but this one fails in both directions, which is
+  // what makes it worth its own test. A missing key drops the reason on the way in, so the row never
+  // says why; and it drops the `undefined` on the way out, so an item that failed an hour ago and
+  // has since priced keeps its stale badge for good. `REPRICE_ITEM` writes both outside its
+  // priced-only conditional precisely so this clearing half happens.
+  await store.updateItem(item.id, {
+    unpricedReason: "rateLimited",
+    unpricedDetail: "trade2 search budget spent - retry in ~90s"
+  });
+
+  let stored = (await store.getAllItems()).find((i) => i.id === item.id);
+  assert.equal(stored?.unpricedReason, "rateLimited");
+  assert.match(stored!.unpricedDetail!, /budget spent/);
+
+  await store.updateItem(item.id, {
+    chaosValue: 2,
+    priceSource: "trade2",
+    unpricedReason: undefined,
+    unpricedDetail: undefined
+  });
+
+  stored = (await store.getAllItems()).find((i) => i.id === item.id);
+  assert.equal(stored?.unpricedReason, undefined, "a priced item must not keep a stale badge");
+  assert.equal(stored?.unpricedDetail, undefined, "nor the sentence that went under it");
 });
 
 test("updateItem returns null for an unknown item id", async () => {

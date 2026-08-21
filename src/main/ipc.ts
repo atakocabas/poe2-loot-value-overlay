@@ -79,10 +79,12 @@ export function registerIpcHandlers({ poeNinja, trade2, settings, getStatus }: I
         modFilters,
         pseudoFilters,
         mapFilters,
-        // Written on every reprice, outside the conditional below, because it has to be *cleared* as
-        // well as set: an item that was rate-limited an hour ago and has just priced would otherwise
-        // keep the badge for good, and one that failed for a new reason would keep the old one.
-        unpricedReason: estimate.rateLimited ? ("rateLimited" as const) : undefined,
+        // Written on every reprice, outside the conditional below, because they have to be *cleared*
+        // as well as set: an item that was rate-limited an hour ago and has just priced would
+        // otherwise keep the badge for good, and one that failed for a new reason would keep the old
+        // one. The pair moves together — a stale detail under a fresh badge word describes neither.
+        unpricedReason: estimate.failure ?? undefined,
+        unpricedDetail: estimate.failure ? (estimate.reason ?? undefined) : undefined,
         ...(estimate.chaosValue !== null
           ? {
               chaosValue: estimate.chaosValue,
@@ -104,13 +106,14 @@ export function registerIpcHandlers({ poeNinja, trade2, settings, getStatus }: I
               searchedMods: estimate.searchedMods,
               // Inside the conditional on purpose: a reprice that found nothing leaves the displayed
               // price alone, so the link has to keep pointing at the search that produced it. Only a
-              // new number gets a new query — and, for the same reason, only a new number gets a new
-              // median. The pair on the row must come from one sample or it describes no listing set.
+              // new number gets a new query.
               tradeSearchId: estimate.searchId,
-              tradeMedianChaosValue: estimate.medianChaosValue ?? undefined,
               // Same conditional and the same reason: a new price gets a new quote, since the
-              // unit shown has to describe the listing the number came from.
-              tradeListingQuote: estimate.listingQuote
+              // unit shown has to describe the listing the number came from — and the same goes for
+              // that listing's age. All three describe one listing and move together, or the row
+              // annotates this price with some other seller's details.
+              tradeListingQuote: estimate.listingQuote,
+              tradeListingIndexedAt: estimate.listingIndexedAt
             }
           : {})
       });
@@ -134,8 +137,9 @@ export function registerIpcHandlers({ poeNinja, trade2, settings, getStatus }: I
         pseudoStats: estimate.pseudoStats,
         mapDropped: estimate.mapDropped,
         // The panel words its own status line from this: pressing Reprice into a spent budget should
-        // read as "not looked up yet", not as "no listings match".
-        rateLimited: estimate.rateLimited
+        // read as "not looked up yet", not as "no listings match". Derived rather than carried, so
+        // the renderer's one warning style stays keyed on the one kind that resolves by waiting.
+        rateLimited: estimate.failure === "rateLimited"
       };
     }
   );
