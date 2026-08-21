@@ -1,3 +1,8 @@
+// Trade2 search. **Read docs/pricing-trade2.md before changing how an item is searched for.**
+// Nearly every rule in this file is a measured result against live GGG data, and several look like
+// bugs until you read why they aren't: the removed count axis, the price floor carrying no
+// `option`, the strict rung never being walked past, the drop ladder's ordering, the pseudo
+// aggregates. Four repeat regressions came from changing these without reading it.
 import type { Settings } from "../shared/settings";
 import type { ItemDefences, ModFilter, ParsedItem, PseudoStat } from "../shared/types";
 import type { ListingQuote } from "../shared/format-value";

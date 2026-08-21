@@ -276,7 +276,7 @@ export interface PricedItem extends ParsedItem {
   pseudoFilters?: ModFilter[];
   /** Bounds for a waystone's reward totals, keyed by `map_filters` id in `ModFilter.text`. */
   mapFilters?: ModFilter[];
-  /** User-entered override; takes precedence over chaosValue when set. See effectiveChaosValue(). */
+  /** User-entered override; takes precedence over chaosValue when set. See `effectiveValue()` in renderer/common.ts. */
   manualChaosValue: number | null;
   /**
    * The median of the same sampled listings `chaosValue` is the cheapest of — shown in parentheses

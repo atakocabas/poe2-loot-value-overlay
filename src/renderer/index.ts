@@ -1,4 +1,8 @@
-// The overlay panel. Loads as a plain <script> after common.js (no bundler, contextIsolation on, no
+// The overlay panel. **Read docs/renderer.md before changing what the player sees while playing** —
+// the panel's two forms, what renderList() has to preserve by hand across a wholesale rebuild, and
+// why pending captures live outside `allItems`.
+//
+// Loads as a plain <script> after common.js (no bundler, contextIsolation on, no
 // nodeIntegration), so it can't have ANY top-level import/export statement — even a type-only
 // `import type` marks the file as an ES module to tsc, which then emits `exports` boilerplate that
 // throws in a non-module <script> context. PricedItem/Session come from the `declare global` block

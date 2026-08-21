@@ -69,20 +69,6 @@ export interface Settings {
     currency: "auto" | "exalted" | "chaos" | "divine";
   };
   /**
-   * The currency stash tally. Only the tab selection lives here — the `POESESSID` it needs to read
-   * them deliberately does not, because `settings.json` ships a committed default, is rewritten
-   * wholesale by `mergeWithDefaults`, and is the first file anyone attaches to a bug report. See
-   * `main/stash-credential.ts`, which keeps the credential encrypted in its own file.
-   */
-  stash: {
-    /**
-     * Stash tab ids the tally reads, in GGG's own ids rather than indices: tabs are reorderable, so
-     * an index silently comes to mean a different tab the moment the user drags one. Empty means
-     * nothing has been chosen yet, which is the state a fresh install is in and is not an error.
-     */
-    selectedTabIds: string[];
-  };
-  /**
    * The release check — see `main/update-check.ts`.
    *
    * **This app notifies, it does not update itself**, and the block is small because of it: there is

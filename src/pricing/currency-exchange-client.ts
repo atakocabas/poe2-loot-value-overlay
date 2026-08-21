@@ -258,9 +258,9 @@ export class CurrencyExchangeClient {
 
   /**
    * Name-only entry point, mirroring `PoeNinjaClient.getChaosValue` and existing for the same reason:
-   * callers that never had a `ParsedItem` to begin with. The stash read is one — GGG returns stash
-   * contents as JSON, so forcing it through `parseItemText` to satisfy a signature that only ever
-   * read `.name` would mean synthesising an item that never existed.
+   * a caller that never had a `ParsedItem` to begin with. Nothing in the app takes that door today —
+   * `getChaosValueForItem` above is the only caller — but the pair is kept symmetrical with
+   * `PoeNinjaClient`, which `PriceResolver` treats interchangeably with this one.
    */
   getChaosValue(name: string): number | null {
     const metadataId = metadataIdForName(name);

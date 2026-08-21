@@ -26,9 +26,6 @@
   "display": {
     "currency": "auto"
   },
-  "stash": {
-    "selectedTabIds": []
-  },
   "updates": {
     "checkForUpdates": true,
     "checkIntervalMs": 21600000

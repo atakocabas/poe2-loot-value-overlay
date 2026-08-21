@@ -30,9 +30,6 @@ function makeDefaults(): Settings {
     display: {
       currency: "auto"
     },
-    stash: {
-      selectedTabIds: []
-    },
     updates: {
       checkForUpdates: true,
       checkIntervalMs: 21600000
@@ -87,6 +84,55 @@ function makeDefaults(): Settings {
     }
   };
 }
+
+/**
+ * Every leaf key path in an object, `"trade2.maxListings"` style, sorted.
+ *
+ * Leaves rather than every node, and arrays treated as leaves: `poe2ProcessNames` and
+ * `itemOverviewTypes` are values the user edits wholesale, not nested structure to compare.
+ */
+function keyPaths(value: unknown, prefix = ""): string[] {
+  if (Array.isArray(value) || typeof value !== "object" || value === null) return [prefix];
+  return Object.entries(value as Record<string, unknown>)
+    .flatMap(([key, child]) => keyPaths(child, prefix ? `${prefix}.${key}` : key))
+    .sort();
+}
+
+/**
+ * The shipped defaults and this file's fixture must describe the same shape.
+ *
+ * This is the guard for the repo's most expensive failure mode, and the one the type system cannot
+ * see. `mergeWithDefaults` builds its result from the **defaults'** key set, so a key added to the
+ * `Settings` type but forgotten in `config/settings.default.json` type-checks perfectly and is
+ * `undefined` at runtime — which is the exact situation that function exists to prevent, arriving by
+ * the one door it doesn't watch. It fails in the client that reads the key, far from the change.
+ *
+ * The other direction matters too: a key dropped from the type but left in the defaults file is
+ * carried into every user's settings.json forever, since the merge copies whatever the defaults hold.
+ *
+ * Values are deliberately **not** compared. The fixture is not a copy of the defaults and must not
+ * become one — the migration tests below need it holding the *old* shipped values
+ * (`listingStatus: "online"`, `minListingsForMatch: 10`) to have anything to migrate.
+ */
+test("the shipped defaults and the fixture describe the same shape", () => {
+  const shipped = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  );
+
+  const inFixtureOnly = keyPaths(makeDefaults()).filter((k) => !keyPaths(shipped).includes(k));
+  const inShippedOnly = keyPaths(shipped).filter((k) => !keyPaths(makeDefaults()).includes(k));
+
+  assert.deepEqual(
+    inFixtureOnly,
+    [],
+    `in the Settings type but missing from config/settings.default.json, so undefined at runtime: ${inFixtureOnly.join(", ")}`
+  );
+  assert.deepEqual(
+    inShippedOnly,
+    [],
+    `in config/settings.default.json but not in the Settings type, so shipped to users unread: ${inShippedOnly.join(", ")}`
+  );
+});
 
 test("fills in a top-level field missing from an older settings.json", () => {
   const defaults = makeDefaults();
