@@ -66,8 +66,17 @@ the app doesn't" reports before anyone thought to check `git log` on the default
 exact 10 once, stamps `trade2.minListingsThresholdMigrated`, and takes its target from the defaults
 file rather than a second literal so the fold can't drift from what it exists to adopt.
 
+**`adoptSearchBudgetDefaults()` is the third, and the one that judges keys individually.** The
+shipped trade2 search budget moved from 12 searches per 5 minutes / 240 per 6 hours / 10s spacing to
+**8 / 160 / 15s**, halving what the app takes of GGG's per-IP buckets. Left unfolded that reaches
+nobody who already has a settings.json, and the symptom is one nobody can see from inside the app:
+every lookup still succeeds, right up until another trade tool on the same connection tips a bucket
+over and the whole IP is locked out for half an hour. Each of the three keys is rewritten only when
+it holds exactly its own old shipped value, so someone who raised the short window by hand keeps that
+and still gets the other two.
+
 **A default this shape needs a fold like this one, not just an edit to
-`settings.default.json`.** Two have needed one now; assume the next will.
+`settings.default.json`.** Three have needed one now; assume the next will.
 `loadDefaultSettings()` backs the per-field
 Reset buttons, so "default" in the window means the same thing it means to `mergeWithDefaults`
 rather than a second set of constants in the renderer.

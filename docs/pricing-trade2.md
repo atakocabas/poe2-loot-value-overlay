@@ -101,23 +101,25 @@ Practically:
 - **`TradeSearchBudget` tracks two windows, because the budget counts searches while GGG counts
   requests.** A lookup is N ladder rungs — **all** budgeted, one slot each — plus **one** unbudgeted
   fetch of the winning rung. So the worst request-per-search ratio is 2:1, on a lookup that hits at
-  the top rung, and it improves as the ladder descends. Size against 2:1; the short window's 12
-  searches are therefore at most 24 requests. Three consequences, all settled by configuration rather
+  the top rung, and it improves as the ladder descends. Size against 2:1; the short window's 8
+  searches are therefore at most 16 requests. Three consequences, all settled by configuration rather
   than by code:
   - Against `30:300:1800` — 30 requests per 5 minutes, **30 minutes** of lockout — `maxSearchesPerWindow`
-    is the ceiling, at **12** for 24 of the 30. Don't take it to 15 "to use the full limit": the rule
-    is per **IP**, so a second copy of the app, another trade tool, or the one-off `/data/stats`
-    fetch spends the same bucket, and at 15 someone else's single request triggers the blackout.
+    is the ceiling, at **8** for 16 of the 30. It was 12 (24 of the 30) until that fifth of a bucket
+    was judged too thin to absorb anything else on the connection; don't take it back up "to use the
+    full limit". The rule is per **IP**, so a second copy of the app, another trade tool, or the
+    one-off `/data/stats` fetch spends the same bucket, and at 15 someone else's single request
+    triggers the blackout.
   - Against `15:60:300` — 15 requests a minute, 5 minutes of lockout — `minSearchIntervalMs` is the
     only thing shaping the burst, and it is what bounds this window regardless of the 5-minute cap.
-    At 5s, searches and their fetches pack ~20 requests into 45 seconds and breach it; the default is
-    **10s**, which caps any 60-second stretch at 6 searches and ~12 requests. It costs nothing, since
+    At 5s, searches and their fetches pack ~16 requests into 40 seconds and breach it; the default is
+    **15s**, which caps any 60-second stretch at 4 searches and ~8 requests. It costs nothing, since
     `maxSearchesPerWindow` over `windowMs` is the real ceiling either way, and a lone drop still waits
     not at all, having no previous search to be spaced from.
   - Against `600:21600:3600` — 600 requests per 6 hours, and an **hour-long** lockout, the worst
     penalty on the list — the short window is blind: it refills twelve times an hour. Hence
-    `maxSearchesPerLongWindow`/`longWindowMs` (240 per 6h, so ≤480 of the 600). **This one is not
-    raised alongside the short window** — 12 searches per 5 minutes sustained is 864 per 6 hours, so
+    `maxSearchesPerLongWindow`/`longWindowMs` (160 per 6h, so ≤320 of the 600). **This one is not
+    raised alongside the short window** — 8 searches per 5 minutes sustained is 576 per 6 hours, so
     the long window is what binds during a heavy session, and that is exactly its job. Tuning the short
     window down far enough to cover this instead would throttle the ordinary case — a burst of drops
     in one map — to guard against something only hours of continuous mapping reach. `cooldownMs()`
