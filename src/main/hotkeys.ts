@@ -4,7 +4,6 @@ import type { Settings } from "../shared/settings";
 export interface HotkeyHandlers {
   onToggleOverlay: () => void;
   onToggleList: () => void;
-  onToggleSession: () => void;
   onForceCapture: () => void;
 }
 
@@ -46,7 +45,6 @@ export function registerHotkeys(settings: Settings, handlers: HotkeyHandlers): H
   const bindings: Array<[string, string, () => void]> = [
     ["toggleOverlay", settings.hotkeys.toggleOverlay, handlers.onToggleOverlay],
     ["toggleList", settings.hotkeys.toggleList, handlers.onToggleList],
-    ["toggleSession", settings.hotkeys.toggleSession, handlers.onToggleSession],
     ["forceCapture", settings.hotkeys.forceCapture, handlers.onForceCapture]
   ];
 

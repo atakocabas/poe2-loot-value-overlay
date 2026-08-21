@@ -6,9 +6,11 @@
  * `toFixed(1)` rendered anything under 0.05c as a flat "0.0c". Exalted is the denomination players
  * actually quote small prices in, divine the one they quote large ones in.
  *
- * NOTE: this module is duplicated as inline functions in `src/renderer/index.ts`. The renderer
+ * NOTE: this module is duplicated as inline functions in `src/renderer/common.ts`. The renderer
  * loads as a plain <script> and cannot import anything at runtime — see the comment at the top of
- * that file. Keep the two in sync; the tests here are what pin the behaviour.
+ * that file. The two must not drift, and `test/renderer-parity.test.ts` is what enforces it: it runs
+ * the compiled renderer copy in a node:vm and compares it against this module over a table of
+ * inputs. The tests here pin the behaviour; that one pins the agreement.
  */
 
 /** poe.ninja quotes everything against divine, so both rates are "how many of these per divine". */

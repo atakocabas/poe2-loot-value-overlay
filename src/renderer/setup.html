@@ -9,27 +9,11 @@
       can never disturb this window. Only the two rules below are this page's alone.
     -->
     <link rel="stylesheet" href="form.css" />
-    <style>
-      /* The path field and its Browse button share a row; the field takes whatever is left. */
-      .path-row {
-        display: flex;
-        gap: 8px;
-      }
-
-      #detect-note {
-        margin-top: 5px;
-        color: #8fd3a0;
-      }
-
-      #detect-note.missing {
-        color: #d9a441;
-      }
-    </style>
   </head>
   <body>
     <h1>Set up the overlay</h1>
     <p id="intro">
-      Three things this install needs to know. You can change them later from the tray icon, under
+      Two things this install needs to know. You can change them later from the tray icon, under
       <strong>Setup…</strong>.
     </p>
 
@@ -43,19 +27,6 @@
     </div>
 
     <div class="field">
-      <label for="client-txt">Path to Client.txt</label>
-      <div class="hint">
-        PoE2's log, read to detect which map you're in so drops are grouped per map. Leave it empty
-        to run without map detection.
-      </div>
-      <div class="path-row">
-        <input id="client-txt" type="text" spellcheck="false" />
-        <button id="browse" type="button">Browse…</button>
-      </div>
-      <div id="detect-note"></div>
-    </div>
-
-    <div class="field">
       <label for="contact-email">Contact email <span style="font-weight: 400">(optional)</span></label>
       <div class="hint">
         Sent to GGG in the User-Agent when pricing rare items, so they can reach you about the
@@ -65,7 +36,7 @@
     </div>
 
     <!--
-      Not a fourth field, and deliberately below the three that are: it is a setting in the *game*,
+      Not a third field, and deliberately below the two that are: it is a setting in the *game*,
       with nothing for this window to save. It earns a place here anyway because this page is the one
       thing every install sees exactly once, and the option has to be on before an item is copied for
       the tier information to exist at all.

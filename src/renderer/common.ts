@@ -6,11 +6,17 @@
 // as far as tsc is concerned: a top-level name declared in both is a compile error, not a clash.
 //
 // The helpers below are therefore duplicated from shared/ rather than imported:
-//   effectiveValue/totalValue  <- shared/effective-value.ts
-//   formatNumber/formatValue   <- shared/format-value.ts  (tested in test/format-value.test.ts)
-//   formatHubRates             <- shared/format-value.ts  (tested in test/format-value.test.ts)
-//   itemMods                   <- shared/mods.ts  (modsOf; tested in test/mods.test.ts)
-// Keep them in sync with those modules.
+//   formatNumber/formatValue   <- shared/format-value.ts
+//   convertFromChaos/pickDisplayUnit/formatHubRates <- shared/format-value.ts
+//   itemMods                   <- shared/mods.ts  (modsOf)
+// They must not drift, and test/renderer-parity.test.ts is what enforces that: it runs this file's
+// compiled output in a node:vm and compares each one against its shared/ original over a table of
+// inputs. A change here that the shared module doesn't get fails the suite.
+//
+// `effectiveValue`/`totalValue` below are the exception, and are NOT duplicates. They used to
+// mirror shared/effective-value.ts; nothing in the main process ever needed a per-item value — the
+// CSV export and every row are drawn here — so that module sat unimported and was deleted. These
+// are the only implementations, and have no original to be kept in sync with.
 
 type Rates = { chaosPerDivine: number; exaltedPerDivine: number };
 type DisplayCurrency = "auto" | "exalted" | "chaos" | "divine";

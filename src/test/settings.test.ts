@@ -14,14 +14,8 @@ import type { Settings } from "../shared/settings";
 function makeDefaults(): Settings {
   return {
     league: "Standard",
-    clientTxtPath: "C:\\PoE2\\logs\\Client.txt",
     setupCompleted: true,
     poe2ProcessNames: ["PathOfExileSteam.exe", "PathOfExile.exe"],
-    logWatch: {
-      pollIntervalMs: 1000,
-      backfillBytes: 65536,
-      debugLogging: false
-    },
     overlay: {
       hideWhenGameUnfocused: true,
       focusPollIntervalMs: 400,
@@ -31,14 +25,10 @@ function makeDefaults(): Settings {
     hotkeys: {
       toggleOverlay: "CommandOrControl+Shift+O",
       toggleList: "CommandOrControl+Shift+L",
-      toggleSession: "CommandOrControl+Shift+M",
       forceCapture: "CommandOrControl+`"
     },
     display: {
       currency: "auto"
-    },
-    stash: {
-      selectedTabIds: []
     },
     updates: {
       checkForUpdates: true,
@@ -95,6 +85,55 @@ function makeDefaults(): Settings {
   };
 }
 
+/**
+ * Every leaf key path in an object, `"trade2.maxListings"` style, sorted.
+ *
+ * Leaves rather than every node, and arrays treated as leaves: `poe2ProcessNames` and
+ * `itemOverviewTypes` are values the user edits wholesale, not nested structure to compare.
+ */
+function keyPaths(value: unknown, prefix = ""): string[] {
+  if (Array.isArray(value) || typeof value !== "object" || value === null) return [prefix];
+  return Object.entries(value as Record<string, unknown>)
+    .flatMap(([key, child]) => keyPaths(child, prefix ? `${prefix}.${key}` : key))
+    .sort();
+}
+
+/**
+ * The shipped defaults and this file's fixture must describe the same shape.
+ *
+ * This is the guard for the repo's most expensive failure mode, and the one the type system cannot
+ * see. `mergeWithDefaults` builds its result from the **defaults'** key set, so a key added to the
+ * `Settings` type but forgotten in `config/settings.default.json` type-checks perfectly and is
+ * `undefined` at runtime — which is the exact situation that function exists to prevent, arriving by
+ * the one door it doesn't watch. It fails in the client that reads the key, far from the change.
+ *
+ * The other direction matters too: a key dropped from the type but left in the defaults file is
+ * carried into every user's settings.json forever, since the merge copies whatever the defaults hold.
+ *
+ * Values are deliberately **not** compared. The fixture is not a copy of the defaults and must not
+ * become one — the migration tests below need it holding the *old* shipped values
+ * (`listingStatus: "online"`, `minListingsForMatch: 10`) to have anything to migrate.
+ */
+test("the shipped defaults and the fixture describe the same shape", () => {
+  const shipped = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  );
+
+  const inFixtureOnly = keyPaths(makeDefaults()).filter((k) => !keyPaths(shipped).includes(k));
+  const inShippedOnly = keyPaths(shipped).filter((k) => !keyPaths(makeDefaults()).includes(k));
+
+  assert.deepEqual(
+    inFixtureOnly,
+    [],
+    `in the Settings type but missing from config/settings.default.json, so undefined at runtime: ${inFixtureOnly.join(", ")}`
+  );
+  assert.deepEqual(
+    inShippedOnly,
+    [],
+    `in config/settings.default.json but not in the Settings type, so shipped to users unread: ${inShippedOnly.join(", ")}`
+  );
+});
+
 test("fills in a top-level field missing from an older settings.json", () => {
   const defaults = makeDefaults();
   const { poe2ProcessNames, ...loaded } = defaults;
@@ -109,8 +148,7 @@ test("fills in a nested field missing from an older settings.json while keeping 
   const loaded = {
     ...defaults,
     hotkeys: {
-      toggleOverlay: "CommandOrControl+Shift+X",
-      toggleSession: defaults.hotkeys.toggleSession
+      toggleOverlay: "CommandOrControl+Shift+X"
       // forceCapture and toggleList missing, as if written before those fields existed. This is the
       // real upgrade path: every install predates `toggleList`, and gains it on the next load.
     }
@@ -121,7 +159,6 @@ test("fills in a nested field missing from an older settings.json while keeping 
   assert.equal(merged.hotkeys.forceCapture, defaults.hotkeys.forceCapture);
   assert.equal(merged.hotkeys.toggleList, defaults.hotkeys.toggleList);
   assert.equal(merged.hotkeys.toggleOverlay, "CommandOrControl+Shift+X");
-  assert.equal(merged.hotkeys.toggleSession, defaults.hotkeys.toggleSession);
 });
 
 test("the shipped panel side is one the renderer knows how to place", () => {

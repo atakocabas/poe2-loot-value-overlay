@@ -15,10 +15,6 @@ export type GggFetch = (url: string, init?: RequestInit) => Promise<Response>;
  * none, and an earlier version of this file emitted a malformed `OAuth /1.0.0 (...)` with the id left
  * empty. A plain agent is both correct and still satisfies the policy's "identify yourself" rule.
  *
- * The one exception is the stash read — see `createAuthenticatedGggFetch` below, which is a sibling of
- * `createPublicGggFetch` rather than a flag on it precisely so that no pricing call can ever acquire a
- * credential by accident.
- *
  * The contact clause is dropped entirely when no email is configured, for the same reason: a
  * dangling `(contact: )` is a malformed header that identifies nobody. The address belongs to
  * whoever is running this install and is asked for in the setup window, so it is legitimately
@@ -49,41 +45,7 @@ export function createPublicGggFetch(settings: Settings): GggFetch {
   return createThrottledFetch(appUserAgent(settings));
 }
 
-/**
- * The credentialed sibling, used by `StashClient` and by nothing else. Reading a player's own stash
- * has no unauthenticated route at all — GGG serves it only behind the OAuth API, whose client
- * registration is closed — so this carries the user's own `POESESSID` as a cookie.
- *
- * Three things about it are deliberate:
- *
- * - **It is a separate factory, not an option on `createPublicGggFetch`.** Every pricing client is
- *   constructed from that one, and a flag there would be one mistaken argument away from attaching a
- *   session cookie to every trade2 search — which would change what GGG's per-IP rate limiting is
- *   counting and hand a credential to endpoints that never asked for one.
- * - **It gets its own `GggRateLimiter`.** The stash endpoint is a different rate-limit bucket from
- *   trade search and advertises its own policy headers, so a shared limiter would have each endpoint's
- *   ceiling overwrite the other's. It is also deliberately outside `TradeSearchBudget`: that budget is
- *   the proactive half for trade *search* specifically, while a stash read is user-initiated,
- *   infrequent, and correctly governed by the reactive limiter alone.
- * - **`sessionId` is a getter, not a value.** A credential saved in the stash window has to reach the
- *   very next read without reconstructing the client — the same live-apply test `SettingsConfig`
- *   applies to the settings window. An absent credential sends no `Cookie` header at all rather than
- *   an empty one, so the request fails as unauthenticated instead of as malformed.
- */
-export function createAuthenticatedGggFetch(
-  settings: Settings,
-  sessionId: () => string | null
-): GggFetch {
-  return createThrottledFetch(appUserAgent(settings), (): Record<string, string> => {
-    const id = sessionId();
-    return id ? { Cookie: `POESESSID=${id}` } : {};
-  });
-}
-
-function createThrottledFetch(
-  userAgent: string,
-  extraHeaders?: () => Record<string, string>
-): GggFetch {
+function createThrottledFetch(userAgent: string): GggFetch {
   const rateLimiter = new GggRateLimiter();
 
   return async (url, init = {}) => {
@@ -91,7 +53,7 @@ function createThrottledFetch(
 
     const response = await fetch(url, {
       ...init,
-      headers: { ...init.headers, "User-Agent": userAgent, ...(extraHeaders?.() ?? {}) }
+      headers: { ...init.headers, "User-Agent": userAgent }
     });
 
     rateLimiter.recordHeaders(response.headers);

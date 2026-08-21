@@ -234,9 +234,9 @@ test("an unmapped item name returns null instead of throwing", () => {
 });
 
 /**
- * `getChaosValueForItem` delegates to `getChaosValue`, which exists because the stash read has no
- * `ParsedItem` to hand — GGG returns stash contents as JSON. The two must never drift apart, or a
- * currency would price differently depending on which door it came in through.
+ * `getChaosValueForItem` delegates to `getChaosValue`, the name-only door this keeps symmetrical
+ * with `PoeNinjaClient`. The two must never drift apart, or a currency would price differently
+ * depending on which one it came in through.
  */
 test("the name-only lookup and the parsed-item lookup agree", async () => {
   const client = new CurrencyExchangeClient(makeSettings(), async (url) => {

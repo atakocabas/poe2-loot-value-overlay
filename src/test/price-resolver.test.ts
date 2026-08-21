@@ -132,7 +132,7 @@ async function resolveCapturingLog(
   const original = console.log;
   console.log = (...args: unknown[]) => void lines.push(args.join(" "));
   try {
-    const result = await resolver.resolve(item, "session-1");
+    const result = await resolver.resolve(item);
     // The whole stored item, not just its price: what the resolver persists alongside a null value is
     // as much a part of its contract as the number is.
     return { lines, chaosValue: result.chaosValue, item: result };
@@ -300,7 +300,7 @@ test("the exchange fills in an item poe.ninja doesn't list", async () => {
   const poeNinja = makeClient(["Currency"]);
   await poeNinja.refresh();
 
-  const result = await makeResolver(poeNinja, makeExchange(3.5)).resolve(UNKNOWN_CURRENCY, "s1");
+  const result = await makeResolver(poeNinja, makeExchange(3.5)).resolve(UNKNOWN_CURRENCY);
 
   assert.equal(result.chaosValue, 3.5);
   assert.equal(result.priceSource, "currencyExchange");
@@ -311,7 +311,7 @@ test("poe.ninja stays primary while its data is fresh, even when the exchange ha
   await poeNinja.refresh();
 
   const alch = parse("Item Class: Stackable Currency\nRarity: Currency\nOrb of Alchemy\n--------\nStack Size: 1/10");
-  const result = await makeResolver(poeNinja, makeExchange(999)).resolve(alch, "s1");
+  const result = await makeResolver(poeNinja, makeExchange(999)).resolve(alch);
 
   assert.equal(result.priceSource, "poeninja");
   assert.equal(result.chaosValue, 0.002 * 7.86);
@@ -323,7 +323,7 @@ test("stale poe.ninja data defers to the exchange", async () => {
 
   const alch = parse("Item Class: Stackable Currency\nRarity: Currency\nOrb of Alchemy\n--------\nStack Size: 1/10");
   // staleAfterMs of 0 makes any refresh, however recent, count as stale.
-  const result = await makeResolver(poeNinja, makeExchange(12), 0).resolve(alch, "s1");
+  const result = await makeResolver(poeNinja, makeExchange(12), 0).resolve(alch);
 
   assert.equal(result.priceSource, "currencyExchange");
   assert.equal(result.chaosValue, 12);
@@ -395,7 +395,7 @@ test("a white base reaches trade2, which is the only source that can price one",
   } as unknown as Trade2Client;
 
   const resolver = makeResolver(makeClient([]), INERT_EXCHANGE, ONE_HOUR, trade2);
-  const priced = await resolver.resolve(WHITE_BASE, "session-1");
+  const priced = await resolver.resolve(WHITE_BASE);
 
   assert.ok(asked, "a Normal-rarity base must be offered to trade2");
   assert.equal(priced.chaosValue, 12);
@@ -420,7 +420,7 @@ test("a refused base item says why, instead of reading as no data anywhere", asy
   } as unknown as Trade2Client;
 
   const resolver = makeResolver(makeClient([]), INERT_EXCHANGE, ONE_HOUR, trade2);
-  const priced = await resolver.resolve(WHITE_BASE, "session-1");
+  const priced = await resolver.resolve(WHITE_BASE);
 
   assert.equal(priced.chaosValue, null);
   assert.equal(priced.priceSource, "unpriced");

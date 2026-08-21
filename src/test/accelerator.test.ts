@@ -98,10 +98,10 @@ describe("findDuplicateAccelerators", () => {
     assert.deepEqual(
       findDuplicateAccelerators({
         toggleOverlay: "CommandOrControl+Shift+O",
-        toggleSession: "Ctrl+Shift+O",
+        toggleList: "Ctrl+Shift+O",
         forceCapture: "CommandOrControl+`"
       }),
-      ["toggleOverlay", "toggleSession"]
+      ["toggleOverlay", "toggleList"]
     );
   });
 
@@ -109,7 +109,7 @@ describe("findDuplicateAccelerators", () => {
     assert.deepEqual(
       findDuplicateAccelerators({
         toggleOverlay: "",
-        toggleSession: "",
+        toggleList: "",
         forceCapture: "CommandOrControl+`"
       }),
       []

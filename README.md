@@ -35,17 +35,12 @@ setting for it in the settings window.
 
 ## First run
 
-The app asks for three things once, in a small setup window, because none of them can ship as a
+The app asks for two things once, in a small setup window, because neither can ship as a
 working default. You can reopen it any time from the tray icon's **Setup…**.
 
 - **League** — every price source is queried per league, and leagues rotate every few months. A name
   that doesn't match the one you're playing isn't an error anywhere; it just leaves everything
   unpriced.
-- **Path to `Client.txt`** — found automatically if you own PoE2 on Steam: the app reads Steam's
-  install path from the registry, walks the libraries listed in `libraryfolders.vdf`, and looks for
-  the game under whichever one Steam says holds app `2694490`. Standalone installs in the default
-  location are found too. Anything else, use **Browse…**. Leave it empty to run without map
-  detection — everything else still works, drops just aren't grouped per map.
 - **Contact email** *(optional)* — sent to GGG in the `User-Agent` when pricing rares, so they can
   reach the person whose machine is making the requests. Blank sends no contact address at all.
 
@@ -66,10 +61,6 @@ permitted subject to a few rules — here's how each piece of this app satisfies
   from ever receiving the keystroke and copying the item in the first place. The policy's macro
   rules govern automating keystrokes *into* the game, which doesn't apply here — nothing is
   simulated toward PoE2, ever. See [clipboard-watch.ts](src/main/clipboard-watch.ts).
-- **Client.txt log reading**: used only to auto-detect when you enter/leave a map, so loot gets
-  grouped into sessions automatically. The policy explicitly allows reading log files "as long as
-  the user is aware of what you are doing with that data" — this is that disclosure. See
-  [logwatch.ts](src/main/logwatch.ts). Nothing is written back to the log.
 - **poe.ninja's public API**: a third-party, unauthenticated JSON API (not GGG's), used for
   currency/unique pricing. See [poeninja-client.ts](src/pricing/poeninja-client.ts).
 - **GGG's PoE2 Currency Exchange feed** (`web.poecdn.com/api/currency-exchange/poe2`): first-party,
@@ -121,7 +112,6 @@ passes everything straight to the game otherwise.
 | --- | --- | --- |
 | `toggleList` | `Ctrl+Shift+L` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both. The only thing that changes the panel's size. |
 | `toggleOverlay` | `Ctrl+Shift+O` | Interactive mode on its own, without resizing the panel — the overlay takes clicks instead of passing them to the game. |
-| `toggleSession` | `Ctrl+Shift+M` | Starts/ends a map session by hand, when log detection misses one. |
 | `forceCapture` | `Ctrl+\`` | Re-reads the clipboard even if it hasn't changed. |
 
 **Rebind them from the tray's Settings…**: click a combination, press the keys you want, and Save —
@@ -134,15 +124,10 @@ The same window holds the panel size, the display currency, and whether the over
 game isn't focused. On **Automatic**, an item priced off the trade site is shown in the currency its
 cheapest listing was asking — a row taken from a seller asking 2 chaos reads `2c`, the way the market
 reads — while everything else picks divine, chaos or exalted by size. Values are stored in chaos
-throughout, so this only changes what you read. The league, Client.txt path and contact email live under **Setup…** instead —
-those are read once at startup by the pricing clients, so changing them restarts the app.
+throughout, so this only changes what you read. The league and contact email live under **Setup…**
+instead — those are read once at startup by the pricing clients, so changing them restarts the app.
 
-## Map sessions and unpriced rares
-
-Every map is a "session", and items captured via Ctrl+C are recorded against it — that's what the
-header's running total counts, and it is shown only while a map is actually running. The list itself
-is *not* scoped to a map: entering a new one resets the total and leaves everything already captured
-in place, below the new drops.
+## Unpriced rares
 
 poe.ninja publishes no rare prices at all (too mod-dependent), so rares are priced against GGG's
 trade API instead (see below). **White base items go there too**, but only at item level 81 and
@@ -439,13 +424,11 @@ running — no window sitting on your desktop and no clipboard polling when you'
 checks the Windows process list every few seconds against `poe2ProcessNames` in settings, a list of
 candidate executables (default: `PathOfExileSteam.exe`, `PathOfExile.exe`, and a couple of older
 variants). A list rather than one exact name because the client differs between the Steam and
-standalone builds — `PathOfExileSteam.exe` is the real PoE2 client on Steam, living next to
-`Client.txt`'s parent in `steamapps/common/Path of Exile 2/`, while `PathOfExile_x64Steam.exe` is
-PoE **1**'s name and will never match a PoE2 install.
+standalone builds — `PathOfExileSteam.exe` is the real PoE2 client on Steam, living in
+`steamapps/common/Path of Exile 2/`, while `PathOfExile_x64Steam.exe` is PoE **1**'s name and will
+never match a PoE2 install.
 
-Map detection is **not** gated behind this. `Client.txt` is tailed from startup regardless, because
-a single wrong executable name here used to silently disable map sessions entirely with no error to
-show for it. If the process list never matches, you'll get a `[process-watch] no PoE2 process
+If the process list never matches, you'll get a `[process-watch] no PoE2 process
 found — looked for ...` warning naming what it searched for; add your `.exe` to
 `poe2ProcessNames` and restart.
 
@@ -453,7 +436,7 @@ If you upgraded from an earlier build, a legacy `poe2ProcessName` string in your
 under `%APPDATA%/poe2-loot-value-overlay/` is folded into the new list automatically on next load.
 
 Once detected, capture starts; when PoE2 closes, capture pauses and the overlay hides — the app
-keeps running in the tray. To read the list after a session, use the tray icon's "Show Overlay",
+keeps running in the tray. To read the list after playing, use the tray icon's "Show Overlay",
 which also brings the panel up regardless of process state if detection ever doesn't fire (e.g. a
 future game update renames the executable). "Hide Overlay" puts it away again without quitting.
 

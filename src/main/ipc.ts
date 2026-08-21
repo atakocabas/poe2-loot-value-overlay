@@ -1,7 +1,7 @@
 import { ipcMain, shell } from "electron";
 import { IPC } from "../shared/ipc-channels";
 import { tradeSearchUrl } from "../shared/trade-link";
-import { getSessions, getAllItems, getItem, updateItem, clearHistory } from "../db/store";
+import { getAllItems, getItem, updateItem, clearHistory } from "../db/store";
 import { toChaos } from "../pricing/currency-convert";
 import type { PoeNinjaClient } from "../pricing/poeninja-client";
 import { toModFilterMap, type Trade2Client } from "../pricing/trade2-client";
@@ -17,35 +17,15 @@ export interface IpcDeps {
   trade2: Trade2Client;
   settings: Settings;
   getStatus: () => OverlayStatus;
-  /**
-   * Called after the history is wiped, so the main process can drop its in-memory `currentSession`.
-   * Without it the next captured item is filed against a session that no longer exists and never
-   * counts toward any total.
-   */
-  onHistoryCleared: () => void;
 }
 
-async function sessionFor(sessionId: string) {
-  const sessions = await getSessions();
-  return sessions.find((s) => s.id === sessionId) ?? null;
-}
-
-
-export function registerIpcHandlers({
-  poeNinja,
-  trade2,
-  settings,
-  getStatus,
-  onHistoryCleared
-}: IpcDeps): void {
+export function registerIpcHandlers({ poeNinja, trade2, settings, getStatus }: IpcDeps): void {
   // Pulled once on load; thereafter the main process pushes OVERLAY_STATUS on change.
   ipcMain.handle(IPC.GET_STATUS, () => getStatus());
-  ipcMain.handle(IPC.GET_HISTORY, () => getSessions());
   ipcMain.handle(IPC.GET_ALL_ITEMS, () => getAllItems());
 
   ipcMain.handle(IPC.CLEAR_HISTORY, async () => {
     await clearHistory();
-    onHistoryCleared();
     console.log("[history] cleared — previous contents kept in loot-cache.pre-clear.json");
   });
 
@@ -137,7 +117,6 @@ export function registerIpcHandlers({
 
       return {
         item: updated,
-        session: updated ? await sessionFor(updated.sessionId) : null,
         // Passed straight through to the panel: a spent rate-limit budget and "nothing matches these
         // mods" need different actions from the user, and "No matching listings" covered both.
         reason: estimate.reason,
@@ -194,6 +173,6 @@ export function registerIpcHandlers({
 
   ipcMain.handle(IPC.SET_MANUAL_PRICE, async (_event, itemId: string, value: number | null) => {
     const updated = await updateItem(itemId, { manualChaosValue: value });
-    return { item: updated, session: updated ? await sessionFor(updated.sessionId) : null };
+    return { item: updated };
   });
 }

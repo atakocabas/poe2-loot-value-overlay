@@ -11,9 +11,9 @@ on:
 
 jobs:
   test:
-    # Windows to match release.yml and the only platform this ships for. `poe2-install.test.ts` and
-    # `settings.test.ts` assert against Windows paths, and the code under test builds them with
-    # `path.join`, so a Linux runner would report failures that say nothing about the change.
+    # Windows to match release.yml and the only platform this ships for. `settings.test.ts` asserts
+    # against Windows paths, and the code under test builds them with `path.join`, so a Linux runner
+    # would report failures that say nothing about the change.
     # The repo is public, so the runner costs nothing either way.
     runs-on: windows-latest
 

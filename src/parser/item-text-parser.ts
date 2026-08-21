@@ -1,3 +1,7 @@
+// The clipboard item parser. **Read docs/parser.md before changing mod parsing.** PoE2's "Advanced
+// Item Descriptions" option changes the mod format substantially, and this handles both halves of
+// the player base: the header gate is authoritative when headers are present, and `isKnownNonModLine`
+// is the whole guard when they aren't. Neither is optional.
 import type {
   ItemDefences,
   ItemMapStats,

@@ -14,15 +14,6 @@
     -->
     <div id="panel" class="minimal">
       <div id="panel-header">
-        <div id="panel-header-top">
-          <!--
-            Shown only while a map is running. Ships hidden and is revealed, like #rate-status below:
-            out of a map the renderer's first `latestSession` is the *previous*, ended map, so
-            shipping this visible would flash a finished map's total on every launch.
-          -->
-          <span id="session-total-line" class="hidden">Map total: <strong id="session-total">?</strong></span>
-        </div>
-        <div id="session-status">No active map</div>
         <div id="price-status"></div>
         <!-- Starts hidden so the header doesn't reserve a blank row before poe.ninja first answers. -->
         <div id="rate-status" class="hidden"></div>

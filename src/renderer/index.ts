@@ -1,4 +1,8 @@
-// The overlay panel. Loads as a plain <script> after common.js (no bundler, contextIsolation on, no
+// The overlay panel. **Read docs/renderer.md before changing what the player sees while playing** —
+// the panel's two forms, what renderList() has to preserve by hand across a wholesale rebuild, and
+// why pending captures live outside `allItems`.
+//
+// Loads as a plain <script> after common.js (no bundler, contextIsolation on, no
 // nodeIntegration), so it can't have ANY top-level import/export statement — even a type-only
 // `import type` marks the file as an ES module to tsc, which then emits `exports` boilerplate that
 // throws in a non-module <script> context. PricedItem/Session come from the `declare global` block
@@ -10,9 +14,6 @@
 // current map — three renderings of one dataset, where an item could appear in all three at once.
 
 const panel = document.getElementById("panel")!;
-const sessionTotalEl = document.getElementById("session-total")!;
-const sessionTotalLineEl = document.getElementById("session-total-line")!;
-const sessionStatusEl = document.getElementById("session-status")!;
 const priceStatusEl = document.getElementById("price-status")!;
 const rateStatusEl = document.getElementById("rate-status")!;
 const updateStatusEl = document.getElementById("update-status") as HTMLButtonElement;
@@ -28,9 +29,6 @@ const clearButton = document.getElementById("clear-history") as HTMLButtonElemen
 
 /** Every recorded item, in capture order. Reloaded from the store only on load and after a clear. */
 let allItems: PricedItem[] = [];
-/** The map in progress (or the last one), for the header alone — the list is not scoped to it. */
-let latestSession: Session | null = null;
-let lastZoneIsHideout = false;
 let pricesFetchedAt: number | null = null;
 /** A GitHub release newer than the running build, pushed on OVERLAY_STATUS. Null means neither
  * the check has answered nor there is anything to say — the line is hidden either way. */
@@ -68,37 +66,6 @@ let pendingVisible = 0;
 // ---------------------------------------------------------------------------
 // Header status
 // ---------------------------------------------------------------------------
-
-/**
- * Whether a map is running — the one thing that separates the panel's two states.
- *
- * A duplicate of `isMapSession` in `shared/session.ts`, inline for the usual reason: this page loads
- * as a plain <script> and can't import shared modules at runtime, exactly as `effectiveChaosValue` is
- * duplicated in common.ts. The shared copy carries the argument and is the one under test.
- *
- * **An active session is not enough.** Capturing an item anywhere opens one so the item has somewhere
- * to be filed, including in a hideout — testing only `endedAt` collapsed the panel to its in-map form
- * on any Ctrl+C outside a map, until the next zone change closed that session.
- */
-function isInMap(): boolean {
-  if (!latestSession || latestSession.endedAt !== null) return false;
-  return latestSession.zoneName !== null || latestSession.manual === true;
-}
-
-function renderSessionStatus(): void {
-  const isActive = isInMap();
-  sessionStatusEl.classList.toggle("active", isActive);
-  sessionStatusEl.classList.toggle("hideout", !isActive && lastZoneIsHideout);
-  if (isActive) {
-    sessionStatusEl.textContent = latestSession!.zoneName
-      ? `In map: ${latestSession!.zoneName}`
-      : "Map in progress (started manually)";
-  } else if (lastZoneIsHideout) {
-    sessionStatusEl.textContent = "In Hideout";
-  } else {
-    sessionStatusEl.textContent = "No active map";
-  }
-}
 
 /**
  * Prices come from a cache refreshed on an interval, so a value can be up to 10 minutes stale — and
@@ -145,62 +112,20 @@ updateStatusEl.addEventListener("click", () => {
 });
 
 /**
- * How long the total survives a map ending before it's taken down.
- *
- * Chaining maps arrives as SESSION_UPDATE(ended) then SESSION_UPDATE(new), with two real awaits
- * between them in the main process — it ends the old session and starts the new one either side of a
- * store write — so the panel can genuinely paint the out-of-map state mid-transition. Without a
- * grace the total blinks every time you take the next map.
- */
-const MAP_END_GRACE_MS = 400;
-let leaveMapTimer: ReturnType<typeof setTimeout> | null = null;
-
-/**
  * Whether the panel is in its minimal, heads-up form. **This is the resting state**, which is why it
  * starts true and why `#panel` ships with the class in index.html.
  *
- * Driven by `OverlayStatus.expanded` — the `toggleList` hotkey — and by nothing else. Deliberately
- * *not* derived from `isInMap()`: the panel shows the last capture wherever you are, and opening the
- * full list is a decision rather than a side effect of which zone you happen to be in.
+ * Driven by `OverlayStatus.expanded` — the `toggleList` hotkey — and by nothing else.
  */
 let minimalMode = true;
-
-/**
- * Shows or hides the map's running total.
- *
- * Nothing to do with the panel's *form* any more — the two used to be one function, and came apart
- * when the form became a keypress. This half keeps the grace period because it reacts to events
- * rather than to the user: chaining maps arrives as SESSION_UPDATE(ended) then SESSION_UPDATE(new),
- * with real awaits between them, so without it the total blinks on every transition. Showing is
- * immediate, hiding is deferred, and the timer **re-checks the condition when it fires** rather than
- * trusting the decision that armed it — like `applyOverlayVisibility()` in the main process.
- */
-function applyMapState(): void {
-  if (isInMap()) {
-    if (leaveMapTimer !== null) {
-      clearTimeout(leaveMapTimer);
-      leaveMapTimer = null;
-    }
-    sessionTotalLineEl.classList.remove("hidden");
-    return;
-  }
-
-  // Nothing on screen to take down (the cold-start case, where the first session is an ended one),
-  // or a hide is already armed.
-  if (leaveMapTimer !== null || sessionTotalLineEl.classList.contains("hidden")) return;
-  leaveMapTimer = setTimeout(() => {
-    leaveMapTimer = null;
-    if (!isInMap()) sessionTotalLineEl.classList.add("hidden");
-  }, MAP_END_GRACE_MS);
-}
 
 /**
  * Switches the panel between its two forms: the heads-up display it rests in, and the full panel —
  * filters, the whole list, Export/Clear, per-row Edit — that the `toggleList` hotkey opens.
  * `MINIMAL_ROWS` and the `#panel.minimal` block in style.css are the two halves of that.
  *
- * No grace and no re-check, unlike `applyMapState`: this only ever runs because the user pressed a
- * key, and a keypress should land immediately.
+ * No grace and no re-check: this only ever runs because the user pressed a key, and a keypress
+ * should land immediately.
  */
 function setMinimalMode(minimal: boolean): void {
   if (minimal === minimalMode) return;
@@ -214,30 +139,6 @@ function setMinimalMode(minimal: boolean): void {
   // The row count changes with the mode, so the list has to rebuild.
   scheduleRender();
 }
-
-/**
- * The running total of the *current map*, not of the list — the list spans every map ever run, which
- * is why this is hidden outright rather than falling back to a total of everything.
- *
- * Every path that mutates `latestSession` already calls this, so it is also where the two states are
- * applied from; nothing else has to remember to.
- */
-function renderSessionTotal(): void {
-  sessionTotalEl.textContent = latestSession ? formatValue(latestSession.totalChaosValue) : formatValue(0);
-  applyMapState();
-}
-
-window.poe2Overlay.onSessionUpdate((session) => {
-  // Header only. A new map deliberately does *not* reset the list any more — it just prepends to it.
-  latestSession = session;
-  renderSessionTotal();
-  renderSessionStatus();
-});
-
-window.poe2Overlay.onZoneStatus(({ isHideout }) => {
-  lastZoneIsHideout = isHideout;
-  renderSessionStatus();
-});
 
 function applyStatus(status: OverlayStatus): void {
   rates = status.rates;
@@ -254,7 +155,6 @@ function applyStatus(status: OverlayStatus): void {
   renderPriceStatus();
   renderRateStatus();
   renderUpdateStatus();
-  renderSessionTotal();
   // Every value on screen was formatted with the old rates.
   scheduleRender();
 }
@@ -369,8 +269,8 @@ let renderQueued = false;
 
 /**
  * Coalesces the re-renders triggered within one task into a single rebuild. The list is rebuilt
- * wholesale rather than patched, and one capture can produce a PRICED_ITEM and a SESSION_UPDATE
- * plus a status push; with an unbounded list that is a full rebuild each, for one visible change.
+ * wholesale rather than patched, and one capture can produce a PRICED_ITEM, a PRICING_STATUS and a
+ * status push; with an unbounded list that is a full rebuild each, for one visible change.
  *
  * Deliberately `queueMicrotask` and **not** `requestAnimationFrame`: this window is created hidden
  * and stays hidden whenever PoE2 isn't in front, and a hidden window never paints, so rAF callbacks
@@ -530,15 +430,10 @@ function renderItemRow({ item, count, total }: ItemGroup): HTMLElement {
 
 /**
  * Folds an item the main process just updated back into the list, rather than re-fetching all of
- * them. Both editor actions return the stored item and its recomputed session, so there is nothing
- * left to ask the store for.
+ * them. Both editor actions return the stored item, so there is nothing left to ask the store for.
  */
-function applyUpdatedItem(updated: PricedItem | null, session: Session | null): void {
+function applyUpdatedItem(updated: PricedItem | null): void {
   if (updated) allItems = allItems.map((existing) => (existing.id === updated.id ? updated : existing));
-  if (session && latestSession && session.id === latestSession.id) {
-    latestSession = session;
-    renderSessionTotal();
-  }
   scheduleRender();
 }
 
@@ -1120,7 +1015,7 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
       // rebuilt (see `openEditor`), so this button would otherwise keep offering the previous search
       // — a query that produced a different number from the one now on the row.
       syncTradeLink(result.item.tradeSearchId);
-      applyUpdatedItem(result.item, result.session);
+      applyUpdatedItem(result.item);
     });
 
     repriceRow.append(repriceButton, viewButton, status);
@@ -1164,7 +1059,7 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
 
     manualStatus.textContent = "";
     const result = await window.poe2Overlay.setManualPrice(item.id, value);
-    applyUpdatedItem(result.item, result.session);
+    applyUpdatedItem(result.item);
   });
 
   manualRow.append(manualLabel, manualInput, setButton, manualStatus);
@@ -1249,13 +1144,9 @@ function wireClearButton(): void {
     disarm();
     await window.poe2Overlay.clearHistory();
 
-    // Every piece of view state that was fed by the now-deleted data. Missing latestSession here
-    // would leave the header showing the total of a session that no longer exists.
+    // Every piece of view state that was fed by the now-deleted data.
     allItems = [];
-    latestSession = null;
     openEditor = null;
-    renderSessionTotal();
-    renderSessionStatus();
     renderList();
   });
 }
@@ -1304,24 +1195,17 @@ function wireRefreshButton(): void {
 
 wireRefreshButton();
 
-/**
- * Sessions come back newest-first, so the first is the map in progress (or the one that just
- * ended). It's fetched purely for the header — nothing else here is scoped to a session.
- */
 async function load(): Promise<void> {
-  const [status, sessions, items] = await Promise.all([
+  const [status, items] = await Promise.all([
     window.poe2Overlay.getStatus(),
-    window.poe2Overlay.getHistory(),
     window.poe2Overlay.getAllItems()
   ]);
 
   // A push may have arrived while those were in flight; it's newer than anything the store returned.
   const pushed = allItems;
   allItems = items.concat(pushed.filter((item) => !items.some((stored) => stored.id === item.id)));
-  if (sessions.length > 0) latestSession = sessions[0];
 
   applyStatus(status);
-  renderSessionStatus();
 }
 
 void load();
