@@ -356,6 +356,33 @@ function syncEmptyNote(): void {
       : "Nothing matches this filter.";
 }
 
+// A row-level shortcut to the editor's "View search" button, so viewing the trade search a price
+// came from doesn't require opening Edit first. Reuses the same IPC call and hidden-when-absent
+// rule as `renderItemEditor`'s `viewButton` below — this one just has no status line to report a
+// stale search into, so it flashes the tooltip text instead.
+function viewSearchIconButton(item: PricedItem): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "icon-btn";
+  const defaultTitle = "View search";
+  button.title = defaultTitle;
+  button.setAttribute("aria-label", defaultTitle);
+  button.innerHTML =
+    '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.3"><circle cx="8" cy="8" r="6.5"/><ellipse cx="8" cy="8" rx="2.8" ry="6.5"/>' +
+    '<path d="M1.7 8h12.6M2.6 4.8h10.8M2.6 11.2h10.8"/></svg>';
+  button.hidden = !item.tradeSearchId;
+  button.addEventListener("click", async () => {
+    if (!(await window.poe2Overlay.openTradeSearch(item.id))) {
+      button.title = "That search is no longer on file.";
+      setTimeout(() => {
+        button.title = defaultTitle;
+      }, 2000);
+    }
+  });
+  return button;
+}
+
 function renderItemRow({ item, count, total }: ItemGroup): HTMLElement {
   const row = document.createElement("div");
   row.className = "item-row";
@@ -405,6 +432,7 @@ function renderItemRow({ item, count, total }: ItemGroup): HTMLElement {
   top.append(itemNameEl(item, count), value);
   const median = medianValueEl(item, count, total);
   if (median) top.append(median);
+  top.append(viewSearchIconButton(item));
   top.append(toggle);
   row.append(top);
 

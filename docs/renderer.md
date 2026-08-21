@@ -109,6 +109,17 @@ Anything with no ASCII reading at all becomes a single `?` instead of a run of m
 - **Edit is hidden in minimal mode, not omitted.** The row stays single-shaped in `renderItemRow`
   and CSS hides the button, so there is no second row builder to keep in sync. The hover tooltip
   still works, so the item is still readable at a glance; the `toggleList` hotkey is how you reach it.
+- **The row's globe icon button is a shortcut to the editor's "View search" button, not a second
+  implementation of it.** Both call `window.poe2Overlay.openTradeSearch(itemId)` — no new IPC
+  channel. `viewSearchIconButton` hides itself when `item.tradeSearchId` is unset, same rule as the
+  editor's `viewButton`, but it has no status line to report a stale/expired search into, so a
+  `false` return flashes the tooltip text instead of writing into the row.
+- **`button.icon-btn`'s CSS selector must keep `:not([hidden])`.** An author `display` rule wins
+  over the UA stylesheet's `[hidden] { display: none }` at equal specificity, so a plain
+  `button.icon-btn { display: inline-flex; ... }` silently un-hides the row's view-search icon for
+  every item with no `tradeSearchId` — it renders and looks clickable, and clicking it does
+  nothing you can see (a tooltip-text flash you'd have to be hovering to notice). This was a real
+  bug, caught only by driving the built app's devtools live rather than reading the diff.
 - **The panel's form is the hotkey's business and nothing else's.** It is never opened *or* closed
   for you: leaving a map doesn't expand it, and entering one doesn't collapse it. Both of those
   existed and were removed in turn — auto-expanding in the hideout first, then `collapsePanel()` on
