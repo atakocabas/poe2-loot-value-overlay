@@ -130,6 +130,23 @@ Anything with no ASCII reading at all becomes a single `?` instead of a run of m
   `retry in …`) — the bare-rewrite loop strips the word — and any 1s timer must start and stop with
   the thing it is counting (`syncCooldownTimer`, mirroring the pending timer), because this window
   sits on top of a game.
+- **The suggested sell price lives in the editor, and the row keeps one number.** `suggestSellRange()`
+  in `common.ts` reads `tradeListingSample` and `tradeListingIndexedAt` and returns a verdict;
+  `sellSuggestionText()` words it. The split is deliberate — the arithmetic is tested without a DOM,
+  and the wording lives in one place, the same separation `unpricedLabel` has from the badge that
+  prints it. Four things that come with it:
+  - It takes the **guard set `listedAgeEl` uses** (`count !== 1`, `stackSize !== 1`, non-trade2,
+    manual override, no listing date) and returns null for each, because a suggestion is an annotation
+    on one listing's number and is a lie about a group total or a stack.
+  - It is **re-run in place by `syncSuggestion`**, called from both the reprice and the manual-price
+    handlers, for exactly the reason `syncTradeLink` is: `applyUpdatedItem` re-renders the list but
+    the editor is *moved* rather than rebuilt, so an untouched node keeps describing the old listings.
+  - It needs **no clock ticker**, unlike everything else on the panel that shows an age. It is only
+    ever built while the editor is open, and `.item-value-listed` on the row already answers "how old
+    is this" on the 30s pass.
+  - `.item-edit-row[hidden]` in style.css is **load-bearing**, the same trap as the icon button below:
+    without it the author `display: flex` beats the UA `[hidden] { display: none }` and hiding the row
+    leaves an empty flex line in the editor.
 - **The row's globe icon button is a shortcut to the editor's "View search" button, not a second
   implementation of it.** Both call `window.poe2Overlay.openTradeSearch(itemId)` — no new IPC
   channel. `viewSearchIconButton` hides itself when `item.tradeSearchId` is unset, same rule as the

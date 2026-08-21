@@ -20,6 +20,13 @@ array and a `sessionId` on every item. Nothing migrates it and nothing reads the
 ride along unread, which is how every other dropped field is handled here. Don't write migration
 code for it.
 
+**`updateItem`'s patch type is an allowlist, and adding a field means adding it there.** The
+`Partial<Pick<PricedItem, …>>` in `store.ts` names every field a patch may carry; a field left off it
+is dropped in silence, with no type error, because a spread of a conditional object skips
+excess-property checking. That is not hypothetical — `tradeListingQuote` was being passed and
+persisted before it was listed, and the type simply didn't say so. `tradeListingSample` is the newest
+entry; anything that writes through this handler needs one.
+
 **IPC surface** (`src/shared/ipc-channels.ts`, `src/main/ipc.ts`, `src/preload/index.ts`): pushes
 (`PRICED_ITEM`, `PRICING_STATUS`, `OVERLAY_STATUS`) go main -> renderer as items resolve; pulls
 (`GET_STATUS`, `GET_ALL_ITEMS`, `CLEAR_HISTORY`, `GET_EDITOR_ROWS`, `REPRICE_ITEM`,

@@ -369,6 +369,255 @@ function listedAgeEl(item: PricedItem, count: number, total: number | null): HTM
 }
 
 /**
+ * How long a cheapest listing has to have sat before the market is called dead, in ms.
+ *
+ * The cheapest listing is the most attractive offer on the board. If *it* has not cleared in a month,
+ * nothing priced above it has either, so there is nothing left for the rest of the sample to say and
+ * no range worth quoting — which is why this is a short-circuit in `suggestSellRange` rather than one
+ * more input to the weighting below.
+ *
+ * Measured against the stored cache when this was written, the cheapest listing was older than 7d on
+ * 44% of dated rows, 14d on 41% and 30d on 30%. Thirty days is the conservative end of that: it
+ * catches only the definitely-dead, and can be tightened once the verdict has been used in anger.
+ */
+const SELL_DEAD_MARKET_MS = 30 * 24 * 3600_000;
+/**
+ * How fast a listing's evidential weight halves, in hours.
+ *
+ * A listing that has sat unsold is evidence *against* its own asking price clearing, and the longer
+ * it has sat the weaker that price is as a guide. One day is roughly the point at which a listing on
+ * an actively traded item stops being news.
+ */
+const SELL_HALF_LIFE_H = 24;
+/**
+ * The weight given to a listing GGG sent no usable date for.
+ *
+ * Deliberately middling rather than 1: an undated listing is not a fresh one, and treating it as one
+ * is how a sample of unknowns would quietly produce a confident-looking range.
+ */
+const SELL_UNKNOWN_DATE_WEIGHT = 0.35;
+/** The weight below which a listing stops counting as live — about two days at the half-life above. */
+const SELL_FRESH_ENOUGH = 0.25;
+/**
+ * How far below its own sample's median a listing may sit before it is treated as an outlier rather
+ * than a price — a price-fixer, a mislist, or a stash tab priced by accident.
+ *
+ * A **ratio**, not an absolute floor, because the stored rows span 0.03 to 3853 chaos and any fixed
+ * cutoff is meaningless at one end of that. Measured over those rows, the cheapest listing sat below a
+ * sixth of its own median often enough to matter, with a worst case of 364x.
+ */
+const SELL_LOW_OUTLIER_RATIO = 6;
+/** How many listings a trim has to leave behind before it is allowed to happen at all. */
+const SELL_MIN_AFTER_TRIM = 3;
+
+/**
+ * What the sampled listings support as an asking price, or why they support nothing.
+ *
+ * `dead` and `stale` are verdicts, not failures: on the stored rows they are the majority outcome,
+ * and saying so is the point of this. A row whose only comparable has sat untouched for two months
+ * does not have a cheap price, it has no market, and quoting the dead listing back as a suggestion
+ * would be the one genuinely misleading thing this could do.
+ */
+type SellSuggestion =
+  | { kind: "dead"; ageMs: number }
+  | { kind: "stale"; ageMs: number }
+  | { kind: "range"; low: number; high: number; used: number; trimmed: number }
+  | { kind: "single"; value: number; used: number; flat: boolean }
+  | { kind: "needsReprice" };
+
+/**
+ * What to ask for the item, from the listings its price was sampled over and how long each has sat.
+ *
+ * **What the sample is matters for reading this.** It is the cheapest 5-10 of up to 100
+ * price-ascending matches: the market's left tail, not its distribution. So this can never answer
+ * "what is it worth" — only "given the cheap end I am competing against, and how long each of those
+ * has been sitting there, where do I list". Every label built from it has to say so.
+ *
+ * Ages are measured against `now`, not against when the price was fetched. That is deliberate, and it
+ * is what makes a months-old row read as stale: a listing that was fresh when we saw it, sixty days
+ * ago, says nothing about today, and the honest output there is "reprice" rather than a range
+ * reconstructed from a snapshot that has since expired. It is also why no fetch time is stored.
+ *
+ * Returns null in the same cases `listedAgeEl` does — a suggestion, like the age beside the price, is
+ * an annotation on one listing's number, and is a lie about anything else.
+ */
+function suggestSellRange(
+  item: PricedItem,
+  count: number,
+  now: number = Date.now()
+): SellSuggestion | null {
+  // A manual price replaces the trade figure, so the listings behind it describe a number no longer
+  // on screen; no other source has listings at all; a group total or a stack is a sum, and one
+  // listing's price is not a fact about a sum.
+  if (item.priceSource !== "trade2" || item.manualChaosValue !== null) return null;
+  if (count !== 1 || item.stackSize !== 1) return null;
+  if (effectiveValue(item) === null) return null;
+
+  const indexedAt = item.tradeListingIndexedAt;
+  // Items priced before the date was stored, and listings GGG sent no parseable date for, both mean
+  // "say nothing" — the whole verdict below rests on ages, and there is no age here to rest it on.
+  if (indexedAt === undefined) return null;
+
+  // The dominance gate, and it runs before anything reads the sample: a fresh listing priced above a
+  // month-old cheapest one is not evidence of a live market, it is evidence of a more expensive
+  // listing that has also not sold.
+  const cheapestAge = now - indexedAt;
+  if (cheapestAge > SELL_DEAD_MARKET_MS) return { kind: "dead", ageMs: cheapestAge };
+
+  const sample = item.tradeListingSample;
+  // Every row stored before the sample was retained still reaches the gate above, which is most of
+  // what the verdict is worth; a range needs the listings the gate does not.
+  if (sample === undefined || sample.length === 0) return { kind: "needsReprice" };
+
+  const weighed = sample
+    .map((listing) => ({
+      chaos: listing.chaos,
+      weight:
+        listing.indexedAt === undefined
+          ? SELL_UNKNOWN_DATE_WEIGHT
+          : Math.pow(0.5, (now - listing.indexedAt) / 3600_000 / SELL_HALF_LIFE_H)
+    }))
+    .sort((a, b) => a.chaos - b.chaos);
+
+  // Trimmed against the untrimmed median, so the outliers being removed cannot drag the threshold
+  // down to meet themselves. Only allowed to happen while it leaves a sample worth reasoning over —
+  // on three listings the "outlier" may simply be the market.
+  const median = weighed[Math.floor((weighed.length - 1) / 2)]!.chaos;
+  const floor = median / SELL_LOW_OUTLIER_RATIO;
+  const survivors = weighed.filter((entry) => entry.chaos >= floor);
+  const kept = survivors.length >= SELL_MIN_AFTER_TRIM ? survivors : weighed;
+
+  const live = kept.filter((entry) => entry.weight >= SELL_FRESH_ENOUGH);
+  // Inside the gate but with nothing live in it: the softer sibling of the dead verdict, covering the
+  // rows whose cheapest listing is days rather than months old.
+  if (live.length === 0) return { kind: "stale", ageMs: cheapestAge };
+
+  const flat = kept.every((entry) => entry.chaos === kept[0]!.chaos);
+  // Undercut this and you are the cheapest listing anyone is actually looking at.
+  const low = live[0]!.chaos;
+  // Above the weighted middle of the cheap end you have left the pack this sample can speak for.
+  const high = Math.max(low, weightedMedianChaos(kept));
+
+  if (flat) return { kind: "single", value: low, used: kept.length, flat: true };
+  if (high === low) return { kind: "single", value: low, used: kept.length, flat: false };
+  return { kind: "range", low, high, used: kept.length, trimmed: weighed.length - kept.length };
+}
+
+/**
+ * How long something lasted, in the tiers `relativeTime` uses — "72d", "5h".
+ *
+ * Separate from `relativeTime` because that one measures against `Date.now()` and suffixes "ago",
+ * which is right for a timestamp on a row and wrong inside a sentence: "nothing has moved here in
+ * 72d ago" is what reusing it produces. This takes the elapsed span itself, so the caller decides
+ * what it is a span between.
+ */
+function describeDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${Math.max(0, seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+/** The chaos figure half the sample's freshness weight sits below. Input must be sorted by price. */
+function weightedMedianChaos(sorted: Array<{ chaos: number; weight: number }>): number {
+  const half = sorted.reduce((sum, entry) => sum + entry.weight, 0) / 2;
+  let running = 0;
+  for (const entry of sorted) {
+    running += entry.weight;
+    if (running >= half) return entry.chaos;
+  }
+  return sorted[sorted.length - 1]!.chaos;
+}
+
+/**
+ * Both ends of a range in one unit.
+ *
+ * `formatValue` picks a unit per value from its magnitude, so a range straddling a boundary prints as
+ * "10c - 1.26div": two units on one line, which the reader has to convert before the span means
+ * anything. The unit is chosen once, from the high end, and both ends are printed in it.
+ *
+ * The quote is threaded through for the same reason it is on the row — the suggestion sits directly
+ * under the headline, and the two reading in different units would look like a discrepancy rather
+ * than a choice.
+ */
+function formatRange(low: number, high: number, quote?: ListingQuote | null): string {
+  if (!rates || !Number.isFinite(rates.chaosPerDivine) || rates.chaosPerDivine <= 0) {
+    return `${formatNumber(low)}c - ${formatNumber(high)}c`;
+  }
+  const unit = pickDisplayUnit(high, rates, quote);
+  const label = UNIT_LABEL[unit];
+  return (
+    `${formatNumber(convertFromChaos(low, rates, unit))}${label} - ` +
+    `${formatNumber(convertFromChaos(high, rates, unit))}${label}`
+  );
+}
+
+/**
+ * The verdict as the editor prints it: a headline, the reasoning under it, and whether it reads as a
+ * warning rather than as a number.
+ *
+ * Kept apart from `suggestSellRange` so the arithmetic can be tested without a DOM, and so the wording
+ * lives in one place — the same separation `unpricedLabel` has from the badge that prints it.
+ */
+function sellSuggestionText(
+  suggestion: SellSuggestion,
+  quote?: ListingQuote | null
+): { text: string; title: string; warn: boolean } {
+  switch (suggestion.kind) {
+    case "dead":
+      return {
+        text: `No sell price — nothing has moved here in ${describeDuration(suggestion.ageMs)}`,
+        title:
+          "The cheapest listing on the market is this old and still has not sold. It is the most " +
+          "attractive offer anyone can see, so nothing priced above it has sold either, and there is " +
+          "no asking price that would move this item today. Reprice to see whether that has changed.",
+        warn: true
+      };
+    case "stale":
+      return {
+        text: `No sell price — the cheapest listing is ${describeDuration(suggestion.ageMs)} old and unsold`,
+        title:
+          "Every listing this price was sampled over has sat long enough that none of them is " +
+          "evidence of what the item clears at. Undercutting a listing nobody bought only makes you " +
+          "the cheapest listing nobody buys.",
+        warn: true
+      };
+    case "range":
+      return {
+        text: `Ask ${formatRange(suggestion.low, suggestion.high, quote)}`,
+        title:
+          `From ${suggestion.used} sampled listing(s), weighted by how long each has gone unsold` +
+          (suggestion.trimmed > 0
+            ? `, discarding ${suggestion.trimmed} priced far under the rest of the sample`
+            : "") +
+          ".\n\nThe low end undercuts the cheapest listing that is still live. The high end is the " +
+          "middle of the cheap listings this search sampled — above it you have left the group the " +
+          "price was measured over, which is the cheapest handful of matches rather than the market.",
+        warn: false
+      };
+    case "single":
+      return {
+        text: `Ask ${formatValue(suggestion.value, quote)}`,
+        title: suggestion.flat
+          ? `All ${suggestion.used} sampled listing(s) are asking this. A flat cheap end is the ` +
+            "strongest read this can give: there is a settled price and it is this one."
+          : "Only one sampled listing is recent enough to price against, so this is a single " +
+            "observation rather than a range. Treat it as a starting point.",
+        warn: false
+      };
+    case "needsReprice":
+      return {
+        text: "Reprice for a suggested sell price",
+        title:
+          "This item was priced before the listings behind a price were kept, so only the cheapest " +
+          "one survives. Repricing samples the market again and records enough to suggest a range.",
+        warn: false
+      };
+  }
+}
+
+/**
  * A coarse "how long ago", for both the row's capture time and its listing age.
  *
  * The day tier exists for listings: they are routinely days old, and `72h ago` is a number the reader

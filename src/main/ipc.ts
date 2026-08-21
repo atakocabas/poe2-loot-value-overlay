@@ -114,6 +114,10 @@ export function registerIpcHandlers({ poeNinja, trade2, settings, getStatus }: I
               // annotates this price with some other seller's details.
               tradeListingQuote: estimate.listingQuote,
               tradeListingIndexedAt: estimate.listingIndexedAt
+              ,
+              // Moves with them: all three describe the listings this number was taken over, so a
+              // reprice that found nothing has to keep the previous set rather than mix the two.
+              tradeListingSample: estimate.listingSample
             }
           : {})
       });

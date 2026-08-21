@@ -248,10 +248,11 @@ Practically:
   would call it 347 exalted. Near enough to exalted that the default of 1 still means roughly what it
   reads as, but don't document it as exalted and don't name a currency in the log.
 
-  **It constrains the search, not the sample, and that is load-bearing.** `priceSample` takes the ten
-  *cheapest* matches, so a floor applied after the fetch would find every one of them below it and
-  leave nothing to price. Filtering server-side means the ten cheapest are the ten cheapest that clear
-  the floor, and every listing count in the log counts the same set the price came from.
+  **It constrains the search, not the sample, and that is load-bearing.** `priceSample` takes the
+  *cheapest* `maxListings` matches — five by default, ten at the API ceiling — so a floor applied
+  after the fetch would find every one of them below it and leave nothing to price. Filtering
+  server-side means the cheapest five are the cheapest five that clear the floor, and every listing
+  count in the log counts the same set the price came from.
 
   **An item with nothing at or above the floor is stored unpriced, and there is no retry without it.**
   That is the difference from the defence and aggregate floors, which exist to widen a search that was
@@ -527,6 +528,41 @@ Practically:
   was partly justified by the median being visible (see above), and that justification is gone. The
   sample size survives only in the `[pricing] … cheapest of N sampled` log line. Putting the count on
   the row, or raising that default, are the two honest ways to close it.
+
+  **The window itself is now kept, which is how that cost is paid without a second number on the
+  row.** `priceFromRung` used to reduce the fetched listings to `priced[0]` and drop the rest on the
+  floor; it now also carries them as `TradeEstimate.listingSample`, persisted as
+  `PricedItem.tradeListingSample` — each listing's chaos value and its own `indexed` date, cheapest
+  first. It costs nothing: those listings were already fetched, already converted and already sorted.
+
+  Its only reader is `suggestSellRange()` in `src/renderer/common.ts`, which turns it into a suggested
+  **asking** price in the row editor. Three things about it are worth not re-deriving:
+
+  - **Each listing is weighted by how long it has gone unsold** (24h half-life), because a listing
+    that has sat is evidence against its own price clearing. Listings below a sixth of their own
+    sample's median are discarded — a *ratio*, since the stored rows span 0.03 to 3853 chaos and no
+    fixed cutoff means anything across that range. Measured on those rows, the cheapest listing sat
+    below a third of its own sample median in 14 of 35 cases and below a tenth in 8, worst case 364x.
+  - **The dominance gate short-circuits all of it.** If the *cheapest* listing has sat for over 30
+    days the verdict is "dead market", and nothing else is read: the cheapest listing is the most
+    attractive offer on the board, so if it has not cleared, nothing priced above it has either. The
+    gate reads only `tradeListingIndexedAt`, so it works on rows stored before the window was kept —
+    it decided 8 of the 27 dated rows on the cache it was built against.
+  - **Refusing is a normal outcome, not a failure.** `dead` and `stale` were the majority verdict on
+    the rows that had a date at all. Quoting a two-month-old listing back as a suggested price is the
+    one genuinely misleading thing this could do, so it doesn't.
+
+  **The suggestion is not a valuation and must never be presented as one.** The window is the cheapest
+  handful of a price-ascending search — the market's left tail, not a sample of the market. It can say
+  where to sit among the undercutters. It cannot say what the item is worth.
+
+  **Deepening the window past `maxListings` was considered and not done.** The fetch is one
+  unbudgeted GET either way and `MAX_FETCH_IDS` is 10, so 5 → 10 looks free. It isn't quite: the final
+  sort is on *this app's* chaos conversion rather than GGG's ordering, so a listing that never enters
+  the window today could become `priced[0]` and lower the headline. That can only push an already
+  acknowledged low bias further down, and avoiding it needs the fetch response to come back in
+  requested-id order — which this app has never verified. Worth doing as its own change, with its own
+  measurement, not as a side effect of this one.
 
   `listingIndexedAt` is carried on `TradeEstimate`, persisted as `PricedItem.tradeListingIndexedAt`
   (epoch ms, parsed once at the fetch), and printed as `12ex (listed 3d ago)` by `listedAgeEl()` in
