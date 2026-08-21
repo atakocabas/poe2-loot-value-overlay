@@ -73,7 +73,6 @@ function makeItem(overrides: Partial<PricedItem> = {}): PricedItem {
     explicitMods: [],
     capturedAt: 0,
     id: "id-0",
-    sessionId: "session-0",
     chaosValue: 10,
     priceSource: "trade2",
     ignoredMods: [],

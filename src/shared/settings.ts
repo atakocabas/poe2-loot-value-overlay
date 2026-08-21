@@ -7,15 +7,9 @@ export interface Settings {
    */
   league: string;
   /**
-   * Full path to PoE2's `Client.txt`, tailed for zone transitions to start and end map sessions.
-   * Detected from the Steam install on first run (`poe2-install.ts`) and pickable by hand for
-   * everything else. Empty is a supported state: map detection is simply off.
-   */
-  clientTxtPath: string;
-  /**
    * Whether the first-run setup window has been answered. False ships in the defaults, so a fresh
    * install — and an existing one upgrading past this key, since `mergeWithDefaults` fills it in —
-   * is asked once for the three values above before anything else starts.
+   * is asked once for the values it covers before anything else starts.
    */
   setupCompleted: boolean;
   /**
@@ -26,20 +20,6 @@ export interface Settings {
    * string from an older settings.json is folded into this list on load.
    */
   poe2ProcessNames: string[];
-  logWatch: {
-    /**
-     * How often Client.txt is polled for new bytes. This is the real trigger — `fs.watch` is only
-     * an extra nudge, since Windows doesn't reliably signal appends to a file PoE2 holds open.
-     */
-    pollIntervalMs: number;
-    /**
-     * Bytes of Client.txt scanned at startup to seed the current zone, so launching the overlay
-     * mid-map doesn't sit on "No active map" until the next transition. 0 disables the backfill.
-     */
-    backfillBytes: number;
-    /** Verbose per-poll `[logwatch]` tracing (byte/line counts, skipped placeholder zones). */
-    debugLogging: boolean;
-  };
   overlay: {
     /**
      * Hide the overlay whenever PoE2 isn't the foreground window (it's `alwaysOnTop` across the
@@ -78,7 +58,6 @@ export interface Settings {
      * The panel is otherwise always its minimal form — see `OverlayStatus.expanded`.
      */
     toggleList: string;
-    toggleSession: string;
     forceCapture: string;
   };
   display: {

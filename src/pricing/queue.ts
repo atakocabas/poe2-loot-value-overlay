@@ -22,13 +22,12 @@ export class PricingQueue {
 
   constructor(
     private readonly resolver: PriceResolver,
-    private readonly getSessionId: () => string,
     private readonly onPriced: (item: Omit<PricedItem, "id">) => void,
     /**
      * Everything captured but not yet priced, pushed whole on every transition.
      *
      * Optional and last: without it the queue behaves exactly as it did before, which is what keeps
-     * the existing three-argument constructions working.
+     * the existing two-argument constructions working.
      */
     private readonly onPending?: (pending: PendingCapture[]) => void
   ) {}
@@ -58,7 +57,7 @@ export class PricingQueue {
 
       let priced: Omit<PricedItem, "id">;
       try {
-        priced = await this.resolver.resolve(entry.item, this.getSessionId(), () => {
+        priced = await this.resolver.resolve(entry.item, () => {
           entry.stage = "trade2";
           this.emitPending();
         });
@@ -69,7 +68,6 @@ export class PricingQueue {
         console.error("[pricing] failed to resolve item, storing as unpriced:", error);
         priced = {
           ...entry.item,
-          sessionId: this.getSessionId(),
           chaosValue: null,
           priceSource: "unpriced",
           ignoredMods: [],

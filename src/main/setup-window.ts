@@ -1,8 +1,7 @@
-import { BrowserWindow, dialog, ipcMain } from "electron";
+import { BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { IPC } from "../shared/ipc-channels";
 import { appIcon } from "./icon";
-import { detectClientTxtPath } from "./poe2-install";
 import { loadSettings, saveSettings } from "./settings";
 import { pipeRendererLogs } from "./window";
 import type { SetupConfig, SetupState } from "../shared/types";
@@ -88,38 +87,11 @@ export interface SetupIpcDeps {
 export function registerSetupIpcHandlers({ onSetupSaved }: SetupIpcDeps): void {
   ipcMain.handle(IPC.GET_SETUP_CONFIG, async (): Promise<SetupState> => {
     const settings = loadSettings();
-    // Only worth probing the disk when there's no answer already; a configured path that has since
-    // gone missing is handled at boot, not here.
-    const detected = settings.clientTxtPath ? null : await detectClientTxtPath();
-
     return {
       league: settings.league,
       contactEmail: settings.trade2.contactEmail,
-      clientTxtPath: settings.clientTxtPath || detected || "",
-      detectedClientTxtPath: detected,
       setupCompleted: settings.setupCompleted
     };
-  });
-
-  ipcMain.handle(IPC.BROWSE_CLIENT_TXT, async (): Promise<string | null> => {
-    const settings = loadSettings();
-    const options: Electron.OpenDialogOptions = {
-      title: "Locate PoE2's Client.txt",
-      defaultPath: settings.clientTxtPath || undefined,
-      properties: ["openFile"],
-      filters: [
-        { name: "Client log", extensions: ["txt"] },
-        { name: "All files", extensions: ["*"] }
-      ]
-    };
-
-    // Parented when there's a window to parent to, so the picker is modal to setup rather than a
-    // stray top-level dialog the user can lose behind it.
-    const result = setupWindow
-      ? await dialog.showOpenDialog(setupWindow, options)
-      : await dialog.showOpenDialog(options);
-
-    return result.canceled ? null : result.filePaths[0] ?? null;
   });
 
   ipcMain.handle(IPC.SAVE_SETUP_CONFIG, (_event, config: SetupConfig) => {
@@ -127,14 +99,12 @@ export function registerSetupIpcHandlers({ onSetupSaved }: SetupIpcDeps): void {
     saveSettings({
       ...settings,
       league: config.league.trim() || settings.league,
-      clientTxtPath: config.clientTxtPath.trim(),
       setupCompleted: true,
       trade2: { ...settings.trade2, contactEmail: config.contactEmail.trim() }
     });
 
     console.log(
       `[setup] saved: league="${config.league.trim()}", ` +
-        `clientTxtPath=${config.clientTxtPath.trim() || "(not set)"}, ` +
         `contactEmail=${config.contactEmail.trim() ? "set" : "(not set)"}`
     );
 

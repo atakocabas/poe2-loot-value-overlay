@@ -14,14 +14,8 @@ import type { Settings } from "../shared/settings";
 function makeDefaults(): Settings {
   return {
     league: "Standard",
-    clientTxtPath: "C:\\PoE2\\logs\\Client.txt",
     setupCompleted: true,
     poe2ProcessNames: ["PathOfExileSteam.exe", "PathOfExile.exe"],
-    logWatch: {
-      pollIntervalMs: 1000,
-      backfillBytes: 65536,
-      debugLogging: false
-    },
     overlay: {
       hideWhenGameUnfocused: true,
       focusPollIntervalMs: 400,
@@ -31,7 +25,6 @@ function makeDefaults(): Settings {
     hotkeys: {
       toggleOverlay: "CommandOrControl+Shift+O",
       toggleList: "CommandOrControl+Shift+L",
-      toggleSession: "CommandOrControl+Shift+M",
       forceCapture: "CommandOrControl+`"
     },
     display: {
@@ -109,8 +102,7 @@ test("fills in a nested field missing from an older settings.json while keeping 
   const loaded = {
     ...defaults,
     hotkeys: {
-      toggleOverlay: "CommandOrControl+Shift+X",
-      toggleSession: defaults.hotkeys.toggleSession
+      toggleOverlay: "CommandOrControl+Shift+X"
       // forceCapture and toggleList missing, as if written before those fields existed. This is the
       // real upgrade path: every install predates `toggleList`, and gains it on the next load.
     }
@@ -121,7 +113,6 @@ test("fills in a nested field missing from an older settings.json while keeping 
   assert.equal(merged.hotkeys.forceCapture, defaults.hotkeys.forceCapture);
   assert.equal(merged.hotkeys.toggleList, defaults.hotkeys.toggleList);
   assert.equal(merged.hotkeys.toggleOverlay, "CommandOrControl+Shift+X");
-  assert.equal(merged.hotkeys.toggleSession, defaults.hotkeys.toggleSession);
 });
 
 test("the shipped panel side is one the renderer knows how to place", () => {

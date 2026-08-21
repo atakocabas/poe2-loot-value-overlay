@@ -242,7 +242,6 @@ export interface ParsedItem {
 
 export interface PricedItem extends ParsedItem {
   id: string;
-  sessionId: string;
   chaosValue: number | null;
   priceSource: "poeninja" | "currencyExchange" | "trade2" | "unpriced";
   /**
@@ -384,33 +383,6 @@ export interface PricedItem extends ParsedItem {
   searchedMods?: string[];
 }
 
-export interface Session {
-  id: string;
-  league: string;
-  startedAt: number;
-  endedAt: number | null;
-  zoneName: string | null;
-  totalChaosValue: number;
-  /**
-   * Opened by the toggle-session hotkey, i.e. the user saying "treat this as a map" when zone
-   * detection can't.
-   *
-   * Exists to tell the *three* things that open a `zoneName: null` session apart, which used to be
-   * two indistinguishable ones. A zone transition supplies a name; the hotkey sets this; and
-   * `ensureActiveSession` opens one from a bare capture, which is neither — see `isMapSession`.
-   *
-   * Optional because nothing migrates `loot-cache.json`; a session written before this existed reads
-   * as `undefined`, which is correctly falsy.
-   */
-  manual?: boolean;
-}
-
-/** Transient zone-change signal pushed to the renderer; not persisted. */
-export interface ZoneStatus {
-  zoneName: string;
-  isHideout: boolean;
-}
-
 /**
  * How far a captured item has got before it has a price.
  *
@@ -479,24 +451,18 @@ export interface OverlayStatus {
 }
 
 /**
- * The three values every install has to supply for itself, shown in the first-run setup window.
- * They can't ship as usable defaults: `league` rotates every few months, and the other two are the
- * machine's and the player's own.
+ * The two values every install has to supply for itself, shown in the first-run setup window.
+ * They can't ship as usable defaults: `league` rotates every few months, and the contact address is
+ * the player's own.
  */
 export interface SetupConfig {
   league: string;
   /** Optional. Sent in the User-Agent on GGG requests; blank simply omits the contact clause. */
   contactEmail: string;
-  clientTxtPath: string;
 }
 
 /** `SetupConfig` plus what the window needs to explain itself before the user has chosen anything. */
 export interface SetupState extends SetupConfig {
-  /**
-   * What Steam detection found, or null. Separate from `clientTxtPath` so the form can say "found
-   * in your Steam library" about a prefilled value rather than presenting it as an existing choice.
-   */
-  detectedClientTxtPath: string | null;
   /** False on the very first run, which is what makes the window appear unprompted. */
   setupCompleted: boolean;
 }
@@ -513,7 +479,6 @@ export interface SettingsConfig {
   hotkeys: {
     toggleOverlay: string;
     toggleList: string;
-    toggleSession: string;
     forceCapture: string;
   };
   overlay: {

@@ -140,12 +140,8 @@ export class PriceResolver {
    * the only branch here that takes long enough to be worth telling the user about. Optional, since
    * nothing but the pending indicator cares.
    */
-  async resolve(
-    item: ParsedItem,
-    sessionId: string,
-    onTradeSearch?: () => void
-  ): Promise<Omit<PricedItem, "id">> {
-    const base = { ...item, sessionId, ignoredMods: [], manualChaosValue: null };
+  async resolve(item: ParsedItem, onTradeSearch?: () => void): Promise<Omit<PricedItem, "id">> {
+    const base = { ...item, ignoredMods: [], manualChaosValue: null };
 
     const direct = this.poeNinja.getChaosValueForItem(item);
     const stale = this.poeNinjaIsStale();

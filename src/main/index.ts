@@ -1,9 +1,7 @@
 import { app, shell } from "electron";
-import fs from "node:fs";
 import { IPC } from "../shared/ipc-channels";
 import { useAsciiConsoleOnWindows } from "./console-encoding";
-import { loadSettings, saveSettings } from "./settings";
-import { detectClientTxtPath } from "./poe2-install";
+import { loadSettings } from "./settings";
 import { registerSetupIpcHandlers, showSetupWindow } from "./setup-window";
 import { registerSettingsIpcHandlers, showSettingsWindow } from "./settings-window";
 import {
@@ -18,11 +16,9 @@ import { registerHotkeys, unregisterAllHotkeys, type HotkeyHandlers } from "./ho
 import { createTray } from "./tray";
 import { UpdateChecker, type AvailableUpdate } from "./update-check";
 import { ClipboardWatcher } from "./clipboard-watch";
-import { ClientLogWatcher } from "./logwatch";
 import { ProcessWatcher } from "./process-watch";
 import { ForegroundWatcher } from "./foreground-watch";
 import { shouldShowOverlay } from "./overlay-visibility";
-import { isSessionActive } from "../shared/session";
 import { registerIpcHandlers } from "./ipc";
 import { parseItemText } from "../parser/item-text-parser";
 import { PoeNinjaClient } from "../pricing/poeninja-client";
@@ -31,8 +27,8 @@ import { CurrencyExchangeClient } from "../pricing/currency-exchange-client";
 import { createPublicGggFetch } from "../pricing/ggg-fetch";
 import { PriceResolver } from "../pricing/price-resolver";
 import { PricingQueue } from "../pricing/queue";
-import { initStore, startSession, endSession, getActiveSession, addPricedItem } from "../db/store";
-import type { OverlayStatus, Session } from "../shared/types";
+import { initStore, addPricedItem } from "../db/store";
+import type { OverlayStatus } from "../shared/types";
 import type { Settings } from "../shared/settings";
 
 // Before anything can log: the Windows console isn't UTF-8, so em dashes in diagnostic lines
@@ -46,7 +42,6 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 }
 
-let currentSession: Session | null = null;
 let overlayInteractive = false;
 /**
  * Whether the panel is showing the full list rather than its minimal heads-up form.
@@ -59,7 +54,6 @@ let panelExpanded = false;
 /** Set once at startup; `buildStatus()` reads through it so it can be called before construction. */
 let statusDeps: { poeNinja: PoeNinjaClient; settings: Settings } | null = null;
 let processWatcher: ProcessWatcher | null = null;
-let logWatcher: ClientLogWatcher | null = null;
 let updateChecker: UpdateChecker | null = null;
 /**
  * A GitHub release newer than this one, or null until the check says otherwise.
@@ -117,11 +111,6 @@ function applyOverlayVisibility(): void {
   }, hideDelayMs);
 }
 
-async function broadcastSession(session: Session): Promise<void> {
-  currentSession = session;
-  sendToOverlay(IPC.SESSION_UPDATE, session);
-}
-
 /**
  * Panel state that isn't per-item: conversion rates, how old the prices are, whether the overlay is
  * currently accepting clicks, and how big the panel should be. Pushed on every change so the
@@ -143,89 +132,12 @@ function broadcastStatus(): void {
   sendToOverlay(IPC.OVERLAY_STATUS, buildStatus());
 }
 
-/** Closes the in-progress session, if there is one. No-op when nothing is running. */
-async function endCurrentSession(): Promise<void> {
-  if (!isSessionActive(currentSession)) return;
-  console.log(`[map] ending session ${currentSession.id}`);
-  await endSession(currentSession.id);
-  await broadcastSession({ ...currentSession, endedAt: Date.now() });
-}
-
-/**
- * Settles which Client.txt to tail, persisting the answer so this only costs a registry read once.
- *
- * Detection runs both when nothing is configured *and* when the configured file has gone missing —
- * that second case is a player moving PoE2 to another drive, which would otherwise silently kill
- * map detection with a path that looks perfectly fine in settings.json.
- */
-async function resolveClientTxtPath(settings: Settings): Promise<Settings> {
-  if (settings.clientTxtPath && fs.existsSync(settings.clientTxtPath)) return settings;
-
-  const detected = await detectClientTxtPath();
-  if (!detected) return settings;
-
-  console.log(
-    settings.clientTxtPath
-      ? `[startup] configured Client.txt is missing — found the Steam install at ${detected}`
-      : `[startup] auto-detected Client.txt at ${detected}`
-  );
-
-  const updated = { ...settings, clientTxtPath: detected };
-  saveSettings(updated);
-  return updated;
-}
-
-/**
- * Tails Client.txt for zone transitions, starting and ending map sessions off them. Split out of
- * the boot sequence so a path chosen in the setup window can take effect without a restart —
- * hence stopping whatever is already running first.
- */
-function startLogWatcher(settings: Settings): void {
-  logWatcher?.stop();
-
-  if (!settings.clientTxtPath) {
-    console.warn("[startup] clientTxtPath is not set — automatic map detection is disabled");
-    logWatcher = null;
-    return;
-  }
-
-  // Scoped to this watcher, so rebinding to a new file starts from a clean slate — correct, since
-  // the new watcher backfills and re-announces the current zone.
-  let lastZoneName: string | null = null;
-  logWatcher = new ClientLogWatcher(settings.clientTxtPath, settings.logWatch);
-  logWatcher.on("zone-change", async ({ zoneName, isHideoutOrTown, isHideout }) => {
-    // PoE2 re-logs the same zone on instance reloads and after loading screens; without this a
-    // second identical event would close the running session and open a duplicate.
-    if (zoneName === lastZoneName) return;
-    lastZoneName = zoneName;
-
-    console.log(`[map] zone changed: "${zoneName}"${isHideoutOrTown ? " (hideout/atlas)" : ""}`);
-    // Also ends the previous session on a map -> map transition. Starting one without closing
-    // the last left rows stranded with endedAt === null, which the header shows as forever "in
-    // progress" and getActiveSession() then resolves past.
-    await endCurrentSession();
-    if (!isHideoutOrTown) {
-      console.log(`[map] starting new session for zone "${zoneName}"`);
-      const session = await startSession(settings.league, zoneName);
-      await broadcastSession(session);
-    }
-    sendToOverlay(IPC.ZONE_STATUS, { zoneName, isHideout });
-  });
-  logWatcher.on("error", (error) => console.warn("[logwatch]", error.message));
-
-  // Deliberately NOT gated behind ProcessWatcher. Tailing a file costs nothing while the game is
-  // closed, and routing the start through process detection means one stale executable name
-  // silently disables map detection entirely — which is exactly what happened. Process detection
-  // now governs overlay visibility and the clipboard watcher only.
-  logWatcher.start();
-}
-
 /**
  * Watches which window has the foreground, so the overlay can get out of the way when you alt-tab.
  *
- * Split out of the boot sequence for the same reason as `startLogWatcher` — the settings window can
- * turn `hideWhenGameUnfocused` on and off, and that has to take effect without a restart — hence
- * stopping whatever is already running first.
+ * Split out of the boot sequence because the settings window can turn `hideWhenGameUnfocused` on and
+ * off, and that has to take effect without a restart — hence stopping whatever is already running
+ * first.
  */
 function startForegroundWatcher(settings: Settings): void {
   foregroundWatcher?.stop();
@@ -270,27 +182,6 @@ function startForegroundWatcher(settings: Settings): void {
   applyOverlayVisibility();
 }
 
-/**
- * The session to file a capture against, opening one if nothing is running.
- *
- * `manual` marks the session as a map the user declared, which is true of the toggle-session hotkey
- * and false of everything else. A capture in a hideout still opens a session — the item has to be
- * filed somewhere and its value has to count — but that session is deliberately *not* a map, or the
- * overlay would drop into its in-map form the moment you pressed Ctrl+C outside one. See
- * `isMapSession`.
- */
-async function ensureActiveSession(league: string, manual = false): Promise<Session> {
-  if (isSessionActive(currentSession)) return currentSession;
-  const active = await getActiveSession();
-  if (active) {
-    currentSession = active;
-    return active;
-  }
-  const session = await startSession(league, null, manual);
-  await broadcastSession(session);
-  return session;
-}
-
 app.whenReady().then(async () => {
   await initStore(app.getPath("userData"));
 
@@ -312,13 +203,12 @@ app.whenReady().then(async () => {
 
   let settings = loadSettings();
   if (!settings.setupCompleted) {
-    console.log("[setup] first run — asking for league, Client.txt and contact email");
+    console.log("[setup] first run — asking for league and contact email");
     await showSetupWindow();
     // saveSettings replaces the cache, so this is whatever the user just chose (or the untouched
     // defaults if they closed the window without saving).
     settings = loadSettings();
   }
-  settings = await resolveClientTxtPath(settings);
 
   if (settings.trade2.enabled && !settings.trade2.contactEmail) {
     console.warn(
@@ -328,7 +218,7 @@ app.whenReady().then(async () => {
   }
 
   console.log(
-    `[startup] league="${settings.league}", clientTxtPath=${settings.clientTxtPath || "(not set)"}, ` +
+    `[startup] league="${settings.league}", ` +
       `trade2=${
         settings.trade2.enabled
           ? `enabled (${settings.trade2.maxSearchesPerWindow} searches / ${Math.round(
@@ -390,12 +280,7 @@ app.whenReady().then(async () => {
     poeNinja,
     trade2,
     settings,
-    getStatus: buildStatus,
-    // The cleared session is gone from the store; keeping it here would file the next captured
-    // item against a dangling sessionId. Nulling it makes ensureActiveSession() open a fresh one.
-    onHistoryCleared: () => {
-      currentSession = null;
-    }
+    getStatus: buildStatus
   });
 
   registerSettingsIpcHandlers({
@@ -429,13 +314,9 @@ app.whenReady().then(async () => {
 
   const queue = new PricingQueue(
     resolver,
-    () => currentSession?.id ?? "",
     async (item) => {
       const stored = await addPricedItem(item);
       sendToOverlay(IPC.PRICED_ITEM, stored);
-
-      const session = (await getActiveSession()) ?? currentSession;
-      if (session) await broadcastSession(session);
     },
     // Pushed whole on every transition, so the panel can show a captured item straight away rather
     // than staying blank through a trade2 lookup that can run for half a minute.
@@ -452,7 +333,7 @@ app.whenReady().then(async () => {
     console.log(
       `[capture] captured ${item.rarity} item: ${item.name}${item.stackSize > 1 ? ` x${item.stackSize}` : ""}`
     );
-    void ensureActiveSession(settings.league).then(() => queue.enqueue(item));
+    queue.enqueue(item);
   });
 
   // Held in a const rather than written inline, because the settings window rebinds these and the
@@ -465,8 +346,7 @@ app.whenReady().then(async () => {
       // Click-through and interactive looked identical, so the buttons silently stopped working.
       broadcastStatus();
     },
-    // The only thing that ever changes the panel's form. Nothing else collapses or expands it —
-    // entering a map used to, and that was removed: the panel's size is the user's business.
+    // The only thing that ever changes the panel's form — the panel's size is the user's business.
     onToggleList: () => {
       panelExpanded = !panelExpanded;
       // Opening unlocks clicks and closing locks them again, because the point of this key is to
@@ -476,16 +356,6 @@ app.whenReady().then(async () => {
       setOverlayInteractive(overlayInteractive);
       applyOverlayVisibility();
       broadcastStatus();
-    },
-    onToggleSession: async () => {
-      if (isSessionActive(currentSession)) {
-        console.log("[map] manual hotkey: ending session");
-        await endCurrentSession();
-      } else {
-        console.log("[map] manual hotkey: starting new session");
-        // Marked as a map: this is the user saying so when zone detection can't.
-        await ensureActiveSession(settings.league, true);
-      }
     },
     onForceCapture: () => clipboardWatcher.forceCapture()
   };
@@ -498,7 +368,6 @@ app.whenReady().then(async () => {
 
   applyHotkeys();
 
-  startLogWatcher(settings);
   startForegroundWatcher(settings);
 
   // The overlay stays hidden and the clipboard poll stays idle until PoE2 is detected running —
@@ -563,7 +432,6 @@ app.on("window-all-closed", () => {
 app.on("will-quit", () => {
   unregisterAllHotkeys();
   processWatcher?.stop();
-  logWatcher?.stop();
   updateChecker?.stop();
   // Without this the PowerShell helper is orphaned and keeps polling after we're gone.
   foregroundWatcher?.stop();

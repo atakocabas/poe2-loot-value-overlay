@@ -44,13 +44,12 @@ test("an item whose resolution throws is still recorded, as unpriced", async () 
     }
   } as unknown as PriceResolver;
 
-  const queue = new PricingQueue(resolver, () => "session-1", (item) => priced.push(item));
+  const queue = new PricingQueue(resolver, (item) => priced.push(item));
   queue.enqueue(makeItem("Divine Orb"));
   await new Promise((resolve) => setTimeout(resolve, 300));
 
   assert.equal(priced.length, 1, "a failed resolution must not silently drop the drop");
   assert.equal(priced[0].name, "Divine Orb");
-  assert.equal(priced[0].sessionId, "session-1");
   assert.equal(priced[0].chaosValue, null);
   assert.equal(priced[0].priceSource, "unpriced");
 });
@@ -59,14 +58,14 @@ test("a failure does not stall the items queued behind it", async () => {
   const priced: Array<Omit<PricedItem, "id">> = [];
   let calls = 0;
   const resolver = {
-    resolve: async (item: ParsedItem, sessionId: string) => {
+    resolve: async (item: ParsedItem) => {
       calls += 1;
       if (calls === 1) throw new Error("transient");
-      return { ...item, sessionId, chaosValue: 5, priceSource: "poeninja", ignoredMods: [], manualChaosValue: null };
+      return { ...item, chaosValue: 5, priceSource: "poeninja", ignoredMods: [], manualChaosValue: null };
     }
   } as unknown as PriceResolver;
 
-  const queue = new PricingQueue(resolver, () => "session-1", (item) => priced.push(item));
+  const queue = new PricingQueue(resolver, (item) => priced.push(item));
   queue.enqueue(makeItem("Divine Orb"));
   queue.enqueue(makeItem("Chaos Orb"));
   await new Promise((resolve) => setTimeout(resolve, 700));
@@ -88,9 +87,8 @@ describe("pending captures", () => {
 
   function priceable(): PriceResolver {
     return {
-      resolve: async (item: ParsedItem, sessionId: string) => ({
+      resolve: async (item: ParsedItem) => ({
         ...item,
-        sessionId,
         chaosValue: 5,
         priceSource: "poeninja",
         ignoredMods: [],
@@ -101,7 +99,7 @@ describe("pending captures", () => {
 
   test("an item is announced as queued the moment it is enqueued", () => {
     const pushes: PendingCapture[][] = [];
-    const queue = new PricingQueue(priceable(), () => "s1", () => {}, (p) => pushes.push(p));
+    const queue = new PricingQueue(priceable(), () => {}, (p) => pushes.push(p));
 
     queue.enqueue(makeItem("Doom Grip"));
 
@@ -113,18 +111,18 @@ describe("pending captures", () => {
     const pushes: PendingCapture[][] = [];
     let release: (() => void) | null = null;
     const resolver = {
-      resolve: async (item: ParsedItem, sessionId: string) => {
+      resolve: async (item: ParsedItem) => {
         await new Promise<void>((resolve) => {
           release = resolve;
         });
         return {
-          ...item, sessionId, chaosValue: 5, priceSource: "poeninja",
+          ...item, chaosValue: 5, priceSource: "poeninja",
           ignoredMods: [], manualChaosValue: null
         };
       }
     } as unknown as PriceResolver;
 
-    const queue = new PricingQueue(resolver, () => "s1", () => {}, (p) => pushes.push(p));
+    const queue = new PricingQueue(resolver, () => {}, (p) => pushes.push(p));
     queue.enqueue(makeItem("Doom Grip"));
     queue.enqueue(makeItem("Chaos Orb"));
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -143,16 +141,16 @@ describe("pending captures", () => {
   test("the stage becomes trade2 when the resolver says the search has started", async () => {
     const pushes: PendingCapture[][] = [];
     const resolver = {
-      resolve: async (item: ParsedItem, sessionId: string, onTradeSearch?: () => void) => {
+      resolve: async (item: ParsedItem, onTradeSearch?: () => void) => {
         onTradeSearch?.();
         return {
-          ...item, sessionId, chaosValue: 5, priceSource: "trade2",
+          ...item, chaosValue: 5, priceSource: "trade2",
           ignoredMods: [], manualChaosValue: null
         };
       }
     } as unknown as PriceResolver;
 
-    const queue = new PricingQueue(resolver, () => "s1", () => {}, (p) => pushes.push(p));
+    const queue = new PricingQueue(resolver, () => {}, (p) => pushes.push(p));
     queue.enqueue(makeItem("Doom Grip"));
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -172,7 +170,7 @@ describe("pending captures", () => {
       }
     } as unknown as PriceResolver;
 
-    const queue = new PricingQueue(resolver, () => "s1", () => {}, (p) => pushes.push(p));
+    const queue = new PricingQueue(resolver, () => {}, (p) => pushes.push(p));
     queue.enqueue(makeItem("Doom Grip"));
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -182,7 +180,7 @@ describe("pending captures", () => {
 
   test("every pending id is distinct, so the rows can't collide as DOM keys", async () => {
     const pushes: PendingCapture[][] = [];
-    const queue = new PricingQueue(priceable(), () => "s1", () => {}, (p) => pushes.push(p));
+    const queue = new PricingQueue(priceable(), () => {}, (p) => pushes.push(p));
 
     queue.enqueue(makeItem("Doom Grip"));
     queue.enqueue(makeItem("Doom Grip"));
@@ -194,7 +192,7 @@ describe("pending captures", () => {
 
   test("constructing without the callback still prices normally", async () => {
     const priced: Array<Omit<PricedItem, "id">> = [];
-    const queue = new PricingQueue(priceable(), () => "s1", (item) => priced.push(item));
+    const queue = new PricingQueue(priceable(), (item) => priced.push(item));
 
     queue.enqueue(makeItem("Chaos Orb"));
     await new Promise((resolve) => setTimeout(resolve, 20));

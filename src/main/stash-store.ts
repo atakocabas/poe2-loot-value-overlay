@@ -7,12 +7,11 @@ import type { StashSnapshot } from "../shared/stash-tally";
  * user opened hours ago.
  *
  * **This is deliberately not part of `loot-cache.json`, and a snapshot is deliberately not a
- * `PricedItem`.** A stash stack is not a drop: it has no `sessionId`, it was never captured in a map,
- * and it is a *snapshot* rather than an event — read the same tab twice and you have one stash, not
- * two. Filing it with the loot would put it in `allItems`, fold it into `groupItems`, sum it into
- * whichever map happened to be running via `recomputeSessionTotal`, and write it to the CSV export.
- * Separate files mean none of that can happen by accident, in either direction: `clearHistory()`
- * cannot wipe a tally and `clearTally()` cannot wipe the loot history.
+ * `PricedItem`.** A stash stack is not a drop: it was never captured, and it is a *snapshot* rather
+ * than an event — read the same tab twice and you have one stash, not two. Filing it with the loot
+ * would put it in `allItems`, fold it into `groupItems`, and write it to the CSV export. Separate
+ * files mean none of that can happen by accident, in either direction: `clearHistory()` cannot wipe
+ * a tally and `clearTally()` cannot wipe the loot history.
  */
 interface StashStoreData {
   /** Where the tally was started. Null once cleared, or before the first read. */

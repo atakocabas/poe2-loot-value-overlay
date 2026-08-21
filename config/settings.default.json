@@ -1,6 +1,5 @@
 {
   "league": "Runes of Aldur",
-  "clientTxtPath": "",
   "setupCompleted": false,
   "poe2ProcessNames": [
     "PathOfExileSteam.exe",
@@ -9,11 +8,6 @@
     "PathOfExile_x64.exe",
     "PathOfExile_x64Steam.exe"
   ],
-  "logWatch": {
-    "pollIntervalMs": 1000,
-    "backfillBytes": 65536,
-    "debugLogging": false
-  },
   "overlay": {
     "hideWhenGameUnfocused": true,
     "focusPollIntervalMs": 400,
@@ -27,7 +21,6 @@
   "hotkeys": {
     "toggleOverlay": "CommandOrControl+Shift+O",
     "toggleList": "CommandOrControl+Shift+L",
-    "toggleSession": "CommandOrControl+Shift+M",
     "forceCapture": "CommandOrControl+`"
   },
   "display": {

@@ -5,12 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A Windows Electron overlay for Path of Exile 2 that prices loot as the player picks it up (via
-PoE2's native Ctrl+C "copy item as text") and groups it into per-map "sessions" with running
-totals. Not affiliated with or endorsed by Grinding Gear Games.
+PoE2's native Ctrl+C "copy item as text"). Not affiliated with or endorsed by Grinding Gear Games.
 
-It puts **one** panel on screen, holding **one** list: a header with the current map's running
-total and price freshness, then every item ever captured, newest first, searchable/sortable/
-filterable, with per-row Edit (reprice, manual price) and a single Clear.
+It puts **one** panel on screen, holding **one** list: a header with price freshness, then every
+item ever captured, newest first, searchable/sortable/filterable, with per-row Edit (reprice,
+manual price) and a single Clear.
 
 ## Commands
 
@@ -72,8 +71,8 @@ runner in CI has those privileges, so this is a local-only obstacle.
 every PR into `main` and on `main` itself. The push half is **not** redundant with the release
 workflow below: that one skips its whole body, tests included, whenever the version has already been
 released — the common case — so without it a merge that doesn't bump the version would run nothing.
-Both workflows are on `windows-latest`, because `poe2-install.test.ts` and `settings.test.ts` assert
-against Windows paths that the code under test builds with `path.join`.
+Both workflows are on `windows-latest`, because `settings.test.ts` asserts against Windows paths that
+the code under test builds with `path.join`.
 
 **Releases are cut by bumping the version, not by merging.** `.github/workflows/release.yml` runs on
 every push to `main`, but its first step asks GitHub whether `v{package.json version}` has already
@@ -122,62 +121,28 @@ wipe the reprice status they were reading.
 **The panel has two forms, and the resting one is the heads-up display.** Which is showing is the
 single biggest thing to know about the renderer:
 
-- **Minimal — the default, everywhere.** The **last drop** (`MINIMAL_ROWS`, currently 1), anything
-  still being priced, and the map total *if* a map is running. Everything you can't use while playing
-  is hidden by the `#panel.minimal` block in style.css — filters, the footer buttons, the disclaimer, the
-  per-row Edit button — along with what you already know: which map you're in, and how old the prices
-  are. Roughly 70-90px tall against ~390px expanded. `#panel` **ships with the class**, because this
-  is the resting state and `setMinimalMode` starts from `true` and early-returns when unchanged.
+- **Minimal — the default, everywhere.** The **last drop** (`MINIMAL_ROWS`, currently 1) and anything
+  still being priced. Everything you can't use while playing is hidden by the `#panel.minimal` block
+  in style.css — the whole header, filters, the footer buttons, the disclaimer, the per-row Edit
+  button. Roughly 70-90px tall against ~390px expanded. `#panel` **ships with the class**, because
+  this is the resting state and `setMinimalMode` starts from `true` and early-returns when unchanged.
 - **Expanded — the `toggleList` hotkey, and nothing else.** The whole scrolling history, filters,
   footer, Edit. The handler in `index.ts` also flips `overlayInteractive`, because the point of the
   key is reaching those Edit buttons and leaving the two separate made it two keypresses every time.
-  **Nothing else in the app changes the panel's form** — entering a map briefly did, via a
-  `collapsePanel()` helper, and it was removed. The size is the user's business.
+  **Nothing else in the app changes the panel's form.** The size is the user's business.
 
-**Two things that used to be one.** `minimalMode` and the map total were both driven by
-`applyMapState()`; they came apart when the form became a keypress:
+`setMinimalMode()` is called from `applyStatus()` off `OverlayStatus.expanded`, with **no grace and
+no re-check** — a keypress is deliberate and should land immediately.
 
-- `applyMapState()` now owns **only** `#session-total-line`, and keeps `MAP_END_GRACE_MS` — it reacts
-  to events, and chaining maps arrives as `SESSION_UPDATE(ended)` then `SESSION_UPDATE(new)` with
-  real awaits between them, so without the grace the total blinks on every transition.
-- `setMinimalMode()` is called from `applyStatus()` off `OverlayStatus.expanded`, with **no grace and
-  no re-check** — a keypress is deliberate and should land immediately.
-
-`#list-empty` is deliberately *not* in the `#panel.minimal` hide list. Minimal is now what a fresh
+`#list-empty` is deliberately *not* in the `#panel.minimal` hide list. Minimal is what a fresh
 install opens in, and hiding it left an empty bordered box with nothing to say Ctrl+C is what fills
 it; `syncEmptyNote()` already hides the note whenever there is a row.
 
-The map test is `isMapSession()` (`shared/session.ts`), duplicated inline in the renderer as
-`isInMap()` for the usual plain-`<script>` reason. It governs the total only. Rules:
-
-- **An active session is not the same thing as a map**, and conflating them was a real bug. Every
-  capture calls `ensureActiveSession()`, which opens a session so the item has somewhere to be filed
-  — including when you Ctrl+C in a hideout. Testing `endedAt` alone therefore collapsed the panel to
-  its one-row in-map form on any capture outside a map, until the next zone change closed it. A
-  session counts as a map when it has a `zoneName` (it came from entering one) **or** `manual` is set
-  (the toggle-session hotkey, i.e. the user saying so). `Session.manual` is optional because nothing
-  migrates `loot-cache.json`; absent reads as false, which is the safe direction.
-- **Minimal mode bypasses the filters entirely** (`minimalGroups()`, not `visibleGroups()`).
-  `searchText`, `unpricedOnly` and `sortMode` persist while their controls are hidden, so a search
-  left over from the last time the list was open would silently filter the one row away with nothing
-  on screen to explain why. Minimal always means "the newest drop"; the filter state is untouched and
-  returns with the full panel.
-- **The hideout flag is not part of it.** A session opened by the toggle-session hotkey has
-  `zoneName: null` and can be running while the player stands in their hideout, so folding
-  `lastZoneIsHideout` in would close a map the user opened by hand. It refines the *label* for the
-  inactive case — hideout versus atlas — and that is all.
-- **`applyMapState()` shows immediately and hides on a delay**, re-checking the condition when the
-  timer fires, exactly like `applyOverlayVisibility()` in the main process. See the grace note above
-  for why the *form* deliberately has no equivalent.
-- **`#session-total-line` ships `class="hidden"` and is revealed**, like `#rate-status`. Out of a map
-  the first session the renderer sees is the *previous, ended* one, so shipping it visible would
-  flash a finished map's total on every launch. Its visibility is toggled with `.hidden`, a bare
-  `display: none` at specificity 0-1-0 — giving that element a `display` property in an id-keyed
-  rule would silently disable the whole thing.
-
-This also fixed a real disagreement: `renderSessionTotal` tested only that a session *existed* while
-`renderSessionStatus` tested `endedAt`, so a finished map's final figure sat in the header
-indefinitely, reading as a total that was still climbing.
+**Minimal mode bypasses the filters entirely** (`minimalGroups()`, not `visibleGroups()`).
+`searchText`, `unpricedOnly` and `sortMode` persist while their controls are hidden, so a search left
+over from the last time the list was open would silently filter the one row away with nothing on
+screen to explain why. Minimal always means "the newest drop"; the filter state is untouched and
+returns with the full panel.
 
 **Pending captures are the one thing rendered outside that list**, in `#pending-list` directly above
 it, from `pendingCaptures` — and they are deliberately **not** folded into `allItems`. Four things
@@ -226,9 +191,9 @@ the way a second full-screen sheet would.
 **They are two windows because the two halves of the configuration are applied in opposite ways**,
 and that line is the whole reason for the split:
 
-- **Setup** (`league`, `clientTxtPath`, `trade2.contactEmail`) **cannot ship as working defaults** —
-  the league rotates every few months, and the other two belong to the machine and the person
-  running it. Before it existed the app shipped one contributor's email in the `User-Agent` of every
+- **Setup** (`league`, `trade2.contactEmail`) **cannot ship as working defaults** — the league
+  rotates every few months, and the contact address belongs to the person running it. Before it
+  existed the app shipped one contributor's email in the `User-Agent` of every
   user's GGG requests. Saving **relaunches the app**, because the league is captured in closures in
   `index.ts` and again in each of `PoeNinjaClient`/`Trade2Client`/`CurrencyExchangeClient`, so
   applying it live would take in some places and not others.
@@ -420,52 +385,7 @@ Data flow, item capture to UI:
    differences from the defences: the damage line carries **one range per element**, comma separated,
    so it is scanned for `N-M` pairs and averaged rather than read with a single capture; and neither
    number is a filter on its own — their product is, as `equipment_filters.edps`.
-3. `ClientLogWatcher` (`src/main/logwatch.ts`) tails `Client.txt` for
-   `[SCENE] Set Source [ZoneName]` lines (PoE2's actual zone-transition format — not PoE1's "You
-   have entered X.") to auto start/end map sessions: entering a Hideout or the Atlas screen ends
-   the current session, anything else starts a new one. It's a heuristic (campaign zones mid-run
-   aren't distinguished), and skips the `(null)`/`(unknown)` placeholder lines that appear during
-   loading transitions. Reads incrementally from the last known file offset, so it scales to
-   Client.txt files of hundreds of MB without re-reading from the start.
-
-   Two Windows behaviours dictate how it reads, both measured against a live 283 MB Client.txt
-   while PoE2 held it open — **don't "simplify" either one away**:
-   - `fs.stat()` reports a **stale size** for a file another process has open (it lagged the real
-     length by ~250 bytes). So the reported size never bounds a read; `readSync`'s return value is
-     the only trustworthy number and is what advances the offset. Size is consulted *solely* to
-     detect truncation/rotation.
-   - `fs.watch` doesn't reliably fire for buffered appends to that same open file, so a
-     `logWatch.pollIntervalMs` interval is the real trigger and `fs.watch` is only an extra nudge.
-
-   A trailing partial line is carried in memory (`pendingPartial`) rather than re-read, so a zone
-   line straddling a read boundary is still seen exactly once — it used to be dropped silently.
-   On start it backfills `logWatch.backfillBytes` to seed the *current* zone (at most one event, so
-   history is never replayed as sessions). `logWatch.debugLogging` turns on per-poll byte/line
-   tracing, which is the first thing to reach for when detection looks dead.
-
-   **It is deliberately not gated behind `ProcessWatcher`.** Tailing a file costs nothing while the
-   game is closed, and routing its start through process detection meant one stale executable name
-   silently disabled map detection completely — which is exactly what happened once. Process
-   detection governs overlay visibility and the clipboard watcher only.
-
-   *Which* file it tails is settled by `resolveClientTxtPath()` in `index.ts` on top of
-   `detectClientTxtPath()` (`src/main/poe2-install.ts`): Steam's install path out of the registry
-   (`HKCU\Software\Valve\Steam` → `SteamPath`, then `HKLM\...\WOW6432Node` → `InstallPath`), the
-   library roots out of `steamapps/libraryfolders.vdf`, then `steamapps/common/Path of Exile 2/
-   logs/Client.txt` under each. PoE2's app id (**`2694490`**) only *orders* that search — the file
-   existing on disk is what decides, so a stale or hand-edited vdf can't veto a real install. Two
-   details are measured, not assumed: `SteamPath` comes back lowercased with forward slashes, and
-   library paths in the vdf have their backslashes doubled. Detection also re-runs when a
-   *configured* path has stopped existing, which is a player moving the game to another drive —
-   otherwise map detection dies silently behind a path that looks perfectly fine in settings.json.
-   Non-Steam installs fall to the setup window's Browse button; every failure here returns null
-   rather than throwing, because "not found" is the ordinary case.
-
-   `startLogWatcher()` is split out of the boot sequence and stops any existing watcher first, so a
-   path chosen during first-run setup starts tailing without a restart. `lastZoneName` lives inside
-   it and so resets per watcher — correct, since a new watcher backfills and re-announces the
-   current zone.
-4. `PriceResolver` (`src/pricing/price-resolver.ts`) tries `PoeNinjaClient` by item name first,
+3. `PriceResolver` (`src/pricing/price-resolver.ts`) tries `PoeNinjaClient` by item name first,
    then `CurrencyExchangeClient`, then falls back to `Trade2Client` (mod-aware search) for unpriced
    **Rares** — otherwise the item is stored with `priceSource: "unpriced"` and a logged reason.
 
@@ -522,7 +442,7 @@ Data flow, item capture to UI:
      prices" stay distinguishable. A failure is reported in the button's own label, like the Clear
      button's confirm step: this window is frameless and non-focusable, so a native dialog can end up
      behind the game.
-5. `PricingQueue` (`src/pricing/queue.ts`) throttles resolution to one item per 250ms and persists
+4. `PricingQueue` (`src/pricing/queue.ts`) throttles resolution to one item per 250ms and persists
    the result via `db/store.ts`, then pushes it to the renderer over IPC.
 
    It also **owns the pending list** — everything captured but not yet priced — and pushes it whole
@@ -539,17 +459,20 @@ Data flow, item capture to UI:
 `app.getPath("userData")`) — not sqlite or lowdb. Both were tried and abandoned: `better-sqlite3`
 needs native build tools the dev environment doesn't have, and `lowdb` is pure ESM which can't be
 loaded from code compiled to CommonJS (`tsconfig.json` targets `module: "commonjs"`, and TS
-downlevels dynamic `import()` to `require()` under that setting). Every session's
-`totalChaosValue` is fully recomputed from its items (`recomputeSessionTotal`) rather than
-incrementally maintained, so edits/repricing/manual overrides can't drift the total out of sync.
-`effectiveChaosValue(item)` = `item.manualChaosValue ?? item.chaosValue` is the single source of
-truth for "what is this item actually worth" — always read through it, never `chaosValue` directly.
+downlevels dynamic `import()` to `require()` under that setting). The store holds one flat `items`
+array and nothing else. `effectiveChaosValue(item)` = `item.manualChaosValue ?? item.chaosValue` is
+the single source of truth for "what is this item actually worth" — always read through it, never
+`chaosValue` directly.
+
+A `loot-cache.json` written before map sessions were removed still carries a top-level `sessions`
+array and a `sessionId` on every item. Nothing migrates it and nothing reads them; the extra keys
+ride along unread, which is how every other dropped field is handled here. Don't write migration
+code for it.
 
 **IPC surface** (`src/shared/ipc-channels.ts`, `src/main/ipc.ts`, `src/preload/index.ts`): pushes
-(`PRICED_ITEM`, `SESSION_UPDATE`, `ZONE_STATUS`, `OVERLAY_STATUS`) go main -> renderer as items
-resolve and totals change; pulls (`GET_STATUS`, `GET_HISTORY`, `GET_ALL_ITEMS`, `CLEAR_HISTORY`,
-`GET_EDITOR_ROWS`, `REPRICE_ITEM`, `SET_MANUAL_PRICE`, `REFRESH_PRICES`) are renderer-invoked
-`ipcMain.handle` calls.
+(`PRICED_ITEM`, `PRICING_STATUS`, `OVERLAY_STATUS`) go main -> renderer as items resolve; pulls
+(`GET_STATUS`, `GET_ALL_ITEMS`, `CLEAR_HISTORY`, `GET_EDITOR_ROWS`, `REPRICE_ITEM`,
+`SET_MANUAL_PRICE`, `REFRESH_PRICES`) are renderer-invoked `ipcMain.handle` calls.
 `REPRICE_ITEM` always persists the caller's `ignoredMods`, `modFilters`, `pseudoFilters` and
 `mapFilters` even if trade2 is unavailable or finds nothing, so the tuning the user just did survives
 across repeated attempts. `GET_EDITOR_ROWS` supplies the editor rows that aren't mod lines — derived
@@ -560,20 +483,19 @@ carries its contributors' individual amounts so unticking one updates the total 
 silently disagree once tuned. `modFloors` rides along for the same reason and one sharper one: it is
 what the mod rows' min boxes prefill from, so without it a Reprice with untouched boxes would send the
 item's own rolls back as bounds and undo `searchFloor()` entirely. Both editing handlers return
-the stored item *and* its recomputed session, which is what lets the renderer fold the result back
-into `allItems` instead of re-fetching the list.
+the stored item, which is what lets the renderer fold the result back into `allItems` instead of
+re-fetching the list.
 
-The setup window's three pulls (`GET_SETUP_CONFIG`, `BROWSE_CLIENT_TXT`, `SAVE_SETUP_CONFIG`) are
-registered by `registerSetupIpcHandlers()` in `src/main/setup-window.ts`, not by `registerIpcHandlers`
-— see the setup window above for why they can't share a call. The settings window's two
+The setup window's two pulls (`GET_SETUP_CONFIG`, `SAVE_SETUP_CONFIG`) are registered by
+`registerSetupIpcHandlers()` in `src/main/setup-window.ts`, not by `registerIpcHandlers` — see the
+setup window above for why they can't share a call. The settings window's two
 (`GET_SETTINGS_CONFIG`, `SAVE_SETTINGS_CONFIG`) come from `registerSettingsIpcHandlers()` in
-`src/main/settings-window.ts`. All five ride the **same preload**, which exposes them as
+`src/main/settings-window.ts`. All four ride the **same preload**, which exposes them as
 `window.poe2Setup` and `window.poe2Settings` alongside the overlay's `window.poe2Overlay`; a second
-preload would duplicate the wiring for five calls the panel never makes. They stay two bridges rather
+preload would duplicate the wiring for four calls the panel never makes. They stay two bridges rather
 than one because the windows apply their values in opposite ways, and one object offering both would
 invite calling them together. Both save handlers take a callback — `onSetupSaved`, `onSettingsSaved`
-— for the same reason `CLEAR_HISTORY` takes `onHistoryCleared`: the handler must not reach back into
-`index.ts`.
+— so the handler never reaches back into `index.ts`.
 
 `SAVE_SETTINGS_CONFIG` **validates and probes before it writes anything**. `validateAccelerator` and
 `findDuplicateAccelerators` (`shared/accelerator.ts`, pure and unit-tested) reject a combo that could
@@ -583,19 +505,12 @@ then reports what the OS won't hand over, which *is* saved: the user may well wa
 holds it is closed. An empty accelerator is valid everywhere and means **disabled**.
 
 `GET_ALL_ITEMS` returns every item, unfiltered — the panel does its own grouping, sorting and
-filtering client-side. `GET_HISTORY` survives solely so the header can name the current map on load
-and decide which of the panel's two states to open in; nothing else is scoped to a session any more.
-Note what it returns out of a map: the newest session, which is an **ended** one — the out-of-map
-state has to be right from that, not only after a transition.
+filtering client-side.
 
 `OVERLAY_STATUS` carries the panel-wide state that isn't per-item — poe.ninja conversion rates, how
-old the prices are, whether the overlay currently accepts clicks, and the panel's size — so the
-renderer never has to infer any of it. `GET_STATUS` is the matching pull for initial load.
-
-Handlers that mutate state the main process also holds take a callback rather than reaching back
-into `index.ts`: `CLEAR_HISTORY` takes `onHistoryCleared` so `currentSession` can be nulled. Without
-that, the next captured item is filed against a `sessionId` no session has, and
-`recomputeSessionTotal()` skips it in silence.
+old the prices are, whether the overlay currently accepts clicks, which of the panel's two forms it
+is in, and the panel's size — so the renderer never has to infer any of it. `GET_STATUS` is the
+matching pull for initial load.
 
 **`CurrencyExchangeClient`** (`src/pricing/currency-exchange-client.ts`) reads GGG's public,
 unauthenticated PoE2 Currency Exchange feed. Three things about it are measured behaviour, not
@@ -1088,12 +1003,9 @@ Practically:
   optimistic seller, not a market, and no single number can say that. The price stays the lower one
   because a floor is what you can sell into today.
 
-  Two things follow, both deliberate. **The map total sums the floors**, since `chaosValue` is what
-  `recomputeSessionTotal` reads — so the headline on a row and the total in the header agree, which
-  they would not if the row led with one figure and the total summed another. And
-  **`tradeMedianChaosValue` annotates a price, it never is one**: nothing should read it through
-  `effectiveChaosValue` or sum it. It sits next to `manualChaosValue` in `PricedItem` and does the
-  opposite thing — that one *replaces* the price.
+  One thing follows, deliberately: **`tradeMedianChaosValue` annotates a price, it never is one**.
+  Nothing should read it through `effectiveChaosValue` or sum it. It sits next to `manualChaosValue`
+  in `PricedItem` and does the opposite thing — that one *replaces* the price.
 
   Don't collapse this back to a single number on the strength of "the prices look too low", because
   low is the specification; and don't promote the median back to the price. Either would change what
@@ -1154,12 +1066,11 @@ runtime — it self-heals rather than needing a manual edit. When changing the `
 still update **both** `config/settings.default.json` and the type, so the merge has a default to
 fall back to.
 
-**Three keys ship blank or generic on purpose and must stay that way**, because the defaults file is
+**Two keys ship blank or generic on purpose and must stay that way**, because the defaults file is
 public and installed on other people's machines: `trade2.contactEmail` (`""` — it goes in the
 `User-Agent` of every GGG request, so a real address here makes every user's traffic identify as
-whoever committed it), `clientTxtPath` (`""` — machine-specific, detected or picked instead), and
-`league` (a plausible current league, since it's only ever a prefill the user confirms). Don't
-commit a working value for any of them. `setupCompleted` defaults to `false`, which is what makes
+whoever committed it) and `league` (a plausible current league, since it's only ever a prefill the
+user confirms). Don't commit a working value for either. `setupCompleted` defaults to `false`, which is what makes
 the setup window appear once — including for installs upgrading past the key, since
 `mergeWithDefaults` fills it in.
 
@@ -1215,8 +1126,8 @@ rather than a second set of constants in the renderer.
 - `#update-status` being hidden in the panel's minimal form is deliberate, like the rest of that
   list: it isn't actionable while you're playing, and the tray entry is the copy that persists. It
   also keeps the only clickable thing in the header off screen while the panel is click-through.
-- **One list, one window, one Clear.** There is no live feed, no History view, no session panel and
-  no per-map drill-down; all of that was removed on purpose, because the same drop showed up in
+- **One list, one window, one Clear.** There is no live feed, no History view and no per-map
+  drill-down; all of that was removed on purpose, because the same drop showed up in
   three places at once. Don't add a second list, a second view mode, or a second **overlay** window —
   grow the filters on the one list instead. Size and place it with `overlay.panel` if it's too small
   or in the way — which the settings window now does, so "make the panel bigger" and "move it off my
@@ -1227,13 +1138,8 @@ rather than a second set of constants in the renderer.
 - Pending rows living outside `#item-list`, and outside `allItems`, is not a layout accident — see
   the note above. They are also **not filtered or sorted**: they're transient, few, and ordered by
   the queue they're actually in. Don't "fix" that by routing them through `visibleGroups()`.
-- The list spans **every map ever recorded**, not the current one. A new map resets the header's
-  running total and leaves the list alone; that's the design, not a failure to clear. It grows
-  without bound until the user presses Clear.
-- The map total **disappearing** the moment a map ends is the feature, not a lost figure — there are
-  two panel states and that line belongs to one of them. Don't "improve" it by keeping the finished
-  map's total up as "Last map: N": the total would then be on screen almost always, which is the
-  behaviour this replaced.
+- The list spans **everything ever captured**, and grows without bound until the user presses Clear.
+  That's the design, not a failure to clear.
 - The heads-up form showing **one** drop is the chosen number, not a placeholder. `MINIMAL_ROWS` is a
   renderer constant precisely so it stays cheap to retune; `overlay.minimalRows` in the settings
   window is the obvious home if it ever needs to be per-user.
@@ -1358,18 +1264,15 @@ rather than a second set of constants in the renderer.
 - Partial coverage in `exchange-metadata-ids.ts` is deliberate: an unmapped name returns null and
   the item falls through to unpriced, whereas a wrong entry silently reports a different item's
   price. Omit ids you cannot verify.
-- The map-session boundary heuristic (Hideout/Atlas = end, anything else = start) can misfire on
-  campaign/town zones — this is a documented tradeoff, not a parsing bug, unless given a better
-  signal to key off.
-- `ClientLogWatcher` polling on an interval and ignoring the size `fs.stat()` reports is not
-  redundancy to trim — both work around measured Windows behaviour (see the data-flow section).
-- `logwatch.ts` not being started by `ProcessWatcher`, unlike the clipboard watcher, is deliberate.
-- Steam detection shelling out to `reg query` rather than reading the registry through a native
-  module is the same call as `ProcessWatcher` using `tasklist` — see the non-goal above about native
-  dependencies. One registry read also doesn't justify the long-lived PowerShell helper
-  `ForegroundWatcher` needs.
+- **There is no map detection, and adding it back is not a fix.** `Client.txt` tailing, zone
+  classification, per-map sessions and the header's map total were all removed together, along with
+  the Steam install detection that existed only to find that file. The zone heuristic
+  (Hideout/Atlas = end, anything else = start) misfired on campaign and town zones, it forced a
+  machine-specific path into first-run setup that nothing else needed, and the per-map slice was a
+  second way of looking at a list that already spans everything. Don't reintroduce `sessionId`,
+  a `sessions` array, or a running per-map total.
 - The setup window saving via a **restart** rather than applying values live is deliberate, and so is
-  it covering only three settings. Don't "unify" it with the settings window: the restart is the
+  it covering only two settings. Don't "unify" it with the settings window: the restart is the
   honest way to apply a league three clients captured at construction, and a single dialog would have
   to restart for every change or lie about which ones need it.
 - The settings window covering **only** hotkeys, the overlay block, the display currency and the

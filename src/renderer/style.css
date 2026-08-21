@@ -60,12 +60,11 @@ body {
 }
 
 /*
- * The heads-up form, and the panel's resting state: the map total, anything still being priced, and
- * the last drop.
+ * The heads-up form, and the panel's resting state: anything still being priced, and the last drop.
  *
  * Everything hidden below is something you can't use while playing — filters, Export/Clear, the
- * disclaimer — or something you already know: which map you're in, and how old the prices are. The
- * toggle-list hotkey brings it all back, which is when repricing and editing actually happen.
+ * disclaimer — or something you already know, like how old the prices are. The toggle-list hotkey
+ * brings it all back, which is when repricing and editing actually happen.
  *
  * `#list-empty` is deliberately **not** hidden: this is now the state a fresh install opens in, and
  * hiding it left an empty bordered box with nothing to say that Ctrl+C is what fills it.
@@ -74,26 +73,11 @@ body {
  * Purely a state class, applied by `setMinimalMode`. Nothing here is toggled per element, so the two
  * forms can't drift apart one rule at a time.
  */
-#panel.minimal #session-status,
-#panel.minimal #price-status,
-#panel.minimal #rate-status,
-#panel.minimal #update-status,
+#panel.minimal #panel-header,
 #panel.minimal #list-filters,
 #panel.minimal #panel-footer,
 #panel.minimal #disclaimer {
   display: none;
-}
-
-/* The header's only remaining line, so it can carry the weight the whole block used to. */
-#panel.minimal #session-total-line {
-  font-size: 15px;
-}
-
-/* Nothing below it to divide from — the rule would be the panel's bottom edge. */
-#panel.minimal #panel-header {
-  border-bottom: none;
-  padding-bottom: 0;
-  margin-bottom: 4px;
 }
 
 /*
@@ -110,41 +94,6 @@ body {
  */
 #panel.minimal #item-list {
   flex: none;
-}
-
-/*
- * Collapses to zero height on its own when #session-total-line is hidden, which is what makes the
- * out-of-map state cost nothing — so there is no rule here for the empty case.
- */
-#panel-header-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  font-weight: 600;
-}
-
-/*
- * #session-total-line is toggled with `.hidden`, which is a bare `display: none` at specificity
- * 0-1-0. Do NOT give this element a `display` property in an id-keyed rule — it would win, and the
- * in-map/out-of-map toggle would stop working with nothing to show for it.
- */
-
-#session-status {
-  margin-top: 3px;
-  font-size: 11px;
-  font-weight: normal;
-  opacity: 0.7;
-}
-
-#session-status.active {
-  color: #8fd3a0;
-  opacity: 1;
-}
-
-#session-status.hideout {
-  color: #8fb8d3;
-  opacity: 1;
 }
 
 #price-status {
