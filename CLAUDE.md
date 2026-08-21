@@ -16,7 +16,7 @@ manual price) and a single Clear.
 ```bash
 npm run dev       # build, run, and restart the app on every change — the iterative loop
 npm run build     # tsc compile (src -> dist) + copy renderer assets + draw the app icons
-npm test          # npm run build && node --test dist/test/*.test.js  (484 tests, ~2s after the build)
+npm test          # npm run build && node --test dist/test/*.test.js  (506 tests, ~2s after the build)
 npm run watch     # tsc --watch alone: type-checking with no rebuild or restart loop
 npm start         # npm run build && electron .
 npm run package   # npm run build && electron-builder --win --publish=never -> release/

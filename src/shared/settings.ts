@@ -186,12 +186,13 @@ export interface Settings {
      * winning rung. The worst ratio is therefore a lookup that hits on its first rung — 2 requests
      * for 1 search — and it improves from there, so 2:1 is the safe number to size by.
      *
-     * At the default of 12: 24 of GGG's 30 requests, leaving a fifth of the bucket spare. That spare
+     * At the default of 8: 16 of GGG's 30 requests, leaving about half the bucket spare. That spare
      * is not slack to reclaim — the limit is per **IP**, not per app, so a second copy of this
      * overlay or any other trade tool on the same connection spends the same bucket, and the
-     * one-off `/data/stats` fetch comes out of it too. Raising this to 15 would sit exactly on the
-     * ceiling and make an unrelated tool's single request the thing that triggers a 30-minute
-     * blackout.
+     * one-off `/data/stats` fetch comes out of it too. It shipped at 12 — 24 of the 30, four fifths
+     * of the bucket — until that headroom was judged too thin to absorb another tool on the same
+     * connection. 15 would sit exactly on the ceiling and make an unrelated tool's single request
+     * the thing that triggers a 30-minute blackout.
      */
     maxSearchesPerWindow: number;
     /** The rolling window `maxSearchesPerWindow` is counted over. Matches GGG's 300s bucket. */
@@ -200,14 +201,15 @@ export interface Settings {
      * A second, much longer budget, counted the same way and enforced alongside the short one.
      *
      * GGG's `600:21600:3600` bucket is 600 requests per **6 hours**, and exceeding it is an
-     * hour-long lockout — by far the worst penalty on the list. The short window alone permits 10
-     * searches per 5 minutes, which is ~240 requests an hour sustained, so a long mapping session
-     * spending the budget continuously would breach the 6-hour ceiling after roughly two and a half
-     * hours. Tuning the *short* window down to prevent that would have throttled the ordinary case —
-     * a burst of drops in one map — to guard against something only hours of play reach.
+     * hour-long lockout — by far the worst penalty on the list. The short window alone permits 8
+     * searches per 5 minutes, which is ~192 requests an hour sustained, so a long mapping session
+     * spending the budget continuously would breach the 6-hour ceiling after roughly three hours.
+     * Tuning the *short* window down to prevent that would have throttled the ordinary case — a
+     * burst of drops in one map — to guard against something only hours of play reach.
      *
-     * The default is 240 searches, i.e. at most ~480 of GGG's 600 requests, leaving room for the
-     * one-off `/data/stats` fetch and for anything else on the machine using the trade API.
+     * The default is 160 searches, i.e. at most ~320 of GGG's 600 requests — a little over half the
+     * bucket, leaving room for the one-off `/data/stats` fetch and for anything else on the machine
+     * using the trade API.
      */
     maxSearchesPerLongWindow: number;
     /** The rolling window `maxSearchesPerLongWindow` is counted over. Matches GGG's 21600s bucket. */
@@ -217,13 +219,26 @@ export interface Settings {
      * buckets — the budget above counts searches, while the limits count requests.
      *
      * A lookup is one budgeted search plus an **unbudgeted** fetch of the winning rung, so a full
-     * burst of 10 searches is up to 20 requests. Against `15:60:300` — 15 requests a minute, 5
-     * minutes of lockout — 5s spacing packs those 20 into 45 seconds and breaches it. 10s spreads
-     * the same 10 searches over 90 seconds, about 13 requests in any minute, and costs nothing:
-     * `maxSearchesPerWindow` over `windowMs` is the real ceiling either way, and a lone rare drop
-     * waits not at all because there is no previous search to be spaced from.
+     * burst of 8 searches is up to 16 requests. Against `15:60:300` — 15 requests a minute, 5
+     * minutes of lockout — 5s spacing packs those 16 into 40 seconds and breaches it. The default of
+     * 15s caps any 60-second stretch at 4 searches and ~8 requests, a little over half that limit,
+     * and costs nothing: `maxSearchesPerWindow` over `windowMs` is the real ceiling either way, and
+     * a lone rare drop waits not at all because there is no previous search to be spaced from.
      */
     minSearchIntervalMs: number;
+    /**
+     * A migration marker, not a preference — the same mechanism as `listingStatusMigrated` below,
+     * for the three budget keys above.
+     *
+     * `mergeWithDefaults` only fills in keys that are *missing*, so lowering the shipped budget from
+     * 12/240/10s to 8/160/15s reached new installs and nobody else: an existing settings.json would
+     * have gone on spending four fifths of GGG's per-IP buckets indefinitely, with nothing on screen
+     * to say so. `adoptSearchBudgetDefaults` (`main/settings.ts`) rewrites exactly those three old
+     * shipped values once and stamps this, so a budget tuned by hand is never overridden. Defaults
+     * to `false` precisely so old installs migrate; a fresh one already holds the new values and
+     * the fold only stamps the marker.
+     */
+    searchBudgetMigrated: boolean;
     /**
      * How many of the **cheapest** price-sorted listings the price is taken from (see
      * `priceSample`). Capped at 10 by GGG's fetch endpoint, which rejects longer id lists outright.

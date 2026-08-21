@@ -120,6 +120,53 @@ export function adoptListingThresholdDefault(settings: Settings, defaults: Setti
 }
 
 /**
+ * The old shipped trade2 search budget. See `adoptSearchBudgetDefaults`.
+ *
+ * Literals rather than a lookup into git history, and named here for the same reason
+ * `LEGACY_LISTING_THRESHOLD` is: they are the only values that fold may touch.
+ */
+const LEGACY_SEARCH_BUDGET = {
+  maxSearchesPerWindow: 12,
+  maxSearchesPerLongWindow: 240,
+  minSearchIntervalMs: 10000
+} as const;
+
+/**
+ * Takes an install still carrying the old shipped trade2 search budget to the current one, once.
+ *
+ * The third fold of this shape, for the reason the two above already give: `mergeWithDefaults` fills
+ * in *missing* keys only, so lowering the shipped budget from 12 searches per 5 minutes / 240 per 6
+ * hours / 10s spacing to 8 / 160 / 15s reached new installs and nobody else. What that leaves behind
+ * is invisible from inside the app — an existing settings.json goes on spending four fifths of GGG's
+ * per-IP buckets, every lookup succeeds, and nothing looks wrong until another trade tool on the
+ * same connection tips a bucket over and the whole IP is locked out for half an hour.
+ *
+ * Each key is rewritten only when it holds exactly its own old shipped value, and independently of
+ * the other two: none of the three has a UI, so the shipped value is the one an install can be
+ * carrying without anyone having chosen it, and someone who hand-tuned one of them keeps it while
+ * the rest still migrate. The targets come from `defaults` rather than a second set of literals, so
+ * the fold cannot drift from the file it exists to adopt, and the marker is stamped either way so
+ * this runs exactly once.
+ */
+export function adoptSearchBudgetDefaults(settings: Settings, defaults: Settings): Settings {
+  if (settings.trade2.searchBudgetMigrated) return settings;
+
+  const adopt = (key: keyof typeof LEGACY_SEARCH_BUDGET): number =>
+    settings.trade2[key] === LEGACY_SEARCH_BUDGET[key] ? defaults.trade2[key] : settings.trade2[key];
+
+  return {
+    ...settings,
+    trade2: {
+      ...settings.trade2,
+      maxSearchesPerWindow: adopt("maxSearchesPerWindow"),
+      maxSearchesPerLongWindow: adopt("maxSearchesPerLongWindow"),
+      minSearchIntervalMs: adopt("minSearchIntervalMs"),
+      searchBudgetMigrated: true
+    }
+  };
+}
+
+/**
  * Unions the poe.ninja category lists with the defaults. `mergeWithDefaults` treats arrays as
  * leaves, so an install whose settings.json predates a newly added category would never fetch it
  * and every item in that category would stay silently unpriced — the same failure mode that hid
@@ -168,8 +215,11 @@ export function loadSettings(): Settings {
   const defaults = JSON.parse(fs.readFileSync(defaultSettingsPath(), "utf-8")) as Settings;
   const loaded = JSON.parse(fs.readFileSync(userPath, "utf-8")) as unknown;
   cachedSettings = unionPoeNinjaCategories(
-    adoptListingThresholdDefault(
-      adoptInstantBuyoutDefault(foldLegacyProcessName(mergeWithDefaults(defaults, loaded), loaded)),
+    adoptSearchBudgetDefaults(
+      adoptListingThresholdDefault(
+        adoptInstantBuyoutDefault(foldLegacyProcessName(mergeWithDefaults(defaults, loaded), loaded)),
+        defaults
+      ),
       defaults
     ),
     defaults

@@ -101,23 +101,25 @@ Practically:
 - **`TradeSearchBudget` tracks two windows, because the budget counts searches while GGG counts
   requests.** A lookup is N ladder rungs — **all** budgeted, one slot each — plus **one** unbudgeted
   fetch of the winning rung. So the worst request-per-search ratio is 2:1, on a lookup that hits at
-  the top rung, and it improves as the ladder descends. Size against 2:1; the short window's 12
-  searches are therefore at most 24 requests. Three consequences, all settled by configuration rather
+  the top rung, and it improves as the ladder descends. Size against 2:1; the short window's 8
+  searches are therefore at most 16 requests. Three consequences, all settled by configuration rather
   than by code:
   - Against `30:300:1800` — 30 requests per 5 minutes, **30 minutes** of lockout — `maxSearchesPerWindow`
-    is the ceiling, at **12** for 24 of the 30. Don't take it to 15 "to use the full limit": the rule
-    is per **IP**, so a second copy of the app, another trade tool, or the one-off `/data/stats`
-    fetch spends the same bucket, and at 15 someone else's single request triggers the blackout.
+    is the ceiling, at **8** for 16 of the 30. It was 12 (24 of the 30) until that fifth of a bucket
+    was judged too thin to absorb anything else on the connection; don't take it back up "to use the
+    full limit". The rule is per **IP**, so a second copy of the app, another trade tool, or the
+    one-off `/data/stats` fetch spends the same bucket, and at 15 someone else's single request
+    triggers the blackout.
   - Against `15:60:300` — 15 requests a minute, 5 minutes of lockout — `minSearchIntervalMs` is the
     only thing shaping the burst, and it is what bounds this window regardless of the 5-minute cap.
-    At 5s, searches and their fetches pack ~20 requests into 45 seconds and breach it; the default is
-    **10s**, which caps any 60-second stretch at 6 searches and ~12 requests. It costs nothing, since
+    At 5s, searches and their fetches pack ~16 requests into 40 seconds and breach it; the default is
+    **15s**, which caps any 60-second stretch at 4 searches and ~8 requests. It costs nothing, since
     `maxSearchesPerWindow` over `windowMs` is the real ceiling either way, and a lone drop still waits
     not at all, having no previous search to be spaced from.
   - Against `600:21600:3600` — 600 requests per 6 hours, and an **hour-long** lockout, the worst
     penalty on the list — the short window is blind: it refills twelve times an hour. Hence
-    `maxSearchesPerLongWindow`/`longWindowMs` (240 per 6h, so ≤480 of the 600). **This one is not
-    raised alongside the short window** — 12 searches per 5 minutes sustained is 864 per 6 hours, so
+    `maxSearchesPerLongWindow`/`longWindowMs` (160 per 6h, so ≤320 of the 600). **This one is not
+    raised alongside the short window** — 8 searches per 5 minutes sustained is 576 per 6 hours, so
     the long window is what binds during a heavy session, and that is exactly its job. Tuning the short
     window down far enough to cover this instead would throttle the ordinary case — a burst of drops
     in one map — to guard against something only hours of continuous mapping reach. `cooldownMs()`
@@ -248,10 +250,11 @@ Practically:
   would call it 347 exalted. Near enough to exalted that the default of 1 still means roughly what it
   reads as, but don't document it as exalted and don't name a currency in the log.
 
-  **It constrains the search, not the sample, and that is load-bearing.** `priceSample` takes the ten
-  *cheapest* matches, so a floor applied after the fetch would find every one of them below it and
-  leave nothing to price. Filtering server-side means the ten cheapest are the ten cheapest that clear
-  the floor, and every listing count in the log counts the same set the price came from.
+  **It constrains the search, not the sample, and that is load-bearing.** `priceSample` takes the
+  *cheapest* `maxListings` matches — five by default, ten at the API ceiling — so a floor applied
+  after the fetch would find every one of them below it and leave nothing to price. Filtering
+  server-side means the cheapest five are the cheapest five that clear the floor, and every listing
+  count in the log counts the same set the price came from.
 
   **An item with nothing at or above the floor is stored unpriced, and there is no retry without it.**
   That is the difference from the defence and aggregate floors, which exist to widen a search that was
@@ -527,6 +530,41 @@ Practically:
   was partly justified by the median being visible (see above), and that justification is gone. The
   sample size survives only in the `[pricing] … cheapest of N sampled` log line. Putting the count on
   the row, or raising that default, are the two honest ways to close it.
+
+  **The window itself is now kept, which is how that cost is paid without a second number on the
+  row.** `priceFromRung` used to reduce the fetched listings to `priced[0]` and drop the rest on the
+  floor; it now also carries them as `TradeEstimate.listingSample`, persisted as
+  `PricedItem.tradeListingSample` — each listing's chaos value and its own `indexed` date, cheapest
+  first. It costs nothing: those listings were already fetched, already converted and already sorted.
+
+  Its only reader is `suggestSellRange()` in `src/renderer/common.ts`, which turns it into a suggested
+  **asking** price in the row editor. Three things about it are worth not re-deriving:
+
+  - **Each listing is weighted by how long it has gone unsold** (24h half-life), because a listing
+    that has sat is evidence against its own price clearing. Listings below a sixth of their own
+    sample's median are discarded — a *ratio*, since the stored rows span 0.03 to 3853 chaos and no
+    fixed cutoff means anything across that range. Measured on those rows, the cheapest listing sat
+    below a third of its own sample median in 14 of 35 cases and below a tenth in 8, worst case 364x.
+  - **The dominance gate short-circuits all of it.** If the *cheapest* listing has sat for over 30
+    days the verdict is "dead market", and nothing else is read: the cheapest listing is the most
+    attractive offer on the board, so if it has not cleared, nothing priced above it has either. The
+    gate reads only `tradeListingIndexedAt`, so it works on rows stored before the window was kept —
+    it decided 8 of the 27 dated rows on the cache it was built against.
+  - **Refusing is a normal outcome, not a failure.** `dead` and `stale` were the majority verdict on
+    the rows that had a date at all. Quoting a two-month-old listing back as a suggested price is the
+    one genuinely misleading thing this could do, so it doesn't.
+
+  **The suggestion is not a valuation and must never be presented as one.** The window is the cheapest
+  handful of a price-ascending search — the market's left tail, not a sample of the market. It can say
+  where to sit among the undercutters. It cannot say what the item is worth.
+
+  **Deepening the window past `maxListings` was considered and not done.** The fetch is one
+  unbudgeted GET either way and `MAX_FETCH_IDS` is 10, so 5 → 10 looks free. It isn't quite: the final
+  sort is on *this app's* chaos conversion rather than GGG's ordering, so a listing that never enters
+  the window today could become `priced[0]` and lower the headline. That can only push an already
+  acknowledged low bias further down, and avoiding it needs the fetch response to come back in
+  requested-id order — which this app has never verified. Worth doing as its own change, with its own
+  measurement, not as a side effect of this one.
 
   `listingIndexedAt` is carried on `TradeEstimate`, persisted as `PricedItem.tradeListingIndexedAt`
   (epoch ms, parsed once at the fetch), and printed as `12ex (listed 3d ago)` by `listedAgeEl()` in

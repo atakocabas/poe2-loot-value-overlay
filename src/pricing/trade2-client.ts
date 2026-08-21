@@ -205,6 +205,19 @@ export interface TradeEstimate {
    * Absent whenever there is no price to have come from a listing.
    */
   listingQuote?: ListingQuote;
+  /**
+   * Every convertible listing the price was reduced from, cheapest first — the chaos value of each
+   * and when it went up.
+   *
+   * `chaosValue` is `listingSample[0].chaos`. The rest used to be dropped on the floor here, which
+   * is what made a price off one listing indistinguishable from a price off ten once the median was
+   * removed. Carried so the row editor can weigh the cheap end by how long each of it has gone
+   * unsold; see `suggestSellRange` in the renderer, which is the only reader.
+   *
+   * This is the cheapest handful of a price-ascending search — the market's left tail, not a sample
+   * of it. Absent whenever there is no price for it to be the basis of.
+   */
+  listingSample?: Array<{ chaos: number; indexedAt?: number }>;
   /** Why there is no value. null when `chaosValue` is set. */
   reason: string | null;
   /**
@@ -1507,7 +1520,7 @@ export class Trade2Client {
       tradeFilters.sale_type = { option: "any" };
     }
     // The floor goes to GGG rather than being applied to the fetched sample, and that is load-bearing:
-    // `priceSample` takes the ten *cheapest* matches, so a floor applied afterwards would find every
+    // `priceSample` takes the *cheapest* `maxListings` matches, so a floor applied afterwards finds every
     // one of them below it and leave nothing to price.
     //
     // **It carries no `option`, and that is the whole point.** `option` names the currency a listing
@@ -1698,6 +1711,11 @@ export class Trade2Client {
         listingQuote: priced[0]!.quote,
         // And when that same listing went up, which is how old the headline actually is.
         listingIndexedAt: priced[0]!.indexedAt,
+        // The rest of the window the headline was the floor of, in the same order. Mapped down to
+        // the two fields a reader needs rather than kept whole: this is persisted into
+        // `loot-cache.json`, and the quotes are display labels for one listing, which every listing
+        // below the cheapest is not.
+        listingSample: priced.map(({ chaos, indexedAt }) => ({ chaos, indexedAt })),
         reason: null,
         failure: null,
         listings: priced.length,

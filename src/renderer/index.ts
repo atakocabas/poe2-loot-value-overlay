@@ -932,6 +932,33 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
   // are shown for reading and nothing else. See buildMapFilters for why they can't usefully be.
   const rewardsOnly = mapRows.length > 0;
 
+  // What to actually *ask* for the item, which the headline cannot answer on its own: that number is
+  // the cheapest listing in the sample, and the cheapest listing is routinely one nobody has bought.
+  // Lives in the editor rather than on the row because it is a sentence of reasoning, and because the
+  // row deliberately carries one number.
+  const suggestionRow = document.createElement("div");
+  suggestionRow.className = "item-edit-row";
+  const suggestionNote = document.createElement("span");
+  suggestionNote.className = "status-note";
+  const syncSuggestion = (current: PricedItem | null) => {
+    // Mirrors applyUpdatedItem: a handler that got nothing back leaves what is on screen alone.
+    if (!current) return;
+    const suggestion = suggestSellRange(current, 1);
+    // Hidden rather than emptied, so the row collapses instead of leaving a gap where a sentence was.
+    // `.item-edit-row[hidden]` in the stylesheet is what makes this take effect at all — an author
+    // `display` rule outranks the UA stylesheet's `[hidden] { display: none }` at equal specificity.
+    suggestionRow.hidden = suggestion === null;
+    if (suggestion === null) return;
+    // The same unit the headline above it is drawn in, via the same helper the row uses.
+    const label = sellSuggestionText(suggestion, rowQuote(current, 1));
+    suggestionNote.textContent = label.text;
+    suggestionNote.title = label.title;
+    // The same warm hue a relaxed price gets. A dead market is not an error, but it is the editor
+    // saying the number above it will not sell, which is the thing worth noticing here.
+    suggestionNote.classList.toggle("reprice-warning", label.warn);
+  };
+  syncSuggestion(item);
+
   if (allMods.length > 0 || rewardsOnly) {
     const modList = document.createElement("ul");
     modList.className = "mod-list";
@@ -1118,12 +1145,16 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
       // rebuilt (see `openEditor`), so this button would otherwise keep offering the previous search
       // — a query that produced a different number from the one now on the row.
       syncTradeLink(result.item.tradeSearchId);
+      syncSuggestion(result.item);
       applyUpdatedItem(result.item);
     });
 
     repriceRow.append(repriceButton, viewButton, status);
     container.append(repriceRow);
   }
+
+  suggestionRow.append(suggestionNote);
+  container.append(suggestionRow);
 
   const manualRow = document.createElement("div");
   manualRow.className = "item-edit-row";
@@ -1162,6 +1193,7 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
 
     manualStatus.textContent = "";
     const result = await window.poe2Overlay.setManualPrice(item.id, value);
+    syncSuggestion(result.item);
     applyUpdatedItem(result.item);
   });
 

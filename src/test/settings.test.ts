@@ -5,6 +5,7 @@ import { test } from "node:test";
 import {
   adoptInstantBuyoutDefault,
   adoptListingThresholdDefault,
+  adoptSearchBudgetDefaults,
   foldLegacyProcessName,
   mergeWithDefaults,
   unionPoeNinjaCategories
@@ -60,6 +61,7 @@ function makeDefaults(): Settings {
       maxSearchesPerLongWindow: 240,
       longWindowMs: 21600000,
       minSearchIntervalMs: 5000,
+      searchBudgetMigrated: false,
       saleType: "buyout" as const,
       maxListings: 5,
       listingStatus: "online" as const,
@@ -367,6 +369,134 @@ test("a settings.json predating the threshold marker migrates on the next load",
 
   assert.equal(migrated.trade2.minListingsForMatch, 1);
   assert.equal(migrated.trade2.minListingsThresholdMigrated, true);
+});
+
+test("the shipped search budget leaves half of GGG's per-IP buckets spare", () => {
+  // Read from the file for the same reason the two folds above do: these are the values
+  // `adoptSearchBudgetDefaults` migrates existing installs *to*. The arithmetic is 2 GGG requests per
+  // budgeted search, against buckets of 30 per 5 minutes and 600 per 6 hours.
+  const defaults = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  ) as {
+    trade2: {
+      maxSearchesPerWindow: number;
+      maxSearchesPerLongWindow: number;
+      minSearchIntervalMs: number;
+      searchBudgetMigrated: boolean;
+    };
+  };
+
+  assert.equal(defaults.trade2.maxSearchesPerWindow, 8, "16 of GGG's 30 per 5 minutes");
+  assert.equal(defaults.trade2.maxSearchesPerLongWindow, 160, "320 of GGG's 600 per 6 hours");
+  assert.equal(defaults.trade2.minSearchIntervalMs, 15000, "~8 requests a minute against GGG's 15");
+  assert.equal(defaults.trade2.searchBudgetMigrated, false);
+});
+
+test("an install still on the old shipped search budget is moved to the current one", () => {
+  // 12 / 240 / 10s was shipped until the budget was lowered to leave more of the per-IP bucket for
+  // whatever else is on the connection. Every settings.json written before that kept the old trio.
+  const settings = makeDefaults();
+  settings.trade2.maxSearchesPerWindow = 12;
+  settings.trade2.maxSearchesPerLongWindow = 240;
+  settings.trade2.minSearchIntervalMs = 10000;
+  const defaults = makeDefaults();
+  defaults.trade2.maxSearchesPerWindow = 8;
+  defaults.trade2.maxSearchesPerLongWindow = 160;
+  defaults.trade2.minSearchIntervalMs = 15000;
+
+  const migrated = adoptSearchBudgetDefaults(settings, defaults);
+
+  assert.equal(migrated.trade2.maxSearchesPerWindow, 8);
+  assert.equal(migrated.trade2.maxSearchesPerLongWindow, 160);
+  assert.equal(migrated.trade2.minSearchIntervalMs, 15000);
+  assert.equal(migrated.trade2.searchBudgetMigrated, true);
+});
+
+test("the budget fold adopts whatever the defaults file currently says, not a second copy of it", () => {
+  // Same argument as the threshold fold: a literal target here would drift the moment the budget was
+  // retuned again, and this fold rewrites every existing install.
+  const settings = makeDefaults();
+  settings.trade2.maxSearchesPerWindow = 12;
+  settings.trade2.maxSearchesPerLongWindow = 240;
+  settings.trade2.minSearchIntervalMs = 10000;
+  const defaults = makeDefaults();
+  defaults.trade2.maxSearchesPerWindow = 6;
+  defaults.trade2.maxSearchesPerLongWindow = 120;
+  defaults.trade2.minSearchIntervalMs = 20000;
+
+  const migrated = adoptSearchBudgetDefaults(settings, defaults);
+
+  assert.equal(migrated.trade2.maxSearchesPerWindow, 6);
+  assert.equal(migrated.trade2.maxSearchesPerLongWindow, 120);
+  assert.equal(migrated.trade2.minSearchIntervalMs, 20000);
+});
+
+test("a hand-tuned budget key survives while the ones still on the old default migrate", () => {
+  // The three keys are judged one at a time on purpose. None of them has a UI, so the old shipped
+  // value is the one an install can carry without anyone having chosen it — but somebody who raised
+  // the short window by hand and left the other two alone must keep exactly that.
+  const settings = makeDefaults();
+  settings.trade2.maxSearchesPerWindow = 20;
+  settings.trade2.maxSearchesPerLongWindow = 240;
+  settings.trade2.minSearchIntervalMs = 10000;
+  const defaults = makeDefaults();
+  defaults.trade2.maxSearchesPerWindow = 8;
+  defaults.trade2.maxSearchesPerLongWindow = 160;
+  defaults.trade2.minSearchIntervalMs = 15000;
+
+  const migrated = adoptSearchBudgetDefaults(settings, defaults);
+
+  assert.equal(migrated.trade2.maxSearchesPerWindow, 20, "a deliberate value is never overridden");
+  assert.equal(migrated.trade2.maxSearchesPerLongWindow, 160);
+  assert.equal(migrated.trade2.minSearchIntervalMs, 15000);
+  // Stamped anyway, so the migration is spent and can never revisit this install.
+  assert.equal(migrated.trade2.searchBudgetMigrated, true);
+});
+
+test("the old budget set after the migration ran is left alone", () => {
+  // Why the marker exists at all: once the fold has run, 12 / 240 / 10s is a choice like any other.
+  const settings = makeDefaults();
+  settings.trade2.maxSearchesPerWindow = 12;
+  settings.trade2.maxSearchesPerLongWindow = 240;
+  settings.trade2.minSearchIntervalMs = 10000;
+  settings.trade2.searchBudgetMigrated = true;
+  const defaults = makeDefaults();
+  defaults.trade2.maxSearchesPerWindow = 8;
+
+  const migrated = adoptSearchBudgetDefaults(settings, defaults);
+
+  assert.equal(migrated.trade2.maxSearchesPerWindow, 12);
+  assert.equal(migrated, settings);
+});
+
+test("a settings.json predating the budget marker migrates on the next load", () => {
+  // The real upgrade path, composed the way `loadSettings` composes it: the marker is absent, so
+  // `mergeWithDefaults` supplies the false that lets the fold fire, while the stale budget survives
+  // the merge untouched because those keys *are* present.
+  const defaults = makeDefaults();
+  defaults.trade2.maxSearchesPerWindow = 8;
+  defaults.trade2.maxSearchesPerLongWindow = 160;
+  defaults.trade2.minSearchIntervalMs = 15000;
+  const { searchBudgetMigrated, ...trade2WithoutMarker } = makeDefaults().trade2;
+  const loaded = {
+    ...defaults,
+    trade2: {
+      ...trade2WithoutMarker,
+      maxSearchesPerWindow: 12,
+      maxSearchesPerLongWindow: 240,
+      minSearchIntervalMs: 10000
+    }
+  };
+
+  const merged = mergeWithDefaults(defaults, loaded as typeof defaults);
+  assert.equal(merged.trade2.maxSearchesPerWindow, 12, "the stale budget survives the merge");
+
+  const migrated = adoptSearchBudgetDefaults(merged, defaults);
+
+  assert.equal(migrated.trade2.maxSearchesPerWindow, 8);
+  assert.equal(migrated.trade2.maxSearchesPerLongWindow, 160);
+  assert.equal(migrated.trade2.minSearchIntervalMs, 15000);
+  assert.equal(migrated.trade2.searchBudgetMigrated, true);
 });
 
 test("preserves a user's customized value instead of overwriting it with the default", () => {

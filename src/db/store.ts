@@ -70,6 +70,7 @@ export async function updateItem(
       | "tradeSearchId"
       | "tradeListingQuote"
       | "tradeListingIndexedAt"
+      | "tradeListingSample"
     >
   >
 ): Promise<PricedItem | null> {

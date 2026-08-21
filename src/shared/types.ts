@@ -340,6 +340,23 @@ export interface PricedItem extends ParsedItem {
    */
   tradeListingIndexedAt?: number;
   /**
+   * Every sampled listing the price was reduced from — its chaos value, and when it was posted.
+   *
+   * `chaosValue` is the cheapest of these, which is the floor by specification. Keeping the rest is
+   * what lets the row editor say how *thin* that floor is: a price off one listing and a price off ten
+   * look identical once nine are thrown away, which is exactly what removing the median cost. This
+   * restores the signal without putting a second number back on the row.
+   *
+   * The listings are the cheapest handful of a price-ascending search, so this is the market's left
+   * tail rather than its distribution — never average it and call the result a value. `suggestSellRange`
+   * is the only thing that reads it, and says so at length.
+   *
+   * Optional for the usual reason: nothing migrates `loot-cache.json`, so every item priced before this
+   * existed has only the cheapest listing, and only a trade2-priced item ever has listings at all. Its
+   * absence means "no record", never "one listing".
+   */
+  tradeListingSample?: Array<{ chaos: number; indexedAt?: number }>;
+  /**
    * What the cheapest sampled listing was actually asking — `{ amount: 2, currency: "chaos" }`.
    *
    * Kept for **display only**, and only to choose a unit: a row whose price came from a seller

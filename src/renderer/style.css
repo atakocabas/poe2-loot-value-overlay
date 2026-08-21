@@ -618,6 +618,13 @@ select option {
   flex-wrap: wrap;
 }
 
+/* Load-bearing, and the same trap `button.icon-btn:not([hidden])` documents above: the author
+   `display: flex` beats the UA stylesheet `[hidden] { display: none }` rule at equal specificity,
+   so without this `suggestionRow.hidden = true` leaves an empty flex row sitting in the editor. */
+.item-edit-row[hidden] {
+  display: none;
+}
+
 .item-edit-row input[type="number"] {
   width: 70px;
 }

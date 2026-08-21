@@ -262,6 +262,10 @@ export class PriceResolver {
           // The same listing's age, moving with the quote for the same reason: both describe the
           // one listing the headline came from, so they are written and dropped together.
           tradeListingIndexedAt: estimate.listingIndexedAt,
+          // And the rest of the window those two came from, for the same reason every other field
+          // in this block is here: the search has already paid for it, and a capture that dropped it
+          // would offer no sell suggestion until the user pressed Reprice once.
+          tradeListingSample: estimate.listingSample,
           defencesDropped: estimate.defencesDropped,
           pseudoDropped: estimate.pseudoDropped,
           mapDropped: estimate.mapDropped,
