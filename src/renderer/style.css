@@ -326,8 +326,7 @@ select option {
 /* Derived rather than read off the item, so it gets its own hue and full opacity — this row is the
    one the search actually sends, and it should not read as a footnote to the mods below it. */
 .badge-kind-pseudo,
-.badge-kind-reward,
-.badge-kind-difficulty {
+.badge-kind-reward {
   color: #d3b98f;
   opacity: 0.85;
 }

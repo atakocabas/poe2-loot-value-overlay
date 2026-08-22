@@ -40,7 +40,7 @@ test("a waystone captured before map stats were parsed reads as all-null rather 
   assert.deepEqual(mapRowsOf(stale), []);
 });
 
-test("rewards and revives are floors, difficulty is a ceiling", () => {
+test("every printed total is a floor, difficulty included", () => {
   const rows = mapRowsOf(
     waystone({
       itemRarity: 24,
@@ -52,34 +52,34 @@ test("rewards and revives are floors, difficulty is a ceiling", () => {
     })
   );
 
+  // Monster Effectiveness was a ceiling once, on the argument that difficulty is a cost to the
+  // buyer. It is a floor like the other five now — a chosen preference about which waystones to
+  // price against, so there is no direction to carry on the row at all.
   assert.deepEqual(
-    rows.map((row) => [row.id, row.value, row.direction]),
+    rows.map((row) => [row.id, row.value]),
     [
-      ["map_iir", 24, "min"],
-      ["map_packsize", 7, "min"],
-      ["map_rare_monsters", 18, "min"],
-      ["map_bonus", 85, "min"],
-      ["map_revives", 6, "min"],
-      // Difficulty is a cost to the buyer, so the comparables are the maps at most this dangerous.
-      ["map_magic_monsters", 13, "max"]
+      ["map_iir", 24],
+      ["map_packsize", 7],
+      ["map_rare_monsters", 18],
+      ["map_bonus", 85],
+      ["map_revives", 6],
+      ["map_magic_monsters", 13]
     ]
   );
 });
 
-test("a floor of zero is culled but a ceiling of zero is kept", () => {
-  // The asymmetry is the point. A floor of 0 asks for nothing; a ceiling of 0 is the best possible
-  // waystone, and culling it would drop the constraint on exactly the ones worth the most.
-  const rows = mapRowsOf(waystone({ itemRarity: 0, revives: 0, monsterEffectiveness: 0 }));
-
-  assert.deepEqual(rows, [
-    { id: "map_magic_monsters", label: "Monster Effectiveness", value: 0, direction: "max" }
-  ]);
+test("a total of zero is culled, whichever stat it is", () => {
+  // A floor of 0 asks for nothing every listing does not already satisfy, so it only spends query
+  // surface. Uniform now: the ceiling that used to make Monster Effectiveness the exception is gone.
+  assert.deepEqual(mapRowsOf(waystone({ itemRarity: 0, revives: 0, monsterEffectiveness: 0 })), []);
 });
 
 test("a stat the game never printed produces no row at all", () => {
-  // null is "not printed" and 0 is "printed as zero" — only the second is a ceiling worth sending.
+  // null is "not printed" and 0 is "printed as zero". Neither yields a row, but for the reason
+  // above they are still worth telling apart — a parser that returned 0 for an absent line would
+  // read as a real total the moment any of these becomes something other than a floor.
   assert.deepEqual(mapRowsOf(waystone({ monsterEffectiveness: null, itemRarity: 24 })), [
-    { id: "map_iir", label: "Item Rarity", value: 24, direction: "min" }
+    { id: "map_iir", label: "Item Rarity", value: 24 }
   ]);
 });
 

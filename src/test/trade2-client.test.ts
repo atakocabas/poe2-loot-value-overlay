@@ -302,13 +302,134 @@ test("turns the item's mods into stat filters, honouring the ignore list", async
   );
 
   const body = JSON.parse(String(searchCall(calls).init.body));
-  assert.equal(body.query.type, "Sapphire Ring");
+  // The class, not the base: a Sapphire Ring is priced against every rare ring carrying its mods.
+  assert.equal(body.query.type, undefined, "the base type is not sent for a rare");
+  assert.deepEqual(body.query.filters.type_filters.filters.category, { option: "accessory.ring" });
   // `and`, with no `value` at all: the group demands every filter it carries, and says so directly
   // rather than through a threshold that happens to equal the filter count.
   assert.deepEqual(body.query.stats, [
     { type: "and", filters: [{ id: "explicit.stat_3299347043", value: { min: 80 } }] }
   ]);
   assert.equal(body.sort.price, "asc");
+});
+
+// ---------------------------------------------------------------------------
+// A rare is searched on its item class, not its exact base type
+// ---------------------------------------------------------------------------
+
+const typeFiltersOf = (calls: Call[]) =>
+  JSON.parse(String(searchCall(calls).init.body)).query.filters?.type_filters?.filters as
+    | { category?: { option: string }; rarity?: { option: string } }
+    | undefined;
+
+const queryOf = (calls: Call[]) => JSON.parse(String(searchCall(calls).init.body)).query;
+
+test("a rare pins rare rarity, or the class widens onto uniques and white bases", async () => {
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
+
+  // The base type used to be the only thing holding the other rarities out. `priceSample()` reads
+  // the cheapest five, which is exactly where a class's white and magic listings sit.
+  assert.deepEqual(typeFiltersOf(calls)?.rarity, { option: "rare" });
+});
+
+test("every equipment class maps to its own category", async () => {
+  const cases: Array<[ParsedItem, string, unknown]> = [
+    [RARE, "accessory.ring", STATS],
+    [ARMOUR_RARE, "armour.chest", STATS_ARMOUR],
+    [WEAPON_RARE, "weapon.warstaff", STATS_WEAPON]
+  ];
+
+  for (const [item, category, stats] of cases) {
+    const { fetch, calls } = stubFetch({ stats });
+    await new Trade2Client(makeSettings(), fetch).estimateRareValue(item, new Set(), toChaos);
+
+    assert.equal(queryOf(calls).type, undefined, `${category} sends no base type`);
+    assert.deepEqual(typeFiltersOf(calls)?.category, { option: category });
+  }
+});
+
+test("a rare jewel widens to any jewel, which is the case base type starved worst", async () => {
+  // The measured capture behind this: a Diamond jewel matched 5640 listings on its base type and 0
+  // on any two of its four mods.
+  const jewel = parse(
+    "Item Class: Jewels\nRarity: Rare\nPlague Wound\nDiamond\n--------\nItem Level: 80\n" +
+      "--------\n+80 to maximum Life"
+  );
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(jewel, new Set(), toChaos);
+
+  assert.equal(queryOf(calls).type, undefined);
+  assert.deepEqual(typeFiltersOf(calls)?.category, { option: "jewel" });
+});
+
+test("a waystone keeps its base type, which is what pins its tier", async () => {
+  const { fetch, calls } = stubFetch({ stats: STATS_RES });
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(WAYSTONE, new Set(), toChaos);
+
+  // Widening a waystone to a class would drop the tier from the query and price a T15 off T1s —
+  // the same argument that keeps `map_tier` out of the payload.
+  assert.equal(queryOf(calls).type, "Waystone (Tier 15)");
+  assert.equal(typeFiltersOf(calls)?.category, undefined);
+});
+
+test("a class this table hasn't got falls back to the base type it always sent", async () => {
+  const unknownClass = parse(
+    "Item Class: Bombards\nRarity: Rare\nApocalypse Core\nDread Bombard\n--------\nItem Level: 78\n" +
+      "--------\n+80 to maximum Life"
+  );
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(unknownClass, new Set(), toChaos);
+
+  // Null from `tradeCategoryOf()` must mean "search as this always did", never "search with no type
+  // constraint" — which would be every rare in the league.
+  assert.equal(queryOf(calls).type, "Dread Bombard");
+  assert.equal(typeFiltersOf(calls), undefined);
+});
+
+test("an older client printing no item class falls back to the base type too", async () => {
+  const noClass = parse(
+    "Rarity: Rare\nApocalypse Core\nSapphire Ring\n--------\nItem Level: 78\n--------\n" +
+      "+80 to maximum Life"
+  );
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(noClass, new Set(), toChaos);
+
+  assert.equal(queryOf(calls).type, "Sapphire Ring");
+  assert.equal(typeFiltersOf(calls), undefined);
+});
+
+test("a rung demanding nothing keeps the base type rather than pricing the whole class", async () => {
+  // No matchable mod, no aggregate, no defences — the base-type-only fallback. Widened, this stops
+  // asking "what is this base worth" and starts asking "what is the cheapest rare ring in the
+  // league", which the cheapest-five sample then answers off the dump listings.
+  const unmatchable = parse(
+    "Item Class: Rings\nRarity: Rare\nApocalypse Core\nSapphire Ring\n--------\nItem Level: 78\n" +
+      "--------\n12% increased Attack Speed"
+  );
+  const { fetch, calls } = stubFetch();
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(unmatchable, new Set(), toChaos);
+
+  const query = queryOf(calls);
+  assert.equal(query.type, "Sapphire Ring");
+  assert.equal(query.stats, undefined, "nothing was demanded, which is the whole condition");
+  assert.equal(typeFiltersOf(calls), undefined);
+});
+
+test("an item with only defences still widens, since the floors carry the search", async () => {
+  // The mirror of the rung above: no stat filter, but a real armour floor, so the class search is
+  // constrained by something and is allowed.
+  const onlyDefences = parse(
+    "Item Class: Body Armours\nRarity: Rare\nEagle Guardian\nSoldier Cuirass\n--------\n" +
+      "Armour: 1081\n--------\nItem Level: 81\n--------\n+186 to Armour\n38% increased Armour"
+  );
+  const { fetch, calls } = stubFetch({ stats: STATS_ARMOUR });
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(onlyDefences, new Set(), toChaos);
+
+  const query = queryOf(calls);
+  assert.equal(query.type, undefined);
+  assert.deepEqual(typeFiltersOf(calls)?.category, { option: "armour.chest" });
+  assert.ok(query.filters.equipment_filters, "the floor is what makes this honest");
 });
 
 test("a five-mod rare falls back to requiring only three, which is what makes it findable at all", async () => {
@@ -451,7 +572,9 @@ test("an uncorrupted item doesn't demand uncorrupted listings", async () => {
 
   // Measured: on a real thin base this filter alone took the match count from 1 to 0. Corrupted
   // listings are close enough comparables to be worth keeping when the market is this shallow.
-  assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.filters, undefined);
+  // Named rather than asserting `filters` is absent wholesale: a rare always carries `type_filters`
+  // now, since it is searched on its class.
+  assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.filters.misc_filters, undefined);
 });
 
 test("a corrupted item is priced only against corrupted listings", async () => {
@@ -771,14 +894,14 @@ test("a waystone is searched on its printed totals, not on its affixes at all", 
 
   const { query } = JSON.parse(String(searchCall(calls).init.body));
 
-  // floor(x * 0.9) on the rewards, ceil(x / 0.9) on the difficulty. Measured live: the reward half
-  // of this shape returned 3453 listings while the waystone's six real affixes returned 0.
+  // floor(x * 0.9) on every total, difficulty included. Measured live: the reward half of this
+  // shape returned 3453 listings while the waystone's six real affixes returned 0.
   assert.deepEqual(query.filters.map_filters.filters, {
     map_iir: { min: 21 },
     map_packsize: { min: 6 },
     map_rare_monsters: { min: 16 },
     map_bonus: { min: 76 },
-    map_magic_monsters: { max: 15 }
+    map_magic_monsters: { min: 11 }
   });
 
   // No stat group whatsoever — the affixes are dropped wholesale rather than folded one by one,
@@ -786,19 +909,21 @@ test("a waystone is searched on its printed totals, not on its affixes at all", 
   assert.equal(query.stats, undefined, "the affixes must not be searched");
 });
 
-test("monster effectiveness is a ceiling, never a floor", async () => {
+test("monster effectiveness is a floor like every other total", async () => {
   const { fetch, calls } = stubFetch({ stats: STATS_RES });
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(WAYSTONE, new Set(), toChaos);
 
   const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
 
-  // Difficulty is a cost to the buyer, so the comparables are the waystones at *most* this dangerous.
-  // A floor here is the bug this replaced: it excluded the easier maps, which are worth more.
-  assert.deepEqual(filters.map_filters.filters.map_magic_monsters, { max: 15 });
+  // This was a ceiling once — difficulty is a cost to the buyer, so the comparables were taken to
+  // be the waystones at *most* this dangerous. Sending it as a floor instead is a preference about
+  // which waystones to price against, not a measurement; the ceiling worked too. What the test
+  // guards is that the computed path emits one bound and it points up.
+  assert.deepEqual(filters.map_filters.filters.map_magic_monsters, { min: 11 });
   assert.equal(
-    filters.map_filters.filters.map_magic_monsters.min,
+    filters.map_filters.filters.map_magic_monsters.max,
     undefined,
-    "a floor on difficulty prices the item upside down"
+    "no computed total carries a ceiling any more"
   );
 });
 
@@ -817,18 +942,22 @@ test("a floor at zero is culled, and revives is a floor", async () => {
   assert.deepEqual(query.filters.map_filters.filters.map_revives, { min: 5 });
 });
 
-test("a ceiling of zero survives, unlike a floor of zero", async () => {
-  // 0% effectiveness is the *best* case and the one worth the most, so the constraint has to be sent.
-  // Culling it the way a zero floor is culled would drop the filter on exactly those waystones.
+test("a zero total is culled on difficulty exactly as on the rewards", async () => {
+  // Back when this was a ceiling, 0% was the best case and had to be sent. As a floor it asks for
+  // nothing, so it goes the same way `Revives Available: 0` does and the waystone searches on its
+  // rewards alone.
   const easy = parse(WAYSTONE.rawText.replace("Monster Effectiveness: +13%", "Monster Effectiveness: +0%"));
   const { fetch, calls } = stubFetch({ stats: STATS_RES });
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(easy, new Set(), toChaos);
 
   const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
-  assert.deepEqual(filters.map_filters.filters.map_magic_monsters, { max: 0 });
+  assert.equal(filters.map_filters.filters.map_magic_monsters, undefined);
+  assert.deepEqual(filters.map_filters.filters.map_iir, { min: 21 }, "the rewards still ship");
 });
 
-test("a bound typed in the row editor wins over the computed ceiling", async () => {
+// The only path left that emits a `max` on a map filter, which is why the cull in
+// `buildMapFilters` still tests for one: a hand-typed ceiling arrives with no `min` beside it.
+test("a bound typed in the row editor wins over the computed floor", async () => {
   const { fetch, calls } = stubFetch({ stats: STATS_RES });
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(
     WAYSTONE,
@@ -850,7 +979,7 @@ test("the waystone tier is deliberately not filtered", async () => {
   const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
 
   // Measured live, `type: "Waystone (Tier 15)"` with map_tier min 16 returns zero listings, so the
-  // base type already pins the tier exactly. Unchanged by the difficulty filter above.
+  // base type already pins the tier exactly.
   assert.equal(filters.map_filters.filters.map_tier, undefined);
 });
 
@@ -890,7 +1019,7 @@ test("a non-waystone never gets map filters, whatever it rolled", async () => {
   const { fetch, calls } = stubFetch();
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
-  assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.filters, undefined);
+  assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.filters.map_filters, undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -1267,7 +1396,7 @@ test("every displayed defence is filtered, since one mod can feed two of them", 
   });
 });
 
-test("switched off, an armour piece sends exactly the payload it always did", async () => {
+test("switched off, an armour piece sends no equipment filters and folds nothing away", async () => {
   const { fetch, calls } = stubFetch({ stats: STATS_ARMOUR, searchIdsSequence: NO_LISTINGS });
   await new Trade2Client(makeSettings({ useDefenceFilters: false }), fetch).estimateRareValue(
     ARMOUR_RARE,
@@ -1276,7 +1405,7 @@ test("switched off, an armour piece sends exactly the payload it always did", as
   );
 
   const { query } = JSON.parse(String(searchCall(calls).init.body));
-  assert.equal(query.filters, undefined);
+  assert.equal(query.filters.equipment_filters, undefined);
   assert.equal(query.stats[0].filters.length, 4, "the armour mods are stat filters again");
 });
 
@@ -1315,10 +1444,10 @@ test("nothing at this item's defences falls back to one search without them", as
   const searches = calls.filter((call) => call.url.includes("/search/"));
   assert.equal(searches.length, 2);
 
-  // The retry is the exact query this sent before defence filters existed, so it can only find
-  // listings the old code would also have found.
+  // The retry drops the defence floors entirely, so it can only find listings a search without them
+  // would also have found.
   const retry = JSON.parse(String(searches[1]!.init.body)).query;
-  assert.equal(retry.filters, undefined);
+  assert.equal(retry.filters.equipment_filters, undefined);
   assert.equal(demanded(retry.stats[0]), 2);
 
   assert.equal(estimate.chaosValue, 2);
@@ -1348,7 +1477,10 @@ test("a defence a rare doesn't display never becomes a filter", async () => {
   const { fetch, calls } = stubFetch();
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(RARE, new Set(), toChaos);
 
-  assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.filters, undefined);
+  assert.equal(
+    JSON.parse(String(searchCall(calls).init.body)).query.filters.equipment_filters,
+    undefined
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -1414,7 +1546,7 @@ test("a folded elemental roll still counts as searched, through the DPS floor", 
   assert.ok(estimate.searchedMods.includes("Adds 45 to 69 Fire Damage"));
 });
 
-test("switched off, a weapon sends exactly the payload it always did", async () => {
+test("switched off, a weapon sends no equipment filters and folds nothing away", async () => {
   const { fetch, calls } = stubFetch({ stats: STATS_WEAPON, searchIdsSequence: NO_LISTINGS });
   await new Trade2Client(makeSettings({ useWeaponFilters: false }), fetch).estimateRareValue(
     WEAPON_RARE,
@@ -1423,7 +1555,7 @@ test("switched off, a weapon sends exactly the payload it always did", async () 
   );
 
   const { query } = JSON.parse(String(searchCall(calls).init.body));
-  assert.equal(query.filters, undefined);
+  assert.equal(query.filters.equipment_filters, undefined);
   assert.equal(query.stats[0].filters.length, 3, "the fire roll is a stat filter again");
 });
 
@@ -2485,6 +2617,9 @@ test("a white base is searched on its item level, at its own level exactly", asy
 
   const { query } = JSON.parse(String(searchCall(calls).init.body));
   assert.equal(query.type, "Sacred Focus");
+  // A white base is worth what its *base* makes it worth, so the class widening a rare gets must
+  // never reach it — an ilvl 82 Sacred Focus priced off any ilvl 82 focus is a different item.
+  assert.equal(query.filters.type_filters.filters.category, undefined);
   // No ratio beneath it, unlike every other floor this sends. Item level is a breakpoint, not a
   // continuous stat: 0.9 of 82 is 73, which is a different market rather than a wider one.
   assert.deepEqual(query.filters.misc_filters.filters.ilvl, { min: 82 });
@@ -2575,7 +2710,12 @@ test("a rare is untouched by the base item gate, however low its level", async (
 
   assert.equal(estimate.chaosValue, 2);
   const { query } = JSON.parse(String(searchCall(calls).init.body));
-  assert.equal(query.filters?.type_filters, undefined, "rarity is only pinned for a white base");
+  assert.deepEqual(
+    query.filters.type_filters.filters.rarity,
+    { option: "rare" },
+    "a rare pins rare, not normal — the ilvl gate is what it must not have picked up"
+  );
+  assert.equal(query.filters.misc_filters, undefined, "no ilvl floor on a rare");
 });
 
 // ---------------------------------------------------------------------------
@@ -2732,7 +2872,7 @@ test("the floor rides alongside the sale type rather than replacing it", async (
   });
 });
 
-test("a floor of 0 sends nothing, so the query is exactly what it was before", async () => {
+test("a floor of 0 sends no trade filters at all", async () => {
   const { fetch, calls } = stubFetch();
   await new Trade2Client(makeSettings({ minListingPrice: 0 }), fetch).estimateRareValue(
     RARE,
@@ -2740,7 +2880,7 @@ test("a floor of 0 sends nothing, so the query is exactly what it was before", a
     toChaos
   );
 
-  assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.filters, undefined);
+  assert.equal(JSON.parse(String(searchCall(calls).init.body)).query.filters.trade_filters, undefined);
 });
 
 test("an item with nothing at or above the floor is unpriced, and the reason names the floor", async () => {

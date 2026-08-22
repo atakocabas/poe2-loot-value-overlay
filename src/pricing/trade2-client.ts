@@ -18,6 +18,7 @@ import { defencesOf, isLocalDefenceMod } from "../shared/defences";
 import { elementalDpsOf, isLocalElementalDamageMod, weaponStatsOf } from "../shared/weapon-stats";
 import { searchFloor } from "../shared/mod-rolls";
 import { mapFilterLabel, mapRowsOf } from "../shared/map-stats";
+import { tradeCategoryOf } from "../shared/item-category";
 import { derivePseudoStatsFromMods, pseudoTotal } from "../shared/pseudo-stats";
 import { TradeStatsMatcher } from "./trade-stats";
 import { TradeSearchBudget } from "./trade-budget";
@@ -352,11 +353,12 @@ function noPrice(reason: string, failure: TradeFailure): TradeEstimate {
 }
 
 /**
- * "21+ Item Rarity, 76+ Waystone Drop Chance, <=15 Monster Effectiveness" — how a waystone's
+ * "21+ Item Rarity, 76+ Waystone Drop Chance, 11+ Monster Effectiveness" — how a waystone's
  * constraints are named in the log and the no-match message.
  *
- * The direction has to survive into the text. This string is what tells a user which way to tune when
- * nothing matched, and a ceiling reported as a floor sends them the wrong way.
+ * Every computed bound is a floor, so the `+` form is what a search normally prints. The `<=` and
+ * range forms stay because a ceiling can still be typed into the row editor by hand, and this
+ * string is what tells a user which way to tune when nothing matched.
  */
 export function describeMapFilters(filters: MapFilter[]): string {
   return filters
@@ -691,9 +693,13 @@ export class Trade2Client {
         "notSearched"
       );
     }
+    // Still required even though a rare is searched on its class rather than its base: an empty
+    // `baseType` means the header block didn't parse, and a capture whose header didn't parse has no
+    // trustworthy item class or mod list either. Refusing is the conservative reading of a bad parse,
+    // not a leftover of the base-type search.
     if (!item.baseType) {
       return noPrice(
-        "no base type to search on — trade2 searches by base type plus mod filters",
+        "no base type to search on — this capture's header didn't parse",
         "notSearched"
       );
     }
@@ -1217,13 +1223,14 @@ export class Trade2Client {
             ...(override.max !== null && { max: override.max })
           };
         }
-        // One ratio serves both directions, for the same reason `defenceMinRatio` also serves eDPS: a
-        // second knob would only ever hold the same number. It widens away from the item's own value
-        // either way — down to a floor, up to a ceiling.
-        return row.direction === "max"
-          ? { id: row.id, max: Math.ceil(row.value / ratio) }
-          : { id: row.id, min: Math.floor(row.value * ratio) };
+        // The same ratio every derived floor uses, `defenceMinRatio` included: it widens the search
+        // down from the item's own value, so the comparables are the waystones at least this good
+        // rather than only the ones strictly better than it.
+        return { id: row.id, min: Math.floor(row.value * ratio) };
       })
+      // The `max` half of this test is unreachable from the computed path above — every total is a
+      // floor — but a ceiling typed in the row editor arrives with no `min` at all, and culling it
+      // here would silently discard the one bound the user set by hand.
       .filter((filter) => filter.max !== undefined || (filter.min ?? 0) > 0);
   }
 
@@ -1470,6 +1477,20 @@ export class Trade2Client {
     // Both filter groups live under one `query.filters` key, so they have to be assembled together
     // rather than each conditionally spreading its own — the second would replace the first.
     const queryFilters: Record<string, unknown> = {};
+    // **A rare searches its class, not its exact base type.** What a rare is worth lives in its mods,
+    // its defences and its implicits; the base string was what left an item on an illiquid base
+    // unpriced with every one of its mods matched. Null keeps the exact-base query this always sent —
+    // a waystone (whose base pins its tier), an unmapped class, a non-English client. See
+    // `tradeCategoryOf()` and the trade2 notes.
+    //
+    // **Gated on the rung actually demanding something.** A rung with no enabled stat filter, no
+    // enabled aggregate and no defence floor is the base-type-only fallback for an item whose mods
+    // none matched. Widened, it stops asking "what is this base worth" and starts asking "what is the
+    // cheapest rare ring in the league" — which `priceSample()` then answers off the dump listings at
+    // the very bottom. A wide price is the feature here; a fabricated one is not.
+    const asksForSomething =
+      required > 0 || defenceFilters.length > 0 || pseudoFilters.some((filter) => !filter.disabled);
+    const category = item.rarity === "Rare" && asksForSomething ? tradeCategoryOf(item) : null;
     // Accumulated rather than assigned, for the same reason the groups below are assembled into one
     // object: corrupted and ilvl are both misc filters, and a second assignment would drop the first.
     const miscFilters: Record<string, unknown> = {};
@@ -1486,11 +1507,26 @@ export class Trade2Client {
     if (Object.keys(miscFilters).length > 0) {
       queryFilters.misc_filters = { filters: miscFilters };
     }
+    // Accumulated into one object for the same reason `miscFilters` is: the category branch and the
+    // white-base branch both write `type_filters`, and a second assignment would drop the first.
+    const typeFilters: Record<string, unknown> = {};
+    if (category !== null) {
+      typeFilters.category = { option: category };
+      // **Mandatory, not decoration** — the mirror of the white-base rule below. The exact base type
+      // was the only thing keeping the uniques, magics and white bases of this class out of the
+      // result set; `category` alone lets every one of them in, and `priceSample()` reads the
+      // cheapest five, which is precisely where they sit.
+      typeFilters.rarity = { option: "rare" };
+    }
     // Without this the search for "Sacred Focus" matches every *rare* on that base as well, and a
     // white item gets priced off rare listings. The base type alone does not separate the two, and
-    // this is the only filter that does.
+    // this is the only filter that does. Mutually exclusive with the branch above, which only ever
+    // fires for a Rare.
     if (item.rarity === "Normal") {
-      queryFilters.type_filters = { filters: { rarity: { option: "normal" } } };
+      typeFilters.rarity = { option: "normal" };
+    }
+    if (Object.keys(typeFilters).length > 0) {
+      queryFilters.type_filters = { filters: typeFilters };
     }
     if (defenceFilters.length > 0) {
       queryFilters.equipment_filters = {
@@ -1578,7 +1614,10 @@ export class Trade2Client {
             // Online-only by default: an offline seller's asking price is not a price anyone can
             // pay today. See `trade2.listingStatus` for why this is a setting and not a constant.
             status: { option: this.settings.trade2.listingStatus },
-            type: item.baseType,
+            // Omitted entirely once the class carries the search — GGG reads an absent `type` as
+            // "any base", which is the whole point, and `type_filters` above is what keeps that from
+            // also meaning "any rarity". Still sent verbatim whenever `category` came back null.
+            ...(category === null ? { type: item.baseType } : {}),
             // Constrained only for a corrupted item, which really does trade as its own market —
             // an uncorrupted one can still be modified and is worth more, so pricing a corrupted
             // drop off uncorrupted listings overstates it. The reverse is a soft distinction and
@@ -1626,8 +1665,13 @@ export class Trade2Client {
         : "";
     // The item's own name as well as its base: a base type alone is ambiguous the moment two rares
     // of the same base are priced in one session, and it is the name every other line uses.
+    //
+    // The category is appended when the search widened to it, because the alternative failure is
+    // invisible: an `Item Class:` spelling this app doesn't have falls back to the base type, which
+    // still prices and so looks like a success. This line is where that shows.
+    const scope = category === null ? item.baseType : `${item.baseType} -> ${category}`;
     console.log(
-      `[trade2] "${item.name}" (${item.baseType}) ${stage} with ${required} of ${statFilters.length} ` +
+      `[trade2] "${item.name}" (${scope}) ${stage} with ${required} of ${statFilters.length} ` +
         `mod filter(s)${priceNote}${defenceNote}${pseudoNote}${mapNote}: ${rung.total} listing(s)`
     );
     return rung;

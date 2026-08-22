@@ -477,11 +477,10 @@ export interface Settings {
      *
      * All affix stat filters are dropped when this is on. `false` restores the old payload exactly.
      *
-     * **Monster Effectiveness is sent as a ceiling, not a floor.** It used to be excluded outright,
-     * on the grounds that difficulty is a cost to the buyer and a floor would exclude the easier maps
-     * worth *more* — right about the direction, wrong about the remedy. A ceiling asks for the maps
-     * at most this dangerous, which is what the comparables actually are; sending nothing priced a
-     * 5% waystone against 50% ones. Revives keeps a floor: more attempts is a benefit.
+     * **Every total is sent as a floor, Monster Effectiveness included.** That one has been all
+     * three things — excluded outright, then a ceiling (difficulty is a cost to the buyer, so the
+     * comparables are the maps at most this dangerous), now a floor like the other five. The last
+     * move is a preference about which waystones to price against rather than a measurement.
      *
      * Waystone Tier still isn't filtered — the base type is per-tier ("Waystone (Tier 15)"), which
      * already pins it. Measured: that type plus `map_tier: { min: 16 }` returns zero listings.
@@ -490,10 +489,10 @@ export interface Settings {
     /**
      * How far to widen a waystone's printed totals when searching, as a fraction of each: 0.9 turns
      * `Item Rarity: +24%` into `"map_iir": { "min": 21 }` and `Monster Effectiveness: +13%` into
-     * `"map_magic_monsters": { "max": 15 }`. Below 1 for the same reason as `defenceMinRatio` — at
+     * `"map_magic_monsters": { "min": 11 }`. Below 1 for the same reason as `defenceMinRatio` — at
      * parity the only matches are waystones strictly better than this one.
      *
-     * One ratio for both directions, like `defenceMinRatio` also serving eDPS: a second knob would
+     * One ratio across all six totals, like `defenceMinRatio` also serving eDPS: a second knob would
      * only ever hold the same number. The settings window edits it as a percentage.
      */
     mapMinRatio: number;
