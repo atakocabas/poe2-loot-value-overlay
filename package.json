@@ -1,6 +1,6 @@
 {
   "name": "poe2-loot-value-overlay",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Windows overlay for Path of Exile 2 that prices loot as you pick it up and caches it for later review.",
   "private": true,
   "license": "MIT",
