@@ -277,6 +277,43 @@ Practically:
   cheapest of the *cheapest* matches (see `priceSample`) and an unpriced listing has no number to sort
   by; it can only take a slot a real asking price would have filled. This is the second knob after
   `listingStatus` that explains a gap between the app and the trade site.
+- **A rare is searched on its item class, not on its exact base type** (`shared/item-category.ts`).
+  A Prismatic Ring searches `Ring`; a Runeforged Falconer's Jacket searches `Body Armour`. `query.type`
+  is **omitted entirely** and `type_filters.filters.category` carries the search instead.
+
+  This **reverses the older rule** that treated base type as an always-on invariant of every rung,
+  and it was reversed on purpose. What a rare is worth lives in its mods, its defences and its
+  implicits; the base string is what starved the search on an illiquid base. The two captures this
+  doc already records are both that failure: a `Fists of Stone` with 7 of 7 mods matched and **zero**
+  online listings on that base, and a Diamond jewel matching 5640 on base type but 0 on any two of
+  its mods. Neither was a market fact about the item — both were a market fact about the base.
+
+  What replaces the base as the item's identity is already in the query and should not be weakened:
+  the `equipment_filters` floors below (which is why `defenceMinRatio` matters more now than it did),
+  and the implicits — `implicit` is in `MATCHABLE_GROUPS`, so a Prismatic Ring's
+  `+#% to all Elemental Resistances` is already a stat filter and the base's own bonus still counts.
+
+  Four rules, all load-bearing:
+  - **`rarity: { option: "rare" }` is mandatory, not decoration.** It is the exact mirror of the
+    white-base rule further down. The base type was the only thing keeping the uniques, magics and
+    white bases of that class out of the result set; a bare `category` lets every one of them in, and
+    `priceSample()` reads the **cheapest five**, which is precisely where they sit.
+  - **A rung that demands nothing keeps the base type.** No enabled stat filter, no enabled
+    aggregate, no defence floor — that is the base-type-only fallback for an item whose mods none
+    matched, and widened it stops asking "what is this base worth" and starts asking "what is the
+    cheapest rare ring in the league". A wide price is the feature; a fabricated one is not.
+  - **A class the table doesn't have falls back to the base type, never to no type at all.** An
+    unmapped class, a non-English client, an older client that prints no `Item Class:` line: each
+    returns null from `tradeCategoryOf()` and gets exactly the query this sent before. Note the
+    failure mode — a wrong `Item Class:` spelling in the table still *prices*, silently and on the
+    base, so it does not look like a breakage. Check the trade-site link's Item Category, not the row.
+  - **Category ids are GGG's, confirmed against `/api/trade2/data/filters`, not inferred from the
+    class name.** Two do not read the way they look: `weapon.warstaff` is **Quarterstaff** (the
+    obvious `weapon.staff` is the separate Staff class), and `armour.chest` is Body Armour (there is
+    no `armour.body`). `weapon.onemelee` is an "Any One-Handed Melee" bucket rather than a class and
+    is deliberately unused — it would widen past the item.
+
+  Normal-rarity base items and waystones are both excluded; see their own rules for why.
 - An armour piece is searched on its **defence totals**, via `equipment_filters`
   (`ar`/`ev`/`es`/`ward`, confirmed against `/api/trade2/data/filters`), and the local defence mods
   that produced those totals are **dropped from the stat filters** — see `isLocalDefenceMod()`.
@@ -296,7 +333,7 @@ Practically:
     the base value from `increased%` needs a base-item table this app doesn't have. Don't "fix" that
     with a `× 1.2 / (1 + q/100)` factor — quality is additive with `increased%`, so on a +100% item
     that overstates the correction by ~10% and starts excluding real comparables.
-  - **The defence floors are not part of the ladder** — they're always on, like base type. If every
+  - **The defence floors are not part of the ladder** — they're always on, like the item class. If every
     rung comes back empty the floor rung is retried **once** without them (`defencesDropped`), which
     is exactly the query this sent before the feature existed, so it can never invent a market.
   There is no `pseudo_total_armour`, no evasion and no ward — energy shield is the only defence GGG
@@ -336,6 +373,11 @@ Practically:
     that type plus `map_tier: { min: 16 }` returns zero listings. `map_gold` and `map_experience`
     exist in the reference too, but nothing parses them — they aren't on the clipboard's property
     block.
+
+    This is also **why a waystone is the one rare that keeps its base type** while every other class
+    widens to a category (see the rule below). Its base *is* its tier, so widening would drop the
+    tier from the query and price a T15 off T1s. `Waystones` is absent from the table in
+    `shared/item-category.ts` on purpose, not by omission.
   - **Monster Effectiveness is a `max`, and every other total is a `min`** — the one place a filter
     in this app points downward. This **reverses an earlier rule** that excluded it entirely, on the
     grounds that difficulty is a cost to the buyer so a floor would exclude the easier maps worth
@@ -631,7 +673,14 @@ Practically:
 - **Rare** items and **Normal**-rarity base items go to trade2; Magic items never do, because PoE2
   glues prefix and suffix onto the base on one header line, so `ParsedItem.baseType` for them is the
   affixed name and there is nothing reliable to search on. That one is not an oversight in the
-  resolver and has no fix available.
+  resolver.
+
+  Searching a rare on its **class** removes the mechanical half of that obstacle — a Magic item's
+  `Item Class:` line is as good as any rare's, so a class-plus-mods query would now run. It is still
+  not done, and turning it on is a **deliberate decision with its own measurements**, not a loose end
+  to tidy up: Magic items drop far more often than rares and the trade2 budget is per **IP**, so the
+  question is whether spending that budget on two-affix items is worth what it takes from the rares
+  in the same map. Measure that before changing `price-resolver.ts`.
 - A white base is priced on **item level and nothing else**, and is gated on it too
   (`trade2.useBaseItemSearch`, `trade2.baseItemMinLevel`, default 81). Four rules, all load-bearing:
   - **The gate lives in `Trade2Client`, not the resolver**, alongside the enabled and budget checks,
@@ -655,12 +704,17 @@ Practically:
   oversight — it needs each base's own armour value to separate `(base + flat)` from `increased%`,
   and there is no base-item table in this app. `defenceMinRatio` covers the error; the approximate
   correction is worse than none (see the trade2 notes above).
-- A rare on an illiquid base staying unpriced is a market fact, not a search bug. A real
-  `Fists of Stone` capture had 7 of 7 matchable mods resolved correctly and still found nothing,
-  because that base had **zero** online listings of any kind. Check base-type-only result counts
-  before tuning filters in response to a report like that. Likewise a real Diamond jewel matched
-  5640 listings on base type, 84 on any *one* of its four mods and **0** on any two — no threshold
-  the ladder can reach would have priced it, because that mod combination isn't listed by anyone.
+- A rare staying unpriced because **nobody lists its mod combination** is a market fact, not a search
+  bug. A real Diamond jewel matched 5640 listings on base type, 84 on any *one* of its four mods and
+  **0** on any two — no threshold the ladder can reach would have priced it, because that combination
+  isn't listed by anyone. Widening from the base to the class does not touch this: the class is what
+  the query asks for *instead of* the base, and the mods it asks for on top are unchanged.
+
+  **The illiquid-*base* half of this rule is gone**, and deliberately so. It used to read "a rare on
+  an illiquid base staying unpriced is a market fact" and cited a real `Fists of Stone` with 7 of 7
+  mods matched and zero online listings on that base. That was a fact about the base, not about the
+  item, and searching the item class is the fix for it — see the class rule in the trade2 notes.
+  Don't restore base-type pinning on the strength of the old wording.
 
 - Only a **partial** slice of GGG's 36-entry pseudo group is derived. The mod-count pseudos
   (`pseudo_number_of_prefix_mods` and friends) describe how craftable an item is, not what it sells
