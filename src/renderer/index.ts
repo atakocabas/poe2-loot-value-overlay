@@ -688,32 +688,20 @@ function renderPseudoRow(item: PricedItem, stat: PseudoStat, minRatio: number): 
  * affixes that produced this number are never searched. It stays ticked and disabled.
  */
 function renderMapRow(item: PricedItem, mapRow: MapRow, minRatio: number): ModRow {
-  const ceiling = mapRow.direction === "max";
   const row = renderDerivedRow({
     id: mapRow.id,
     label: mapRow.label,
     total: mapRow.value,
     minRatio,
-    // Difficulty is not a reward, and badging it as one is the misreading this row exists to correct.
-    badge: ceiling ? "difficulty" : "reward",
-    badgeTitle: ceiling
-      ? "How much harder this waystone's monsters are. A cost to the buyer, not a benefit, so it's " +
-        "searched as a ceiling — the comparables are the waystones at most this dangerous."
-      : "A total the game prints on the waystone, produced by its affixes between them. This is what " +
-        "GGG indexes and what buyers choose on.",
+    badge: "reward",
+    badgeTitle:
+      "A total the game prints on the waystone, produced by its affixes between them. This is what " +
+      "GGG indexes and what buyers choose on. Every one of them is searched as a floor, Monster " +
+      "Effectiveness included.",
     includeTitle: "A waystone is always searched on its printed totals.",
     stored: item.mapFilters?.find((filter) => filter.text === mapRow.id),
     rowClass: "mod-pseudo"
   });
-  // `renderDerivedRow` places the computed placeholder on the min box, which is right for every row
-  // that widens downward. A ceiling widens the other way, so the hint belongs on the other box — left
-  // on the min it would read as a floor the search never sends.
-  // Both boxes are always present on a derived row — the null case on `ModRow` is a mod line with no
-  // number in it, which this never is — but the type covers both, so it's tested rather than asserted.
-  if (ceiling && row.min && row.max) {
-    row.min.placeholder = "";
-    row.max.placeholder = String(Math.ceil(mapRow.value / minRatio));
-  }
   // Informational only, unlike every other row: map rows are left out of the `ignoredMods` readback
   // and `buildMapFilters` rebuilds these floors from the waystone itself on every search, so an
   // unticked one cannot strand the item. It says the reward floors matched nothing and the price fell

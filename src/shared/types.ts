@@ -156,9 +156,6 @@ export interface ItemMapStats {
   /**
    * `Monster Effectiveness: +13%`. GGG indexes it as `map_magic_monsters` — the id reads like magic
    * monster quantity but `/api/trade2/data/filters` titles it "Monster Effectiveness", confirmed live.
-   *
-   * Searched as a **ceiling**, unlike everything else here: this is difficulty, which is a cost to the
-   * buyer, so the comparable waystones are the ones at most this dangerous.
    */
   monsterEffectiveness: number | null;
   /** `Revives Available: 0`. GGG's `map_revives`, searched as a floor — more revives is a benefit. */
@@ -170,16 +167,8 @@ export interface MapRow {
   /** GGG's `map_filters` id. Also the key a user-set bound is stored under. */
   id: string;
   label: string;
-  /** The waystone's own printed value, before the ratio is applied. */
+  /** The waystone's own printed value, before the ratio is applied. Searched as a floor. */
   value: number;
-  /**
-   * Which side the ratio widens toward, and therefore which bound is sent.
-   *
-   * `"min"` for anything the buyer wants more of — every reward total, and revives. `"max"` for
-   * difficulty, where a floor would exclude the easier waystones that are worth *more*. The row
-   * editor reads this to decide which of its two boxes carries the computed placeholder.
-   */
-  direction: "min" | "max";
 }
 
 export interface ParsedItem {

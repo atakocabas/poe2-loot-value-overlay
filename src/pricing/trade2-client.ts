@@ -353,11 +353,12 @@ function noPrice(reason: string, failure: TradeFailure): TradeEstimate {
 }
 
 /**
- * "21+ Item Rarity, 76+ Waystone Drop Chance, <=15 Monster Effectiveness" — how a waystone's
+ * "21+ Item Rarity, 76+ Waystone Drop Chance, 11+ Monster Effectiveness" — how a waystone's
  * constraints are named in the log and the no-match message.
  *
- * The direction has to survive into the text. This string is what tells a user which way to tune when
- * nothing matched, and a ceiling reported as a floor sends them the wrong way.
+ * Every computed bound is a floor, so the `+` form is what a search normally prints. The `<=` and
+ * range forms stay because a ceiling can still be typed into the row editor by hand, and this
+ * string is what tells a user which way to tune when nothing matched.
  */
 export function describeMapFilters(filters: MapFilter[]): string {
   return filters
@@ -1222,13 +1223,14 @@ export class Trade2Client {
             ...(override.max !== null && { max: override.max })
           };
         }
-        // One ratio serves both directions, for the same reason `defenceMinRatio` also serves eDPS: a
-        // second knob would only ever hold the same number. It widens away from the item's own value
-        // either way — down to a floor, up to a ceiling.
-        return row.direction === "max"
-          ? { id: row.id, max: Math.ceil(row.value / ratio) }
-          : { id: row.id, min: Math.floor(row.value * ratio) };
+        // The same ratio every derived floor uses, `defenceMinRatio` included: it widens the search
+        // down from the item's own value, so the comparables are the waystones at least this good
+        // rather than only the ones strictly better than it.
+        return { id: row.id, min: Math.floor(row.value * ratio) };
       })
+      // The `max` half of this test is unreachable from the computed path above — every total is a
+      // floor — but a ceiling typed in the row editor arrives with no `min` at all, and culling it
+      // here would silently discard the one bound the user set by hand.
       .filter((filter) => filter.max !== undefined || (filter.min ?? 0) > 0);
   }
 

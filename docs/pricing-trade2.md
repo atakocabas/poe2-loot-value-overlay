@@ -378,19 +378,24 @@ Practically:
     widens to a category (see the rule below). Its base *is* its tier, so widening would drop the
     tier from the query and price a T15 off T1s. `Waystones` is absent from the table in
     `shared/item-category.ts` on purpose, not by omission.
-  - **Monster Effectiveness is a `max`, and every other total is a `min`** — the one place a filter
-    in this app points downward. This **reverses an earlier rule** that excluded it entirely, on the
-    grounds that difficulty is a cost to the buyer so a floor would exclude the easier maps worth
-    *more*. That was right about the direction and wrong about the remedy: the comparables are the
-    waystones at **most** this dangerous, and sending nothing priced a 5% waystone against 50% ones.
-    Revives keeps a floor — more attempts is a benefit. Don't "restore consistency" by making them
-    all floors.
-  - **The zero test is direction-aware, and the asymmetry is load-bearing.** `mapRowsOf` culls a
-    floor of 0, which asks for nothing every listing doesn't already satisfy — that is what keeps a
-    waystone printing `Revives Available: 0` from carrying a dead filter. A *ceiling* of 0 is kept:
-    it is the best possible case and the one worth the most, so culling it would drop the constraint
-    on exactly the waystones this exists to price. The row editor mirrors it, putting the computed
-    placeholder on the **max** box for a `max` row and badging it `difficulty` rather than `reward`.
+  - **All six totals are sent as a `min`, Monster Effectiveness included**, so `MapRow` carries no
+    direction at all and `buildMapFilters` has one branch. That stat has moved twice: excluded
+    outright at first (a floor would exclude the easier maps, which are worth *more*), then sent as
+    a `max` (the comparables are the waystones at **most** this dangerous, and sending nothing
+    priced a 5% waystone against 50% ones), and now a floor like the rest. **The last step is a
+    preference, not a measurement** — the ceiling was working; a floor is what the app is wanted to
+    do. Both earlier shapes are defensible, so don't change it back on reasoning alone; ask.
+  - **A total of 0 is culled, whichever stat it is.** A floor of 0 asks for nothing every listing
+    doesn't already satisfy, so it only spends query surface — that is what keeps a waystone
+    printing `Revives Available: 0` from carrying a dead filter, and a `+0%` Monster Effectiveness
+    now goes the same way. This test used to be direction-aware and deliberately asymmetric,
+    keeping a *ceiling* of 0 because it was the best case and the one worth the most; with no
+    ceilings left there is nothing for the exception to apply to.
+  - **`MapFilter.max` and the `<=` branch of `describeMapFilters` stay** even though nothing
+    computed emits one. A ceiling typed into the row editor by hand still overrides the floor, and
+    it arrives with no `min` beside it — which is why the cull at the end of `buildMapFilters`
+    tests `filter.max !== undefined` before the min. Dropping that clause discards the one bound
+    the user set themselves.
   - **The affix rows in the editor are disabled *and* unticked.** The backend sends no stat group for
     a waystone at all, so an enabled checkbox would promise a filter that never ships — and since
     `searchedMods` is empty for one, none of them ticks either, which says the same thing from the
@@ -728,8 +733,10 @@ Practically:
   Don't add an opt-in checkbox for them without first checking the listing count for that base, which
   was measured at zero. `trade2.useMapFilters` is the switch that already exists, and unticking it in
   the settings window restores the old affix search wholesale.
-- Monster Effectiveness being a **ceiling** rather than absent reverses a former non-goal here; the
-  reasoning is in the trade2 notes. Don't re-exclude it, and don't flip it to a floor.
+- Monster Effectiveness is a **floor**, like every other map total. It has been all three things —
+  absent, a ceiling, now a floor — and each move overturned a non-goal written here. The history is
+  in the trade2 notes above. Don't re-exclude it and don't restore the ceiling without asking: the
+  current shape is a stated preference rather than something measurement settles.
 - `statCoverage` counting per mod rather than naming "the mods that matched" is not a shortcut. Ticks
   derived from it would say nothing: every rung is an `and`, so the demanded mods are on every listing
   by construction. Its content is in the rows the query didn't demand. The ticks come from

@@ -186,10 +186,9 @@
         A waystone's affixes are monster-difficulty mods, and nobody lists the exact set yours has —
         one real T15 matched <strong>0</strong> listings on its six affixes and <strong>3453</strong>
         on the reward block those affixes add up to. So a waystone is searched on Item Rarity, Pack
-        Size, Monster Rarity, Waystone Drop Chance and Revives instead, plus Monster Effectiveness as
-        a <em>ceiling</em> — that one is difficulty, which is a cost to the buyer, so the comparables
-        are the maps at most this dangerous. Unticking this searches the affixes instead, which is
-        what the app did before.
+        Size, Monster Rarity, Waystone Drop Chance, Revives and Monster Effectiveness instead, each
+        of them as a floor. Unticking this searches the affixes instead, which is what the app did
+        before.
       </div>
     </div>
 
@@ -197,8 +196,8 @@
       <label for="map-min-ratio">Widen a waystone's totals to</label>
       <div class="hint">
         How far the search reaches past the waystone's own numbers, as a percentage of them. At 90 a
-        map printing 24% Item Rarity asks for 21+, and one printing 13% Monster Effectiveness asks for
-        15 or less. At 100 the only matches are waystones strictly better than yours, which prices
+        map printing 24% Item Rarity asks for 21+, and one printing 13% Monster Effectiveness asks
+        for 11+. At 100 the only matches are waystones strictly better than yours, which prices
         something you don't have; lower finds more comparables and prices a slightly rougher match.
       </div>
       <input type="number" id="map-min-ratio" min="50" max="100" step="1" />

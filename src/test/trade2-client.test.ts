@@ -894,14 +894,14 @@ test("a waystone is searched on its printed totals, not on its affixes at all", 
 
   const { query } = JSON.parse(String(searchCall(calls).init.body));
 
-  // floor(x * 0.9) on the rewards, ceil(x / 0.9) on the difficulty. Measured live: the reward half
-  // of this shape returned 3453 listings while the waystone's six real affixes returned 0.
+  // floor(x * 0.9) on every total, difficulty included. Measured live: the reward half of this
+  // shape returned 3453 listings while the waystone's six real affixes returned 0.
   assert.deepEqual(query.filters.map_filters.filters, {
     map_iir: { min: 21 },
     map_packsize: { min: 6 },
     map_rare_monsters: { min: 16 },
     map_bonus: { min: 76 },
-    map_magic_monsters: { max: 15 }
+    map_magic_monsters: { min: 11 }
   });
 
   // No stat group whatsoever — the affixes are dropped wholesale rather than folded one by one,
@@ -909,19 +909,21 @@ test("a waystone is searched on its printed totals, not on its affixes at all", 
   assert.equal(query.stats, undefined, "the affixes must not be searched");
 });
 
-test("monster effectiveness is a ceiling, never a floor", async () => {
+test("monster effectiveness is a floor like every other total", async () => {
   const { fetch, calls } = stubFetch({ stats: STATS_RES });
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(WAYSTONE, new Set(), toChaos);
 
   const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
 
-  // Difficulty is a cost to the buyer, so the comparables are the waystones at *most* this dangerous.
-  // A floor here is the bug this replaced: it excluded the easier maps, which are worth more.
-  assert.deepEqual(filters.map_filters.filters.map_magic_monsters, { max: 15 });
+  // This was a ceiling once — difficulty is a cost to the buyer, so the comparables were taken to
+  // be the waystones at *most* this dangerous. Sending it as a floor instead is a preference about
+  // which waystones to price against, not a measurement; the ceiling worked too. What the test
+  // guards is that the computed path emits one bound and it points up.
+  assert.deepEqual(filters.map_filters.filters.map_magic_monsters, { min: 11 });
   assert.equal(
-    filters.map_filters.filters.map_magic_monsters.min,
+    filters.map_filters.filters.map_magic_monsters.max,
     undefined,
-    "a floor on difficulty prices the item upside down"
+    "no computed total carries a ceiling any more"
   );
 });
 
@@ -940,18 +942,22 @@ test("a floor at zero is culled, and revives is a floor", async () => {
   assert.deepEqual(query.filters.map_filters.filters.map_revives, { min: 5 });
 });
 
-test("a ceiling of zero survives, unlike a floor of zero", async () => {
-  // 0% effectiveness is the *best* case and the one worth the most, so the constraint has to be sent.
-  // Culling it the way a zero floor is culled would drop the filter on exactly those waystones.
+test("a zero total is culled on difficulty exactly as on the rewards", async () => {
+  // Back when this was a ceiling, 0% was the best case and had to be sent. As a floor it asks for
+  // nothing, so it goes the same way `Revives Available: 0` does and the waystone searches on its
+  // rewards alone.
   const easy = parse(WAYSTONE.rawText.replace("Monster Effectiveness: +13%", "Monster Effectiveness: +0%"));
   const { fetch, calls } = stubFetch({ stats: STATS_RES });
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(easy, new Set(), toChaos);
 
   const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
-  assert.deepEqual(filters.map_filters.filters.map_magic_monsters, { max: 0 });
+  assert.equal(filters.map_filters.filters.map_magic_monsters, undefined);
+  assert.deepEqual(filters.map_filters.filters.map_iir, { min: 21 }, "the rewards still ship");
 });
 
-test("a bound typed in the row editor wins over the computed ceiling", async () => {
+// The only path left that emits a `max` on a map filter, which is why the cull in
+// `buildMapFilters` still tests for one: a hand-typed ceiling arrives with no `min` beside it.
+test("a bound typed in the row editor wins over the computed floor", async () => {
   const { fetch, calls } = stubFetch({ stats: STATS_RES });
   await new Trade2Client(makeSettings(), fetch).estimateRareValue(
     WAYSTONE,
@@ -973,7 +979,7 @@ test("the waystone tier is deliberately not filtered", async () => {
   const { filters } = JSON.parse(String(searchCall(calls).init.body)).query;
 
   // Measured live, `type: "Waystone (Tier 15)"` with map_tier min 16 returns zero listings, so the
-  // base type already pins the tier exactly. Unchanged by the difficulty filter above.
+  // base type already pins the tier exactly.
   assert.equal(filters.map_filters.filters.map_tier, undefined);
 });
 
