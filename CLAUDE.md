@@ -84,7 +84,8 @@ several rules have been "fixed" back into regressions more than once.
 | `src/parser/item-text-parser.ts` | [docs/parser.md](docs/parser.md) | Advanced Item Descriptions changes the mod format substantially, and the header gate is authoritative rather than merely tolerated. |
 | `src/pricing/price-resolver.ts`, `poeninja-client.ts`, `currency-exchange-client.ts`, `exchange-metadata-ids.ts`, `currency-convert.ts`, `queue.ts` | [docs/pricing-sources.md](docs/pricing-sources.md) | poe.ninja's restraint rules, the exchange's inverted ratios, and why metadata ids must be added by hand. |
 | `src/db/store.ts`, `src/shared/ipc-channels.ts`, `src/main/ipc.ts`, `src/preload/index.ts` | [docs/persistence-ipc.md](docs/persistence-ipc.md) | What each channel carries, and which handlers must stay in step. |
-| `src/shared/settings.ts`, `config/settings.default.json`, `src/main/settings.ts`, the two config windows | [docs/settings.md](docs/settings.md) — or run `/settings-key` | Three files move together, and a *changed* default needs a migration fold to reach existing installs. |
+| `src/shared/settings.ts`, `config/settings.default.json`, `src/main/settings.ts`, the two config windows | [docs/settings.md](docs/settings.md) — or run `/settings-key` | Three files move together, and a *changed* default needs a migration fold to reach existing installs. [docs/configuration.md](docs/configuration.md) is the user-facing table of the same keys, and moves with them. |
+| `src/renderer/*.html\|css`, or anything the panel draws | [docs/images/](docs/images/) via `npm run screenshots` | The README's screenshots are committed PNGs of the real renderer (`scripts/screenshots.js`), so a UI change leaves them stale until they're redrawn. |
 | `scripts/`, `package.json`, `.github/workflows/` | [docs/dev-loop.md](docs/dev-loop.md) | The dev loop's restart rules, and the release version gate. |
 
 ## Hard invariants

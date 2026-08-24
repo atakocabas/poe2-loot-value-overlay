@@ -17,6 +17,7 @@
     "dev": "node scripts/dev.js",
     "start": "npm run build && electron .",
     "test": "npm run build && node --test dist/test/*.test.js",
+    "screenshots": "npm run build && electron scripts/screenshots.js",
     "verify:exchange-ids": "npm run build && node scripts/verify-exchange-ids.js",
     "package": "npm run build && electron-builder --win --publish=never"
   },
