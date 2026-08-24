@@ -171,6 +171,21 @@ Anything with no ASCII reading at all becomes a single `?` instead of a run of m
   every item with no `tradeSearchId` — it renders and looks clickable, and clicking it does
   nothing you can see (a tooltip-text flash you'd have to be hovering to notice). This was a real
   bug, caught only by driving the built app's devtools live rather than reading the diff.
+- **The hover tooltip classifies the raw text; `#item-tooltip div { font-family: inherit }` is what
+  makes that survive.** `renderItemText` in `common.ts` splits the capture into one div per line and
+  tags each — name, base, `Item Class`/`Rarity`, property lines, Advanced Item Description affix
+  headers, and the rolls themselves — so the stylesheet can put the rolls in front and the
+  scaffolding behind. It only ever *classifies*: every line survives verbatim and in order, because
+  this is the one place the raw capture can be read.
+
+  The `inherit` rule is the same trap as `button.icon-btn` above, from the other side. The `*`
+  selector at the top of style.css sets `font-family` and `color` on **every** element, and it hits
+  those children *directly* rather than being inherited — so it beats anything set on
+  `#item-tooltip`. While the tooltip held a bare text node there were no children for it to reach;
+  the moment each line became a div, dropping that rule renders the lot in Segoe UI at a flat #eee,
+  which is exactly the grey wall the colours exist to break up. One known limitation, pinned by a
+  test: a mod shaped like `Grants Skill: Level 1 Fireball` takes the property shade, because the
+  alternative is a hardcoded list of PoE2's property labels that would drift every league.
 - **The panel's form is the hotkey's business and nothing else's.** It is never opened *or* closed
   for you: leaving a map doesn't expand it, and entering one doesn't collapse it. Both of those
   existed and were removed in turn — auto-expanding in the hideout first, then `collapsePanel()` on
