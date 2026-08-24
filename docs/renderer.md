@@ -67,6 +67,19 @@ the lot; and `priceSource` is a closed union the store persists. Keeping them ap
 correlation problem entirely — main pushes the whole list, so the renderer never matches a pending
 row against the `PricedItem` that replaces it.
 
+**The footer's Stop button is driven off that same pending list**, and it is the one footer button
+that is ever urgent: a trade2 lookup can sit on a rate-limit lockout for half an hour, and every
+capture taken afterwards queues behind it. `syncStopButton()` enables it whenever some pending entry
+has a stage other than `queued` — an entry still waiting its turn has no request out and
+`cancelCurrent()` would decline it, and a button that declines is worse than one visibly unavailable.
+It is deliberately **not** gated on the 300ms grace period below: that delay exists so a fast lookup
+never flashes a row, and a lookup slow enough to be worth stopping is long past it — matching the two
+would leave the button dead for the first moments of every stall. The handler disables on the press
+rather than on the answer and never re-enables itself; the `PRICING_STATUS` push that rides with the
+cancelled item is what decides, since only it knows whether the queue is now idle or already on the
+next item. "Nothing to stop" is a real outcome worth printing, because the lookup can finish between
+the button lighting up and the press landing.
+
 Two numbers there are load-bearing. A **300ms grace period** before a row is drawn, because
 poe.ninja and the currency exchange are synchronous cache lookups and without it every currency drop
 strobes a placeholder for one frame. And a **250ms tick that runs only while something is pending**,
@@ -158,14 +171,31 @@ Anything with no ASCII reading at all becomes a single `?` instead of a run of m
   every item with no `tradeSearchId` — it renders and looks clickable, and clicking it does
   nothing you can see (a tooltip-text flash you'd have to be hovering to notice). This was a real
   bug, caught only by driving the built app's devtools live rather than reading the diff.
+- **The hover tooltip classifies the raw text; `#item-tooltip div { font-family: inherit }` is what
+  makes that survive.** `renderItemText` in `common.ts` splits the capture into one div per line and
+  tags each — name, base, `Item Class`/`Rarity`, property lines, Advanced Item Description affix
+  headers, and the rolls themselves — so the stylesheet can put the rolls in front and the
+  scaffolding behind. It only ever *classifies*: every line survives verbatim and in order, because
+  this is the one place the raw capture can be read.
+
+  The `inherit` rule is the same trap as `button.icon-btn` above, from the other side. The `*`
+  selector at the top of style.css sets `font-family` and `color` on **every** element, and it hits
+  those children *directly* rather than being inherited — so it beats anything set on
+  `#item-tooltip`. While the tooltip held a bare text node there were no children for it to reach;
+  the moment each line became a div, dropping that rule renders the lot in Segoe UI at a flat #eee,
+  which is exactly the grey wall the colours exist to break up. One known limitation, pinned by a
+  test: a mod shaped like `Grants Skill: Level 1 Fireball` takes the property shade, because the
+  alternative is a hardcoded list of PoE2's property labels that would drift every league.
 - **The panel's form is the hotkey's business and nothing else's.** It is never opened *or* closed
   for you: leaving a map doesn't expand it, and entering one doesn't collapse it. Both of those
   existed and were removed in turn — auto-expanding in the hideout first, then `collapsePanel()` on
   map entry. Don't reintroduce either; a panel that resizes itself while you play is the thing this
   arrived at.
 - **`toggleList` flipping `overlayInteractive` too is the feature.** Expanding the list to press Edit
-  is useless while the panel still passes clicks through, and `toggleOverlay` remains for the times
-  you want click-through toggled without resizing anything.
+  is useless while the panel still passes clicks through, so the one key does both. It is now the
+  **only** way into interactive mode: a `toggleOverlay` hotkey used to flip click-through without
+  resizing anything, and was removed — in the minimal form there is nothing to click, so unlocking
+  clicks on their own bought a state with no use for it.
 - `groupItems` folding identical stackables across the whole list — so one row reads
   `Exalted Orb x214` — is what "one instance per item" means here. It deliberately refuses to fold
   anything with mods or a manual price, since those aren't interchangeable even when the names match.

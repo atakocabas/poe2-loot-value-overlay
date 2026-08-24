@@ -97,20 +97,18 @@ describe("findDuplicateAccelerators", () => {
   test("names both hotkeys sharing a combination, however each is spelled", () => {
     assert.deepEqual(
       findDuplicateAccelerators({
-        toggleOverlay: "CommandOrControl+Shift+O",
-        toggleList: "Ctrl+Shift+O",
-        forceCapture: "CommandOrControl+`"
+        toggleList: "CommandOrControl+Shift+L",
+        forceCapture: "Ctrl+Shift+L"
       }),
-      ["toggleOverlay", "toggleList"]
+      ["toggleList", "forceCapture"]
     );
   });
 
   test("does not count two disabled hotkeys as sharing anything", () => {
     assert.deepEqual(
       findDuplicateAccelerators({
-        toggleOverlay: "",
         toggleList: "",
-        forceCapture: "CommandOrControl+`"
+        forceCapture: ""
       }),
       []
     );

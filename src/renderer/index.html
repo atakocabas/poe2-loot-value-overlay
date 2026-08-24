@@ -64,6 +64,14 @@
           beside the header's price-age line because this is a between-maps action, and the footer is
           where the panel-wide ones already live — it inherits the minimal-mode hide with them.
         -->
+        <!--
+          Abandons the lookup in flight. First in the footer because it is the only button here
+          that is ever urgent — a trade2 search can sit on a rate-limit lockout for half an hour,
+          and everything captured afterwards queues behind it. Ships disabled, and stays that way
+          unless something is actually being looked up, so it reads as "nothing to stop" rather
+          than as broken.
+        -->
+        <button id="stop-pricing" type="button" disabled>Stop</button>
         <button id="refresh-prices" type="button">Refresh prices</button>
         <button id="export-csv" type="button">Export CSV</button>
         <button id="clear-history" type="button">Clear all</button>

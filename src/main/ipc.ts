@@ -4,6 +4,7 @@ import { tradeSearchUrl } from "../shared/trade-link";
 import { getAllItems, getItem, updateItem, clearHistory } from "../db/store";
 import { toChaos } from "../pricing/currency-convert";
 import type { PoeNinjaClient } from "../pricing/poeninja-client";
+import type { PricingQueue } from "../pricing/queue";
 import { toModFilterMap, type Trade2Client } from "../pricing/trade2-client";
 import { derivePseudoStats } from "../shared/pseudo-stats";
 import { searchFloorsByMod } from "../shared/mod-rolls";
@@ -17,9 +18,23 @@ export interface IpcDeps {
   trade2: Trade2Client;
   settings: Settings;
   getStatus: () => OverlayStatus;
+  /**
+   * The live pricing queue, for CANCEL_PRICING.
+   *
+   * The whole queue rather than a `cancel()` callback, because this is the composition root's own
+   * object and narrowing it to one function here would only have to widen again the next time the
+   * panel needs to ask it something.
+   */
+  queue: PricingQueue;
 }
 
-export function registerIpcHandlers({ poeNinja, trade2, settings, getStatus }: IpcDeps): void {
+export function registerIpcHandlers({
+  poeNinja,
+  trade2,
+  settings,
+  getStatus,
+  queue
+}: IpcDeps): void {
   // Pulled once on load; thereafter the main process pushes OVERLAY_STATUS on change.
   ipcMain.handle(IPC.GET_STATUS, () => getStatus());
   ipcMain.handle(IPC.GET_ALL_ITEMS, () => getAllItems());
@@ -177,6 +192,15 @@ export function registerIpcHandlers({ poeNinja, trade2, settings, getStatus }: I
     await poeNinja.refresh();
     const refreshedAt = poeNinja.getLastRefreshAt();
     return { refreshedAt, updated: refreshedAt !== before };
+  });
+
+  ipcMain.handle(IPC.CANCEL_PRICING, () => {
+    // Nothing to await: the abort lands on whatever the resolver is waiting on, and the item that
+    // was being looked up arrives on PRICED_ITEM by the ordinary route a moment later. Waiting for
+    // that here would hold the button through the very stall it exists to end.
+    const cancelled = queue.cancelCurrent();
+    if (cancelled) console.log("[pricing] Stop pressed — abandoning the lookup in flight");
+    return cancelled;
   });
 
   ipcMain.handle(IPC.SET_MANUAL_PRICE, async (_event, itemId: string, value: number | null) => {

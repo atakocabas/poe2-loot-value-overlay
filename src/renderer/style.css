@@ -170,6 +170,22 @@ button:hover {
 }
 
 /*
+ * Unavailable, not broken. The footer's Stop button spends most of its life with nothing to stop,
+ * and the panel had no disabled styling at all — so it rendered identically to an enabled button
+ * that ignores clicks, which is the same trap `button.icon-btn:not([hidden])` documents below.
+ * The hover reset matters as much as the dimming: a button that lights up under the cursor is
+ * saying it can be pressed.
+ */
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button:disabled:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/*
  * Icon-only button (currently just the row's "view search" shortcut) — square instead of the
  * text buttons' padded rectangle, and centers its one SVG child.
  *
@@ -640,18 +656,72 @@ select option {
 #item-tooltip {
   position: fixed;
   z-index: 10;
-  max-width: 360px;
-  max-height: 70vh;
+  /* Wider and taller than it was: 360px wrapped mod lines mid-phrase, and a long rare could run
+     past 70vh and be silently cut — `pointer-events: none` means there is no scrolling out of it. */
+  max-width: 420px;
+  max-height: 84vh;
   overflow: hidden;
-  padding: 8px 10px;
-  background: rgba(8, 8, 12, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  padding: 9px 12px;
+  background: rgba(10, 10, 14, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 6px;
   font-family: "Consolas", "Courier New", monospace;
-  font-size: 11px;
-  line-height: 1.35;
+  /* 11px at 1.35 was the complaint. This is the panel's own 13px with room between the lines —
+     the text is dense, unpunctuated and read in a hurry. */
+  font-size: 13px;
+  line-height: 1.5;
   white-space: pre-wrap;
   pointer-events: none;
+}
+
+/*
+ * Load-bearing, and the same trap `button.icon-btn:not([hidden])` documents above — from the other
+ * direction. The `*` rule at the top of this file sets `font-family` and `color` on **every**
+ * element, and it applies to these children *directly* rather than being inherited, so it beats
+ * anything set on `#item-tooltip`. While the tooltip held a bare text node there were no children
+ * for it to hit; now that each line is a div, without this they render in Segoe UI at a flat #eee —
+ * which is precisely the grey wall the colours below exist to break up.
+ */
+#item-tooltip div {
+  font-family: inherit;
+}
+
+/* PoE2's "--------" block rule. A real line divides; eight dashes just read as another mod. */
+#item-tooltip .tip-sep {
+  height: 1px;
+  margin: 6px 0;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/*
+ * The hierarchy, brightest first: the rolls are what you hovered to read, the name is how you know
+ * which item you are looking at, and everything else is scaffolding that should stay out of the way.
+ */
+#item-tooltip .tip-mod {
+  color: #9ec1ff;
+}
+
+#item-tooltip .tip-name {
+  color: #f0dfb4;
+  font-weight: 700;
+}
+
+#item-tooltip .tip-base {
+  color: #cdbf9b;
+}
+
+#item-tooltip .tip-prop {
+  color: #b6c0cf;
+}
+
+/* Item Class / Rarity, and the affix headers Advanced Item Descriptions adds. Context, not content. */
+#item-tooltip .tip-meta {
+  color: #8a8f99;
+}
+
+#item-tooltip .tip-affix {
+  color: #7c8593;
+  font-style: italic;
 }
 
 #disclaimer {

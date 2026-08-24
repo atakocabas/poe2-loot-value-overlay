@@ -7,9 +7,9 @@
  * (TS2451). Declaring nothing at top level here means this page can never collide with the panel's.
  */
 (() => {
-  type HotkeyName = "toggleOverlay" | "toggleList" | "forceCapture";
+  type HotkeyName = "toggleList" | "forceCapture";
 
-  const HOTKEY_NAMES: HotkeyName[] = ["toggleOverlay", "toggleList", "forceCapture"];
+  const HOTKEY_NAMES: HotkeyName[] = ["toggleList", "forceCapture"];
 
   const statusEl = document.getElementById("status") as HTMLDivElement;
   const saveButton = document.getElementById("save") as HTMLButtonElement;
@@ -26,7 +26,6 @@
 
   /** Working copy of the hotkeys. The recorder edits this; Save sends it. */
   const hotkeys: Record<HotkeyName, string> = {
-    toggleOverlay: "",
     toggleList: "",
     forceCapture: ""
   };

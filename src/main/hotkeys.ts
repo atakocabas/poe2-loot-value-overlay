@@ -2,7 +2,6 @@ import { globalShortcut } from "electron";
 import type { Settings } from "../shared/settings";
 
 export interface HotkeyHandlers {
-  onToggleOverlay: () => void;
   onToggleList: () => void;
   onForceCapture: () => void;
 }
@@ -43,7 +42,6 @@ function registerOne(name: string, accelerator: string, callback: () => void): b
 
 export function registerHotkeys(settings: Settings, handlers: HotkeyHandlers): HotkeyResult[] {
   const bindings: Array<[string, string, () => void]> = [
-    ["toggleOverlay", settings.hotkeys.toggleOverlay, handlers.onToggleOverlay],
     ["toggleList", settings.hotkeys.toggleList, handlers.onToggleList],
     ["forceCapture", settings.hotkeys.forceCapture, handlers.onForceCapture]
   ];

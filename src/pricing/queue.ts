@@ -19,6 +19,14 @@ export class PricingQueue {
    * it is the one the user is actually waiting on — so it leads the pushed list.
    */
   private current: QueueEntry | null = null;
+  /**
+   * The entry `cancelCurrent()` was called on, held only until that entry finishes.
+   *
+   * An id rather than a boolean because the answer it decides — whether a thrown resolver was a
+   * fault or a decision — has to be about *this* entry. A flag would still be set when the next
+   * item threw for reasons of its own, and would label a genuine break as something the user did.
+   */
+  private cancellingId: string | null = null;
 
   constructor(
     private readonly resolver: PriceResolver,
@@ -29,8 +37,34 @@ export class PricingQueue {
      * Optional and last: without it the queue behaves exactly as it did before, which is what keeps
      * the existing two-argument constructions working.
      */
-    private readonly onPending?: (pending: PendingCapture[]) => void
+    private readonly onPending?: (pending: PendingCapture[]) => void,
+    /**
+     * Calls off whatever network wait the resolver is currently in — `CancellableGggFetch`'s
+     * `cancelInFlight` in the real app, absent in tests that never reach the network.
+     *
+     * Injected rather than reached for, so the queue stays the one place that decides an entry was
+     * cancelled: without it `cancelCurrent()` still marks the entry, it just has nothing to
+     * interrupt and the lookup finishes on its own.
+     */
+    private readonly cancelInFlight?: () => void
   ) {}
+
+  /**
+   * Abandon the lookup in flight, so the queue can move on to the next capture.
+   *
+   * **The current entry only.** The backlog behind it is still worth pricing, and dropping it too
+   * would make one stuck item cost every drop captured while it was stuck — which is the situation
+   * this exists to get out of, not one to widen.
+   *
+   * Answers whether there was anything to cancel. A press with the queue idle is a no-op: nothing
+   * is marked, so the next lookup to start is unaffected.
+   */
+  cancelCurrent(): boolean {
+    if (!this.current) return false;
+    this.cancellingId = this.current.id;
+    this.cancelInFlight?.();
+    return true;
+  }
 
   enqueue(item: ParsedItem): void {
     this.queue.push({ id: randomUUID(), item, stage: "queued" });
@@ -62,10 +96,19 @@ export class PricingQueue {
           this.emitPending();
         });
       } catch (error) {
+        // A cancel arrives here as a thrown abort, and it is the one throw that isn't a fault: the
+        // user decided this lookup wasn't worth the wait. Recording it as `searchFailed` would send
+        // them looking for a break that doesn't exist, so the two are told apart by whether *this*
+        // entry is the one Stop was pressed on.
+        const cancelled = this.cancellingId === entry.id;
+        if (cancelled) {
+          console.log(`[pricing] "${entry.item.name}" cancelled by the user, storing as unpriced`);
+        } else {
+          console.error("[pricing] failed to resolve item, storing as unpriced:", error);
+        }
         // Swallowing the item here lost the drop entirely — no feed row, no history entry, no
         // hint that anything happened. Record it unpriced instead so it can be repriced or valued
         // by hand later.
-        console.error("[pricing] failed to resolve item, storing as unpriced:", error);
         priced = {
           ...entry.item,
           chaosValue: null,
@@ -73,10 +116,12 @@ export class PricingQueue {
           // A crashed resolver used to be stored bare, which reads on the row as "the market has
           // nothing matching this item" — the one thing it definitely does not mean. The error text
           // is the only record of what actually broke, since nothing else here survives the catch.
-          unpricedReason: "searchFailed",
-          unpricedDetail: `pricing this item threw before it finished: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          unpricedReason: cancelled ? "cancelled" : "searchFailed",
+          unpricedDetail: cancelled
+            ? "Stop was pressed while this lookup was still running."
+            : `pricing this item threw before it finished: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
           ignoredMods: [],
           manualChaosValue: null
         };
@@ -86,6 +131,10 @@ export class PricingQueue {
       // outside the try/catch on purpose: a thrown resolver still has to clear the pending row, or
       // it stays up forever describing work that already stopped.
       this.current = null;
+      // Cleared whichever way the entry ended, including the case where Stop landed too late to
+      // interrupt anything and the item priced normally. Left set, it would label the *next*
+      // failure as a cancellation.
+      this.cancellingId = null;
       this.emitPending();
       this.onPriced(priced);
 

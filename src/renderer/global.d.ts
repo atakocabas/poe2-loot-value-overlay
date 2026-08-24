@@ -42,6 +42,7 @@ declare global {
       openReleasesPage: () => Promise<boolean>;
       setManualPrice: (itemId: string, value: number | null) => Promise<SetManualPriceResult>;
       refreshPrices: () => Promise<RefreshPricesResult>;
+      cancelPricing: () => Promise<boolean>;
     };
     /** Exposed by the same preload, but only ever called from setup.html. */
     poe2Setup: {

@@ -139,11 +139,62 @@ const tooltipEl = document.getElementById("item-tooltip")!;
 function attachTooltip(el: HTMLElement, item: ParsedItem): void {
   el.addEventListener("mouseenter", () => {
     if (!item.rawText) return;
-    tooltipEl.textContent = item.rawText;
+    tooltipEl.replaceChildren(renderItemText(item.rawText));
     tooltipEl.classList.remove("hidden");
     positionTooltip(el);
   });
   el.addEventListener("mouseleave", () => tooltipEl.classList.add("hidden"));
+}
+
+/** The line PoE2 puts between the blocks of an item's text. */
+const ITEM_TEXT_SEPARATOR = "--------";
+
+/**
+ * The clipboard text as classified lines rather than one flat block.
+ *
+ * It used to be assigned with `textContent`, which meant a rare's twenty-odd lines arrived as one
+ * grey wall at 11px: the `--------` rules were as loud as the mods, and the Advanced Item
+ * Description affix headers — metadata about a mod, not the mod — were louder still, since they are
+ * the longest lines on the item. Splitting it lets the stylesheet put the rolls in front and the
+ * scaffolding behind, which is the whole of what makes it readable at a glance mid-map.
+ *
+ * Every line still appears verbatim and in order. This classifies, it never rewrites — the tooltip
+ * is the only place the raw capture can be read, and a line quietly reworded here would be a lie
+ * about what the parser was handed.
+ */
+function renderItemText(text: string): DocumentFragment {
+  const fragment = document.createDocumentFragment();
+  const lines = text.split("\n");
+  // The parser's own header gate. Only when both hold is line three actually the item's name;
+  // anything else is text this app didn't capture and shouldn't pretend to understand.
+  const hasHeader =
+    lines[0]?.startsWith("Item Class:") === true && lines[1]?.startsWith("Rarity:") === true;
+
+  for (const [index, line] of lines.entries()) {
+    const el = document.createElement("div");
+    if (line.trim() === ITEM_TEXT_SEPARATOR) {
+      // Drawn as a rule rather than kept as eight dashes: as text it reads like content.
+      el.className = "tip-sep";
+    } else {
+      el.textContent = line;
+      el.className = itemTextLineClass(line, index, hasHeader);
+    }
+    fragment.append(el);
+  }
+  return fragment;
+}
+
+/** Which part of an item's text a line belongs to, for the colours in style.css. */
+function itemTextLineClass(line: string, index: number, hasHeader: boolean): string {
+  if (hasHeader && index < 2) return "tip-meta";
+  if (hasHeader && index === 2) return "tip-name";
+  if (hasHeader && index === 3) return "tip-base";
+  // `{ Prefix Modifier "Banshee's" (Tier: 1) — Evasion }`. Advanced Item Descriptions puts each
+  // affix's own metadata on a line above its rolls; it is context for the mod, not a mod.
+  if (line.startsWith("{") && line.endsWith("}")) return "tip-affix";
+  // `Quality: +20%`, `Item Level: 81`, `Requires: Level 75` — the game's property block.
+  if (/^[A-Za-z][A-Za-z ]*: /.test(line)) return "tip-prop";
+  return "tip-mod";
 }
 
 /**
@@ -243,6 +294,13 @@ const UNPRICED_REASON: Record<string, { word: string; hint: string; recoverable:
       "This item isn't in poe.ninja's data and isn't traded on the currency exchange, and nothing " +
       "else could price it. Set a price by hand with the row's Edit button.",
     recoverable: false
+  },
+  cancelled: {
+    word: "stopped",
+    hint:
+      "You pressed Stop while this was being looked up, so the search was abandoned. Nothing is " +
+      "wrong with the item — press Edit and Reprice to try it again.",
+    recoverable: true
   }
 };
 

@@ -24,6 +24,7 @@ const listEmptyEl = document.getElementById("list-empty")!;
 const searchEl = document.getElementById("list-search") as HTMLInputElement;
 const sortEl = document.getElementById("list-sort") as HTMLSelectElement;
 const unpricedEl = document.getElementById("list-unpriced") as HTMLInputElement;
+const stopButton = document.getElementById("stop-pricing") as HTMLButtonElement;
 const refreshButton = document.getElementById("refresh-prices") as HTMLButtonElement;
 const exportButton = document.getElementById("export-csv") as HTMLButtonElement;
 const clearButton = document.getElementById("clear-history") as HTMLButtonElement;
@@ -278,6 +279,7 @@ function syncCooldownTimer(): void {
 window.poe2Overlay.onPricingStatus((pending) => {
   pendingCaptures = pending;
   renderPending();
+  syncStopButton();
 
   if (pendingCaptures.length > 0 && pendingTimer === null) {
     pendingTimer = setInterval(renderPending, PENDING_TICK_MS);
@@ -296,6 +298,21 @@ function pendingStateLabel(pending: PendingCapture): string {
   const seconds = Math.floor((Date.now() - pending.item.capturedAt) / 1000);
   const elapsed = seconds >= 1 ? ` ${seconds}s` : "";
   return pending.stage === "trade2" ? `Searching trade2…${elapsed}` : `Pricing…${elapsed}`;
+}
+
+/**
+ * Stop is only offered while there is a lookup to stop.
+ *
+ * Keyed off a stage other than `queued`, not off the list being non-empty: an entry still waiting
+ * its turn has no request out and nothing to interrupt, and `cancelCurrent()` would decline it. A
+ * button that declines is worse than one that is visibly unavailable.
+ *
+ * Deliberately not gated on the grace period `renderPending` applies. That delay exists so a fast
+ * lookup never flashes a row on screen; a lookup slow enough to be worth stopping is long past it,
+ * and matching the two would leave the button dead for the first moments of every stall.
+ */
+function syncStopButton(): void {
+  stopButton.disabled = !pendingCaptures.some((pending) => pending.stage !== "queued");
 }
 
 function renderPendingRow(pending: PendingCapture): HTMLElement {
@@ -1277,6 +1294,45 @@ function wireClearButton(): void {
 wireClearButton();
 
 /**
+ * Abandons the price lookup in flight, for the item the queue is stuck on.
+ *
+ * Reports in the button's own label, like the other two footer buttons and for the same reason —
+ * this window is frameless and non-focusable outside interactive mode, so a native dialog can end
+ * up behind the game.
+ *
+ * There is no re-enable here and no success message beyond the label. The cancelled capture lands
+ * on PRICED_ITEM within the moment, and the PRICING_STATUS push riding with it runs
+ * `syncStopButton()` — which re-enables the button if the next entry is already being looked up and
+ * leaves it disabled if the queue has gone idle. Either is the true answer, and neither is one
+ * this handler could work out for itself.
+ */
+function wireStopButton(): void {
+  let restoreTimer: ReturnType<typeof setTimeout> | null = null;
+
+  stopButton.addEventListener("click", async () => {
+    if (restoreTimer) clearTimeout(restoreTimer);
+    // Disabled on the press rather than on the answer: the abort is already on its way, and a
+    // second press could only reach whatever entry started after it.
+    stopButton.disabled = true;
+
+    let cancelled = false;
+    try {
+      cancelled = await window.poe2Overlay.cancelPricing();
+    } catch {
+      cancelled = false;
+    }
+
+    // "Nothing to stop" is a real outcome worth saying: the lookup can finish between the button
+    // being enabled and the press landing, and silence there reads as a button that did nothing.
+    stopButton.textContent = cancelled ? "Stopped" : "Nothing to stop";
+    restoreTimer = setTimeout(() => {
+      stopButton.textContent = "Stop";
+      restoreTimer = null;
+    }, 2500);
+  });
+}
+
+/**
  * Forces the poe.ninja pull that otherwise waits out `poeNinja.refreshIntervalMs`.
  *
  * Every state it reports goes **in the button's own label**, the same choice `wireClearButton` makes
@@ -1316,6 +1372,7 @@ function wireRefreshButton(): void {
   });
 }
 
+wireStopButton();
 wireRefreshButton();
 
 async function load(): Promise<void> {
