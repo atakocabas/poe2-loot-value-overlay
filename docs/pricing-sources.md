@@ -78,6 +78,23 @@ Part of the [CLAUDE.md](../CLAUDE.md) reference set.
    lookup. Retiring an entry happens **before** `onPriced`, so an item is never on screen twice, and
    it sits outside the try/catch: a thrown resolver that skipped it would leave a row up forever.
 
+   **`cancelCurrent()` abandons the entry in flight, and only that one.** The panel's Stop button
+   reaches it over `CANCEL_PRICING`. Three rules:
+   - **The backlog is left alone on purpose.** Stop exists because one stuck lookup blocks a serial
+     queue; dropping everything captured behind it would make that jam cost more, not less. If the
+     next entry is already being looked up when the push lands, the button simply re-enables.
+   - **The queue marks the cancelled entry by *id*, not with a flag**, and clears it however the
+     entry ends. That id is what decides whether the resolver's throw was a fault or a decision — a
+     boolean would still be set when the *next* item failed on its own, and would report a genuine
+     break as something the user did.
+   - **A cancel is stored as `unpricedReason: "cancelled"`, never `searchFailed`.** Nothing broke.
+     The row says "stopped" and is marked recoverable, which is what points at Reprice.
+
+   The interrupt itself is injected as `cancelInFlight` rather than reached for — see
+   `CancellableGggFetch` in [pricing-trade2.md](pricing-trade2.md). Without it the queue still marks
+   the entry, it just has nothing to interrupt and the lookup finishes on its own, which is exactly
+   what the two-argument constructions in the tests do.
+
 **`CurrencyExchangeClient`** (`src/pricing/currency-exchange-client.ts`) reads GGG's public,
 unauthenticated PoE2 Currency Exchange feed. Three things about it are measured behaviour, not
 guesses — don't "simplify" them away:

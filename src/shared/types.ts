@@ -261,7 +261,14 @@ export type UnpricedReason =
   /** A Magic item: PoE2 glues its affixes onto the base type, leaving nothing to search on. */
   | "notSearchable"
   /** Not in poe.ninja's data and not traded on the currency exchange. */
-  | "noPriceData";
+  | "noPriceData"
+  /**
+   * The user pressed Stop while this lookup was still running.
+   *
+   * Deliberately not folded into `searchFailed`: nothing broke, and a row saying it did would
+   * send someone hunting a fault that is really a lookup they themselves called off.
+   */
+  | "cancelled";
 
 export interface PricedItem extends ParsedItem {
   id: string;

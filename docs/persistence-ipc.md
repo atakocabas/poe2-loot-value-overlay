@@ -30,7 +30,14 @@ entry; anything that writes through this handler needs one.
 **IPC surface** (`src/shared/ipc-channels.ts`, `src/main/ipc.ts`, `src/preload/index.ts`): pushes
 (`PRICED_ITEM`, `PRICING_STATUS`, `OVERLAY_STATUS`) go main -> renderer as items resolve; pulls
 (`GET_STATUS`, `GET_ALL_ITEMS`, `CLEAR_HISTORY`, `GET_EDITOR_ROWS`, `REPRICE_ITEM`,
-`SET_MANUAL_PRICE`, `REFRESH_PRICES`) are renderer-invoked `ipcMain.handle` calls.
+`SET_MANUAL_PRICE`, `REFRESH_PRICES`, `CANCEL_PRICING`) are renderer-invoked `ipcMain.handle` calls.
+`CANCEL_PRICING` abandons the price lookup in flight and answers whether there was one to abandon —
+not whether the press "worked", since an idle queue has nothing to stop and the button says so. It
+returns as soon as the abort is sent rather than awaiting the outcome: the cancelled capture arrives
+on `PRICED_ITEM` by the ordinary route a moment later, and waiting for it would hold the button
+through the very stall it exists to end. It needs no companion push for the same reason. This is why
+`registerIpcHandlers` takes the whole `PricingQueue` and why the composition root builds the queue
+**before** it registers the handlers.
 `REPRICE_ITEM` always persists the caller's `ignoredMods`, `modFilters`, `pseudoFilters` and
 `mapFilters` even if trade2 is unavailable or finds nothing, so the tuning the user just did survives
 across repeated attempts. `GET_EDITOR_ROWS` supplies the editor rows that aren't mod lines — derived

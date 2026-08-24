@@ -205,3 +205,167 @@ describe("pending captures", () => {
     assert.equal(priced.length, 1);
   });
 });
+
+describe("cancelling the lookup in flight", () => {
+  /** Resolves immediately, for the cases where nothing is meant to be waiting. */
+  function priceableResolver(): PriceResolver {
+    return {
+      resolve: async (item: ParsedItem) => ({
+        ...item,
+        chaosValue: 5,
+        priceSource: "poeninja",
+        ignoredMods: [],
+        manualChaosValue: null
+      })
+    } as unknown as PriceResolver;
+  }
+
+  /**
+   * A resolver that hangs until the injected `cancelInFlight` fires, which is what the real one does:
+   * the abort lands on the fetch or the rate-limit wait deep inside it and surfaces here as a throw.
+   */
+  function hangingResolver(): { resolver: PriceResolver; abort: () => void } {
+    let reject: ((error: Error) => void) | null = null;
+    const resolver = {
+      resolve: () =>
+        new Promise((_resolve, rejectPromise) => {
+          reject = rejectPromise;
+        })
+    } as unknown as PriceResolver;
+
+    return {
+      resolver,
+      abort: () => reject?.(new DOMException("This operation was aborted", "AbortError"))
+    };
+  }
+
+  test("cancelling an idle queue says there was nothing to cancel", () => {
+    const queue = new PricingQueue(priceableResolver(), () => {});
+
+    // The press that lands just after a lookup finished. It must not mark anything, or the next
+    // item to fail on its own would be reported as something the user did.
+    assert.equal(queue.cancelCurrent(), false);
+  });
+
+  test("a cancelled item is recorded as stopped rather than as a failure", async () => {
+    const priced: Array<Omit<PricedItem, "id">> = [];
+    const { resolver, abort } = hangingResolver();
+
+    const queue = new PricingQueue(resolver, (item) => priced.push(item), undefined, abort);
+    queue.enqueue(makeItem("Doom Grip"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(queue.cancelCurrent(), true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(priced.length, 1, "a cancelled drop is still a drop and must be kept");
+    assert.equal(priced[0].priceSource, "unpriced");
+    // The distinction this exists for: "search failed" sends the user hunting a fault, when what
+    // happened is a lookup they themselves called off.
+    assert.equal(priced[0].unpricedReason, "cancelled");
+    assert.match(priced[0].unpricedDetail!, /Stop was pressed/);
+  });
+
+  test("the queue moves on to the backlog rather than stopping with it", async () => {
+    const priced: Array<Omit<PricedItem, "id">> = [];
+    let reject: ((error: Error) => void) | null = null;
+    let calls = 0;
+    const resolver = {
+      resolve: (item: ParsedItem) => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((_resolve, rejectPromise) => {
+            reject = rejectPromise;
+          });
+        }
+        return Promise.resolve({
+          ...item, chaosValue: 5, priceSource: "poeninja",
+          ignoredMods: [], manualChaosValue: null
+        });
+      }
+    } as unknown as PriceResolver;
+
+    const queue = new PricingQueue(resolver, (item) => priced.push(item), undefined, () =>
+      reject?.(new DOMException("This operation was aborted", "AbortError"))
+    );
+    queue.enqueue(makeItem("Doom Grip"));
+    queue.enqueue(makeItem("Chaos Orb"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    queue.cancelCurrent();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    // Stop is scoped to the stuck item on purpose. Dropping the backlog with it would make one bad
+    // lookup cost every drop captured while it was stuck.
+    assert.deepEqual(
+      priced.map((p) => [p.name, p.unpricedReason ?? p.priceSource]),
+      [
+        ["Doom Grip", "cancelled"],
+        ["Chaos Orb", "poeninja"]
+      ]
+    );
+  });
+
+  test("a genuine failure after a cancel is still reported as a failure", async () => {
+    const priced: Array<Omit<PricedItem, "id">> = [];
+    let reject: ((error: Error) => void) | null = null;
+    let calls = 0;
+    const resolver = {
+      resolve: () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((_resolve, rejectPromise) => {
+            reject = rejectPromise;
+          });
+        }
+        return Promise.reject(new Error("poe.ninja unreachable"));
+      }
+    } as unknown as PriceResolver;
+
+    const queue = new PricingQueue(resolver, (item) => priced.push(item), undefined, () =>
+      reject?.(new DOMException("This operation was aborted", "AbortError"))
+    );
+    queue.enqueue(makeItem("Doom Grip"));
+    queue.enqueue(makeItem("Chaos Orb"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    queue.cancelCurrent();
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    // This is why the queue tracks the cancelled *id* and not a boolean: a flag would still be set
+    // here and would label a real break as something the user chose.
+    assert.deepEqual(
+      priced.map((p) => [p.name, p.unpricedReason]),
+      [
+        ["Doom Grip", "cancelled"],
+        ["Chaos Orb", "searchFailed"]
+      ]
+    );
+  });
+
+  test("a lookup that finishes before the abort lands is priced normally", async () => {
+    const priced: Array<Omit<PricedItem, "id">> = [];
+
+    // Nothing to interrupt: the resolver answers on its own. The mark is still set, so this is what
+    // proves it gets cleared on the way out rather than leaking onto the next item.
+    const queue = new PricingQueue(priceableResolver(), (item) => priced.push(item), undefined, () => {});
+    queue.enqueue(makeItem("Doom Grip"));
+    queue.cancelCurrent();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(priced.length, 1);
+    assert.equal(priced[0].priceSource, "poeninja", "a price that arrived is still a price");
+    assert.equal(priced[0].unpricedReason, undefined);
+  });
+
+  test("constructing without the cancel hook leaves the queue working as before", async () => {
+    const priced: Array<Omit<PricedItem, "id">> = [];
+    const queue = new PricingQueue(priceableResolver(), (item) => priced.push(item));
+
+    queue.enqueue(makeItem("Doom Grip"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(priced.length, 1);
+    assert.equal(priced[0].priceSource, "poeninja");
+  });
+});

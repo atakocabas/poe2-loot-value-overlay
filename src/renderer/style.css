@@ -170,6 +170,22 @@ button:hover {
 }
 
 /*
+ * Unavailable, not broken. The footer's Stop button spends most of its life with nothing to stop,
+ * and the panel had no disabled styling at all — so it rendered identically to an enabled button
+ * that ignores clicks, which is the same trap `button.icon-btn:not([hidden])` documents below.
+ * The hover reset matters as much as the dimming: a button that lights up under the cursor is
+ * saying it can be pressed.
+ */
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button:disabled:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/*
  * Icon-only button (currently just the row's "view search" shortcut) — square instead of the
  * text buttons' padded rectangle, and centers its one SVG child.
  *

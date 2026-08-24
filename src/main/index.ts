@@ -24,7 +24,7 @@ import { parseItemText } from "../parser/item-text-parser";
 import { PoeNinjaClient } from "../pricing/poeninja-client";
 import { Trade2Client } from "../pricing/trade2-client";
 import { CurrencyExchangeClient } from "../pricing/currency-exchange-client";
-import { createPublicGggFetch } from "../pricing/ggg-fetch";
+import { createCancellableGggFetch, createPublicGggFetch } from "../pricing/ggg-fetch";
 import { PriceResolver } from "../pricing/price-resolver";
 import { PricingQueue } from "../pricing/queue";
 import { initStore, addPricedItem } from "../db/store";
@@ -270,7 +270,11 @@ app.whenReady().then(async () => {
 
   const poeNinja = new PoeNinjaClient(settings);
   const currencyExchange = new CurrencyExchangeClient(settings, createPublicGggFetch(settings));
-  const trade2 = new Trade2Client(settings);
+  // Its own fetch instance, held rather than left inside the client, because Stop has to reach the
+  // request it is currently waiting on. Separate from the currency exchange's above for the same
+  // reason: cancelling a rare's lookup must not kill a refresh that happens to overlap it.
+  const trade2Fetch = createCancellableGggFetch(settings);
+  const trade2 = new Trade2Client(settings, trade2Fetch.fetch);
 
   // Assigned once all three exist, because the status carries the trade2 rate-limit deadline as well
   // as poe.ninja's rates — `buildStatus` reads both and `onRefresh` below can fire immediately.
@@ -287,11 +291,31 @@ app.whenReady().then(async () => {
     settings.currencyExchange.stalePoeNinjaAfterMs
   );
 
+  const queue = new PricingQueue(
+    resolver,
+    async (item) => {
+      const stored = await addPricedItem(item);
+      sendToOverlay(IPC.PRICED_ITEM, stored);
+      // A finished lookup is the only thing that spends a search, so this is the one moment the
+      // rate-limit deadline moves. Cheap despite riding a full status push: the send above already
+      // triggers a render for this item, and `scheduleRender` coalesces to one rebuild per frame.
+      broadcastStatus();
+    },
+    // Pushed whole on every transition, so the panel can show a captured item straight away rather
+    // than staying blank through a trade2 lookup that can run for half a minute.
+    (pending) => sendToOverlay(IPC.PRICING_STATUS, pending),
+    // What the footer's Stop button reaches, one indirection along: the queue decides an entry was
+    // cancelled, this is only how it interrupts the wait. Bound to the trade2 fetch alone, so a
+    // currency-exchange refresh running beside it is untouched.
+    () => trade2Fetch.cancelInFlight()
+  );
+
   registerIpcHandlers({
     poeNinja,
     trade2,
     settings,
-    getStatus: buildStatus
+    getStatus: buildStatus,
+    queue
   });
 
   registerSettingsIpcHandlers({
@@ -322,21 +346,6 @@ app.whenReady().then(async () => {
       // settings window closes. See `onOpenSettings` above.
     }
   });
-
-  const queue = new PricingQueue(
-    resolver,
-    async (item) => {
-      const stored = await addPricedItem(item);
-      sendToOverlay(IPC.PRICED_ITEM, stored);
-      // A finished lookup is the only thing that spends a search, so this is the one moment the
-      // rate-limit deadline moves. Cheap despite riding a full status push: the send above already
-      // triggers a render for this item, and `scheduleRender` coalesces to one rebuild per frame.
-      broadcastStatus();
-    },
-    // Pushed whole on every transition, so the panel can show a captured item straight away rather
-    // than staying blank through a trade2 lookup that can run for half a minute.
-    (pending) => sendToOverlay(IPC.PRICING_STATUS, pending)
-  );
 
   const clipboardWatcher = new ClipboardWatcher((text) => {
     const item = parseItemText(text);

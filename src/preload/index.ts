@@ -102,7 +102,15 @@ contextBridge.exposeInMainWorld("poe2Overlay", {
   setManualPrice: (itemId: string, value: number | null): Promise<SetManualPriceResult> =>
     ipcRenderer.invoke(IPC.SET_MANUAL_PRICE, itemId, value),
   /** Pulls poe.ninja now. Resolves when the pull finishes — the header updates itself off the push. */
-  refreshPrices: (): Promise<RefreshPricesResult> => ipcRenderer.invoke(IPC.REFRESH_PRICES)
+  refreshPrices: (): Promise<RefreshPricesResult> => ipcRenderer.invoke(IPC.REFRESH_PRICES),
+  /**
+   * Abandons the price lookup in flight. Resolves with whether there was one to abandon.
+   *
+   * Returns as soon as the abort is sent, not when the item lands: the cancelled capture arrives
+   * on `onPricedItem` like any other, and waiting for it here would hold the button through the
+   * stall it exists to end.
+   */
+  cancelPricing: (): Promise<boolean> => ipcRenderer.invoke(IPC.CANCEL_PRICING)
 });
 
 // The setup window loads this same preload — a second one would duplicate the wiring to expose

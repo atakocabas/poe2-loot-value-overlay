@@ -38,6 +38,39 @@ Practically:
   **declines** the lookup instead of waiting. Sleeping there would block the serial `PricingQueue`
   for minutes and stall every poe.ninja-priceable drop queued behind a pile of rares. Declined
   items are stored unpriced with a reason; the row's Reprice button retries them at human pace.
+- **Two separate things could hang the queue indefinitely, and both are now interruptible.** They
+  are what "the app gets stuck querying" was:
+  - `fetch` has no timeout of its own, so a dead socket blocked the serial `PricingQueue` forever:
+    the pending row stayed on *pricing*, every later capture queued behind it, and only restarting
+    the app cleared it. `REQUEST_TIMEOUT_MS` (30s) now bounds the request.
+  - `GggRateLimiter`'s waits are **minutes to an hour** by design — `restrictedSec` is 1800 for the
+    5-minute bucket and 3600 for the 6-hour one. That is the limiter working, not hanging, so the
+    timeout deliberately **excludes** it: the timeout signal is built *after* `waitIfNeeded()`
+    returns, because a signal created before a legitimate half-hour wait would already have expired
+    by the time the request went out. Timing a lockout out would send the request straight into the
+    Invalid Requests Threshold this class exists to keep the app clear of. What the wait takes
+    instead is an `AbortSignal`, so it can be abandoned on purpose without being cut short by a
+    clock.
+- **`createCancellableGggFetch()` is `createPublicGggFetch()` plus a handle on the request in
+  flight**, and it is how the panel's Stop button reaches a lookup already under way. Cancellation
+  lives in the fetch wrapper rather than being threaded as an `AbortSignal` through
+  `PriceResolver`, `Trade2Client` and `TradeStatsMatcher`, each of which would have grown a
+  parameter it has no other use for — and `estimateRareValue` already carries six. The queue is
+  serial, so "the request in flight" is unambiguous, and the one caller that cancels is the one
+  that owns the queue. Three details:
+  - **Each client that wants to be cancellable independently needs its own instance.** The limiter
+    state and the in-flight handle are both per-instance, which is what stops a cancelled rare from
+    killing a currency-exchange refresh that happens to overlap it. `main/index.ts` holds the
+    trade2 one as `trade2Fetch` for exactly this reason.
+  - **The handle is cleared in a `finally`, and only if it is still ours.** A request that already
+    answered must not be cancellable retroactively, and a second request that started first owns
+    the handle now — clearing it blind would leave that one uncancellable.
+  - **A caller's own `signal` is combined, not overridden.** Nothing passes one today, but `...init`
+    used to carry it through to `fetch`, and silently dropping it is the kind of regression that
+    surfaces only as a request that will not die.
+
+  What happens to the cancelled item is `PricingQueue`'s business — see
+  [pricing-sources.md](pricing-sources.md).
 - **Why a lookup failed is marked on the item, not just logged** — `TradeEstimate.failure`
   (`TradeFailure` in `shared/types.ts`), persisted as `PricedItem.unpricedReason` by both write paths,
   and shown on the row as its own badge word in place of **unpriced** (`UNPRICED_REASON` and

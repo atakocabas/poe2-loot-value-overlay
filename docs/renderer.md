@@ -67,6 +67,19 @@ the lot; and `priceSource` is a closed union the store persists. Keeping them ap
 correlation problem entirely — main pushes the whole list, so the renderer never matches a pending
 row against the `PricedItem` that replaces it.
 
+**The footer's Stop button is driven off that same pending list**, and it is the one footer button
+that is ever urgent: a trade2 lookup can sit on a rate-limit lockout for half an hour, and every
+capture taken afterwards queues behind it. `syncStopButton()` enables it whenever some pending entry
+has a stage other than `queued` — an entry still waiting its turn has no request out and
+`cancelCurrent()` would decline it, and a button that declines is worse than one visibly unavailable.
+It is deliberately **not** gated on the 300ms grace period below: that delay exists so a fast lookup
+never flashes a row, and a lookup slow enough to be worth stopping is long past it — matching the two
+would leave the button dead for the first moments of every stall. The handler disables on the press
+rather than on the answer and never re-enables itself; the `PRICING_STATUS` push that rides with the
+cancelled item is what decides, since only it knows whether the queue is now idle or already on the
+next item. "Nothing to stop" is a real outcome worth printing, because the lookup can finish between
+the button lighting up and the press landing.
+
 Two numbers there are load-bearing. A **300ms grace period** before a row is drawn, because
 poe.ninja and the currency exchange are synchronous cache lookups and without it every currency drop
 strobes a placeholder for one frame. And a **250ms tick that runs only while something is pending**,

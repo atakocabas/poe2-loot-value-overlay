@@ -243,6 +243,13 @@ const UNPRICED_REASON: Record<string, { word: string; hint: string; recoverable:
       "This item isn't in poe.ninja's data and isn't traded on the currency exchange, and nothing " +
       "else could price it. Set a price by hand with the row's Edit button.",
     recoverable: false
+  },
+  cancelled: {
+    word: "stopped",
+    hint:
+      "You pressed Stop while this was being looked up, so the search was abandoned. Nothing is " +
+      "wrong with the item — press Edit and Reprice to try it again.",
+    recoverable: true
   }
 };
 

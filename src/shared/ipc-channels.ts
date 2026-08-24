@@ -57,6 +57,15 @@ export const IPC = {
    * new age and rates to the header.
    */
   REFRESH_PRICES: "refresh-prices",
+  /**
+   * Abandons the price lookup in flight, for the footer's Stop button.
+   *
+   * Answers whether there was anything to cancel, which is not the same as "the press worked" —
+   * an idle queue has nothing to stop, and the button says so rather than flashing a success it
+   * didn't have. It needs no companion push: `PricingQueue` already broadcasts PRICING_STATUS when
+   * the entry retires, and the cancelled item arrives on PRICED_ITEM like any other.
+   */
+  CANCEL_PRICING: "cancel-pricing",
 
   // The setup window's two channels. Registered separately from the overlay's, because on first
   // run setup runs to completion *before* the pricing clients and watchers those handlers need
