@@ -16,9 +16,11 @@ Windows only. Grab either download from the
   installed. Settings and the loot cache still live in `%APPDATA%/poe2-loot-value-overlay/`, which
   both downloads share.
 
-Neither is code-signed, so Windows SmartScreen will warn the first time you run one — *More info* →
-*Run anyway*. If you'd rather not trust a binary, `npm run package` (see [Development](#development))
-builds exactly these two files from this source.
+Neither is code-signed, so Windows SmartScreen warns before it runs — *More info* → *Run anyway*.
+Expect that on **every** release, not just the first: SmartScreen tracks reputation per exact file,
+so a new version is a file it has never seen, and an unsigned one carries nothing over from the last.
+If you'd rather not trust a binary, `npm run package` (see [Development](#development)) builds exactly
+these two files from this source.
 
 ### Updates
 
