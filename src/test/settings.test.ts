@@ -24,7 +24,6 @@ function makeDefaults(): Settings {
       panel: { width: 380, maxHeightPercent: 80, position: "right" as const }
     },
     hotkeys: {
-      toggleOverlay: "CommandOrControl+Shift+O",
       toggleList: "CommandOrControl+Shift+L",
       forceCapture: "CommandOrControl+`"
     },
@@ -150,17 +149,34 @@ test("fills in a nested field missing from an older settings.json while keeping 
   const loaded = {
     ...defaults,
     hotkeys: {
-      toggleOverlay: "CommandOrControl+Shift+X"
-      // forceCapture and toggleList missing, as if written before those fields existed. This is the
-      // real upgrade path: every install predates `toggleList`, and gains it on the next load.
+      toggleList: "CommandOrControl+Shift+X"
+      // forceCapture missing, as if written before that field existed. This is the real upgrade
+      // path: an install predating a hotkey gains it on the next load without losing the one it set.
     }
   };
 
   const merged = mergeWithDefaults(defaults, loaded);
 
   assert.equal(merged.hotkeys.forceCapture, defaults.hotkeys.forceCapture);
-  assert.equal(merged.hotkeys.toggleList, defaults.hotkeys.toggleList);
-  assert.equal(merged.hotkeys.toggleOverlay, "CommandOrControl+Shift+X");
+  assert.equal(merged.hotkeys.toggleList, "CommandOrControl+Shift+X");
+});
+
+test("a key that has left the defaults is dropped rather than carried forever", () => {
+  // The other direction of the same rule, and what makes removing a setting safe: `toggleOverlay`
+  // was a real hotkey, so every install from before its removal still has it in settings.json.
+  // `mergeWithDefaults` builds from the *defaults'* key set, so the stale key never reaches the
+  // result and the file loses it the next time it is written. No migration fold is needed for a
+  // removal — only for a changed default, which this is not.
+  const defaults = makeDefaults();
+  const loaded = {
+    ...defaults,
+    hotkeys: { ...defaults.hotkeys, toggleOverlay: "CommandOrControl+Shift+O" }
+  };
+
+  const merged = mergeWithDefaults(defaults, loaded);
+
+  assert.equal("toggleOverlay" in merged.hotkeys, false);
+  assert.deepEqual(Object.keys(merged.hotkeys), Object.keys(defaults.hotkeys));
 });
 
 test("the shipped panel side is one the renderer knows how to place", () => {
@@ -572,4 +588,26 @@ test("a category the user added by hand survives the union, without duplicates",
   const merged = unionPoeNinjaCategories(mergeWithDefaults(defaults, loaded), defaults);
 
   assert.deepEqual(merged.poeNinja.exchangeOverviewTypes, ["Currency", "SomeNewCategory"]);
+});
+
+test("every shipped hotkey has a full row in the settings window, and no row is orphaned", () => {
+  // `settings.ts` builds its recorder/Clear/Reset bindings by querying `[data-hotkey="<name>"]` and
+  // friends, then calls `addEventListener` on the result with no null check — so a hotkey named in
+  // the defaults but missing from the markup throws on window open, and a row left behind after a
+  // key is removed is a control that edits a setting nothing reads. Neither shows up in any other
+  // test: the suite never loads that page. Removing `toggleOverlay` had to touch both sides at once,
+  // and this is what says so.
+  const root = path.join(__dirname, "..", "..");
+  const defaults = JSON.parse(
+    fs.readFileSync(path.join(root, "config", "settings.default.json"), "utf-8")
+  ) as { hotkeys: Record<string, string> };
+  const markup = fs.readFileSync(path.join(root, "src", "renderer", "settings.html"), "utf-8");
+
+  const named = (attribute: string): string[] =>
+    [...markup.matchAll(new RegExp(`${attribute}="([^"]+)"`, "g"))].map((m) => m[1]!).sort();
+
+  const shipped = Object.keys(defaults.hotkeys).sort();
+  assert.deepEqual(named("data-hotkey"), shipped, "recorder buttons must match the shipped hotkeys");
+  assert.deepEqual(named("data-clear"), shipped, "every hotkey needs its Clear button");
+  assert.deepEqual(named("data-reset"), shipped, "every hotkey needs its Reset button");
 });

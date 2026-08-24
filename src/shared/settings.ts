@@ -51,11 +51,13 @@ export interface Settings {
     panel: { width: number; maxHeightPercent: number; position: "left" | "right" };
   };
   hotkeys: {
-    /** Click-through vs interactive, without changing the panel's size. */
-    toggleOverlay: string;
     /**
      * Opens the full list and makes the overlay clickable, so Edit can be pressed; again closes both.
      * The panel is otherwise always its minimal form — see `OverlayStatus.expanded`.
+     *
+     * **The only thing that puts the overlay into interactive mode.** A `toggleOverlay` hotkey used
+     * to flip click-through on its own without resizing anything; it was removed because the case
+     * it served — wanting clicks but not the list — is not one the panel has anything to click in.
      */
     toggleList: string;
     forceCapture: string;

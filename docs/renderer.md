@@ -177,8 +177,10 @@ Anything with no ASCII reading at all becomes a single `?` instead of a run of m
   map entry. Don't reintroduce either; a panel that resizes itself while you play is the thing this
   arrived at.
 - **`toggleList` flipping `overlayInteractive` too is the feature.** Expanding the list to press Edit
-  is useless while the panel still passes clicks through, and `toggleOverlay` remains for the times
-  you want click-through toggled without resizing anything.
+  is useless while the panel still passes clicks through, so the one key does both. It is now the
+  **only** way into interactive mode: a `toggleOverlay` hotkey used to flip click-through without
+  resizing anything, and was removed — in the minimal form there is nothing to click, so unlocking
+  clicks on their own bought a state with no use for it.
 - `groupItems` folding identical stackables across the whole list — so one row reads
   `Exalted Orb x214` — is what "one instance per item" means here. It deliberately refuses to fold
   anything with mods or a manual price, since those aren't interchangeable even when the names match.

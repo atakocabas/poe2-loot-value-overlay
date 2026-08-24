@@ -13,7 +13,7 @@ export interface OverlayVisibilityState {
   followFocus: boolean;
   /** PoE2 is the OS foreground window. */
   gameFocused: boolean;
-  /** The overlay is in interactive mode (toggleOverlay hotkey) — the user is clicking around in it. */
+  /** The overlay is in interactive mode (the expanded panel) — the user is clicking around in it. */
   interactive: boolean;
   /** The overlay window itself holds OS focus. */
   overlayFocused: boolean;

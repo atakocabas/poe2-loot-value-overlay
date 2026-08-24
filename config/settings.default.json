@@ -19,7 +19,6 @@
     }
   },
   "hotkeys": {
-    "toggleOverlay": "CommandOrControl+Shift+O",
     "toggleList": "CommandOrControl+Shift+L",
     "forceCapture": "CommandOrControl+`"
   },

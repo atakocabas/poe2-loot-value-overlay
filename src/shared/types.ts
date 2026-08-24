@@ -555,7 +555,6 @@ export interface SetupState extends SetupConfig {
  */
 export interface SettingsConfig {
   hotkeys: {
-    toggleOverlay: string;
     toggleList: string;
     forceCapture: string;
   };

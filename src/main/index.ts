@@ -363,19 +363,12 @@ app.whenReady().then(async () => {
   // Held in a const rather than written inline, because the settings window rebinds these and the
   // re-registration has to attach the same handlers the boot path did.
   const hotkeyHandlers: HotkeyHandlers = {
-    onToggleOverlay: () => {
-      overlayInteractive = !overlayInteractive;
-      setOverlayInteractive(overlayInteractive);
-      applyOverlayVisibility();
-      // Click-through and interactive looked identical, so the buttons silently stopped working.
-      broadcastStatus();
-    },
-    // The only thing that ever changes the panel's form — the panel's size is the user's business.
+    // The only thing that ever changes the panel's form — the panel's size is the user's business —
+    // and, since `toggleOverlay` was removed, the only thing that unlocks clicks either.
     onToggleList: () => {
       panelExpanded = !panelExpanded;
       // Opening unlocks clicks and closing locks them again, because the point of this key is to
       // reach the rows' Edit buttons — with the two separate that is two keypresses every time.
-      // `toggleOverlay` still switches click-through on its own without changing the panel's size.
       overlayInteractive = panelExpanded;
       setOverlayInteractive(overlayInteractive);
       applyOverlayVisibility();

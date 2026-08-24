@@ -107,13 +107,12 @@ form, where the row is a readout rather than a control — hovering still shows 
 
 Size it from the tray's **Settings…**, or with `overlay.panel` in settings.json (`width`,
 `maxHeightPercent`). The window itself is a full-screen transparent click-through sheet, so the
-panel's position is fixed — but it only takes clicks at all in interactive mode (`Ctrl+Shift+O`), and
-passes everything straight to the game otherwise.
+panel's position is fixed — but it only takes clicks at all while the full list is open
+(`Ctrl+Shift+L`), and passes everything straight to the game otherwise.
 
 | hotkey | default | does |
 | --- | --- | --- |
-| `toggleList` | `Ctrl+Shift+L` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both. The only thing that changes the panel's size. |
-| `toggleOverlay` | `Ctrl+Shift+O` | Interactive mode on its own, without resizing the panel — the overlay takes clicks instead of passing them to the game. |
+| `toggleList` | `Ctrl+Shift+L` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both. The only thing that changes the panel's size, and the only way into interactive mode. |
 | `forceCapture` | `Ctrl+\`` | Re-reads the clipboard even if it hasn't changed. |
 
 **Rebind them from the tray's Settings…**: click a combination, press the keys you want, and Save —
@@ -494,8 +493,8 @@ future game update renames the executable). "Hide Overlay" puts it away again wi
 Because the overlay is `alwaysOnTop` at screen-saver level across the whole primary display, leaving
 it up permanently would cover your browser or Discord whenever you alt-tab. So while PoE2 is running
 the overlay follows the foreground window: visible when PoE2 is in front, hidden when it isn't. It
-deliberately stays up when *you* are the one using it — interactive mode (the
-`toggleOverlay` hotkey) and the tray's "Show Overlay" both override the hide, the latter until PoE2
+deliberately stays up when *you* are the one using it — interactive mode (the open list, via the
+`toggleList` hotkey) and the tray's "Show Overlay" both override the hide, the latter until PoE2
 next takes focus.
 
 If focus detection can't start at all, the overlay fails *open* and stays visible rather than
