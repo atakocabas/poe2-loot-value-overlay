@@ -9,7 +9,7 @@ import type { SetupConfig, SetupState } from "../shared/types";
 let setupWindow: BrowserWindow | null = null;
 
 /**
- * The first-run setup window: league, contact email and the path to Client.txt.
+ * The first-run setup window: the league, and an optional contact email.
  *
  * This is **not** the second overlay window the "one window" non-goal rules out. That rule exists
  * because two full-screen always-on-top sheets cannot both be interactive — whichever sits higher
@@ -17,9 +17,9 @@ let setupWindow: BrowserWindow | null = null;
  * opaque, focusable window that is only ever open while the user is configuring the app, never
  * while they are playing, and shows none of the loot data. Nothing about it can shadow the overlay.
  *
- * It exists at all because the three values below cannot ship as working defaults — the league
- * rotates, and the other two belong to the machine and the person running it — and the overlay
- * panel has nowhere sensible to ask for them.
+ * It exists at all because neither value below can ship as a working default — the league rotates,
+ * and the contact email belongs to the person running the install rather than whoever wrote it — and
+ * the overlay panel has nowhere sensible to ask for them.
  */
 export function showSetupWindow(): Promise<void> {
   if (setupWindow && !setupWindow.isDestroyed()) {
