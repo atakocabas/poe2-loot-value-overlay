@@ -499,6 +499,19 @@ export interface Settings {
      */
     mapMinRatio: number;
     /**
+     * Whether a Twisted or Distorted Amulet is searched on its **instilled notables**.
+     *
+     * Those two bases drop with two random `Allocates <Notable>` lines already on them, and the pair
+     * is the whole of what they are worth — the base itself is a commodity (a bare `Distorted Amulet`
+     * search returns GGG's 10000 cap). With this on, such an amulet skips `useBaseItemSearch` and
+     * `baseItemMinLevel` entirely, its notables are never shed by the drop ladder, and it is searched
+     * on `accessory.amulet` at its own rarity with no item-level floor.
+     *
+     * `false` restores the old behaviour exactly: a white one is priced on item level alone behind
+     * that gate, and a rare one's notables become ordinary droppable stat filters.
+     */
+    useNotableFilters: boolean;
+    /**
      * Whether a **Normal**-rarity base item is worth a trade search at all.
      *
      * Off-by-default would be the safe reading, but the gate that actually matters is

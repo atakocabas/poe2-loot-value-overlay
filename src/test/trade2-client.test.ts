@@ -47,6 +47,11 @@ interface StubOptions {
   fetchStatus?: number;
   listings?: Array<{ amount: number; currency: string } | null>;
   /**
+   * Listings per successive *fetch* call, for a lookup that prices more than one rung — which the
+   * notable split is the only case of. Falls back to `listings` once exhausted.
+   */
+  listingsSequence?: Array<Array<{ amount: number; currency: string } | null>>;
+  /**
    * `listing.indexed` per listing, in the same order as `listings` — GGG's ISO-8601 for when the
    * listing went up. Omitted entirely by default, which is the case the row has to survive: a
    * response with no dates must price normally and simply draw no age.
@@ -114,9 +119,11 @@ function stubFetch(options: StubOptions = {}): { fetch: GggFetch; calls: Call[] 
     if (fetchStatus !== 200) {
       return new Response(JSON.stringify({ error: { code: 3, message: "Nope" } }), { status: fetchStatus });
     }
+    const fetchAttempt = calls.filter((call) => call.url.includes("/fetch/")).length - 1;
+    const forThisFetch = options.listingsSequence?.[fetchAttempt] ?? listings;
     return new Response(
       JSON.stringify({
-        result: listings.map((price, index) => ({
+        result: forThisFetch.map((price, index) => ({
           listing: {
             price,
             ...(options.indexedSequence?.[index] !== undefined
@@ -169,6 +176,7 @@ function makeSettings(overrides: Partial<Settings["trade2"]> = {}): Settings {
       mapMinRatio: 0.9,
       useBaseItemSearch: true,
       baseItemMinLevel: 81,
+      useNotableFilters: true,
       minListingPrice: 0,
       maxTransientRetries: 1,
       ...overrides
@@ -220,6 +228,46 @@ const FIVE_MOD_RARE_TIERED = parse(
     '{ Suffix Modifier "of Talent" (Tier: 3) — Caster }\n9% increased Cast Speed\n' +
     '{ Prefix Modifier "of the Hawk" (Tier: 4) — Attack }\n+150 to Accuracy Rating\n' +
     '{ Suffix Modifier "of Plunder" (Tier: 5) — Rarity }\n15% increased Rarity of Items found'
+);
+
+/**
+ * GGG's notable stats, pre-expanded per option exactly as the live reference publishes them — the
+ * same display text under `enchant` and `explicit`, where only the enchant ids match anything.
+ */
+const NOTABLE_STATS = {
+  result: [
+    {
+      id: "explicit",
+      entries: [
+        { id: "explicit.stat_3299347043", text: "# to maximum Life", type: "explicit" },
+        { id: "explicit.stat_2954116742|57190", text: "Allocates Doomsayer", type: "explicit" },
+        { id: "explicit.stat_2954116742|42177", text: "Allocates Blurred Motion", type: "explicit" }
+      ]
+    },
+    {
+      id: "enchant",
+      entries: [
+        { id: "enchant.stat_2954116742|57190", text: "Allocates Doomsayer", type: "enchant" },
+        { id: "enchant.stat_2954116742|42177", text: "Allocates Blurred Motion", type: "enchant" }
+      ]
+    },
+    { id: "implicit", entries: [] }
+  ]
+};
+
+const DOOMSAYER = "enchant.stat_2954116742|57190";
+const BLURRED = "enchant.stat_2954116742|42177";
+
+/** A white Distorted Amulet as it drops: two instilled notables and nothing else worth searching. */
+const WHITE_INSTILLED_AMULET = parse(
+  "Item Class: Amulets\nRarity: Normal\nDistorted Amulet\n--------\nItem Level: 79\n--------\n" +
+    "-1 Suffix Modifier allowed\n--------\nAllocates Doomsayer\nAllocates Blurred Motion"
+);
+
+/** The same pair on a rare one, so the ladder has an affix it is allowed to shed. */
+const RARE_INSTILLED_AMULET = parse(
+  "Item Class: Amulets\nRarity: Rare\nApocalypse Core\nTwisted Amulet\n--------\nItem Level: 81\n" +
+    "--------\nAllocates Doomsayer\nAllocates Blurred Motion\n+80 to maximum Life"
 );
 
 function parse(rawText: string): ParsedItem {
@@ -2922,4 +2970,153 @@ test("the floor is named in the log line too, so a rung's count is readable", as
     lines.some((line) => line.includes("priced at or above 1") && line.includes("listing(s)")),
     `expected a rung line naming the floor, got:\n${lines.join("\n")}`
   );
+});
+
+// --- Instilled amulets ------------------------------------------------------
+//
+// Twisted and Distorted Amulets drop with two `Allocates <Notable>` lines already on them, and the
+// pair is the whole of what they are worth. Every rule below is measured against live GGG data; the
+// numbers are in docs/pricing-trade2.md.
+
+test("a white instilled amulet is searched below baseItemMinLevel, unlike every other white base", async () => {
+  // ilvl 79 against a floor of 81. For an ordinary white base that is "not worth a request"; here the
+  // item level is a fact about the base and the notables are the item.
+  const { fetch, calls } = stubFetch({ stats: NOTABLE_STATS });
+  const estimate = await new Trade2Client(
+    makeSettings({ baseItemMinLevel: 81 }),
+    fetch
+  ).estimateRareValue(WHITE_INSTILLED_AMULET, new Set(), toChaos);
+
+  assert.notEqual(estimate.chaosValue, null);
+  assert.ok(calls.some((call) => call.url.includes("/search/")));
+});
+
+test("its notables are asked for as enchant ids, never the explicit ones that match nothing", async () => {
+  // The fixture publishes both, exactly as GGG does. Measured live: the enchant id returned 1167
+  // listings on `accessory.amulet` and the explicit id returned 0, so picking the wrong one takes
+  // the whole `and` group to zero and reads as "this item has no market".
+  const { fetch, calls } = stubFetch({ stats: NOTABLE_STATS });
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    WHITE_INSTILLED_AMULET,
+    new Set(),
+    toChaos
+  );
+
+  const body = JSON.parse(searchCall(calls).init.body as string);
+  assert.deepEqual(
+    body.query.stats[0].filters.map((filter: { id: string }) => filter.id).sort(),
+    [BLURRED, DOOMSAYER].sort()
+  );
+});
+
+test("it widens to the amulet class at its own rarity, and sends no item level", async () => {
+  // Class rather than base type: 1167 listings against 490, and the half it adds is the other
+  // instilled base plus ordinary amulets anointed with the same notable. Rarity pinned to `normal`
+  // keeps it off the rares that carry affixes on top (792 white against 286 rare). No `ilvl`,
+  // because that thins a market already narrowed to one notable, on a stat nobody buys it for.
+  const { fetch, calls } = stubFetch({ stats: NOTABLE_STATS });
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    WHITE_INSTILLED_AMULET,
+    new Set(),
+    toChaos
+  );
+
+  const body = JSON.parse(searchCall(calls).init.body as string);
+  assert.equal(body.query.type, undefined);
+  assert.equal(body.query.filters.type_filters.filters.category.option, "accessory.amulet");
+  assert.equal(body.query.filters.type_filters.filters.rarity.option, "normal");
+  assert.equal(body.query.filters.misc_filters?.filters?.ilvl, undefined);
+});
+
+test("a rare instilled amulet pins rarity rare, not normal", async () => {
+  const { fetch, calls } = stubFetch({ stats: NOTABLE_STATS });
+  await new Trade2Client(makeSettings(), fetch).estimateRareValue(
+    RARE_INSTILLED_AMULET,
+    new Set(),
+    toChaos
+  );
+
+  const body = JSON.parse(searchCall(calls).init.body as string);
+  assert.equal(body.query.filters.type_filters.filters.rarity.option, "rare");
+});
+
+test("the ladder sheds the affix and never the notables", async () => {
+  // An amulet's affixes decide what its notables are worth, never the other way round, so a rung
+  // that kept the life roll and dropped a notable would price a different amulet.
+  const { fetch, calls } = stubFetch({
+    stats: NOTABLE_STATS,
+    // The all-filters rung matches nothing; the rung that shed one matches. Deliberately no
+    // `searchTotal`, so each rung's count is its own id list rather than one number for both.
+    searchIdsSequence: [[], ["id-a"]]
+  });
+  const estimate = await new Trade2Client(
+    makeSettings({ minListingsForMatch: 1 }),
+    fetch
+  ).estimateRareValue(RARE_INSTILLED_AMULET, new Set(), toChaos);
+
+  assert.deepEqual(estimate.autoDroppedMods, ["+80 to maximum Life"]);
+  const enabled = JSON.parse(lastSearchCall(calls).init.body as string)
+    .query.stats[0].filters.filter((filter: { disabled?: boolean }) => !filter.disabled)
+    .map((filter: { id: string }) => filter.id);
+  assert.deepEqual(enabled.sort(), [BLURRED, DOOMSAYER].sort());
+});
+
+test("with no market for the pair, each notable is searched alone and the dearer one wins", async () => {
+  // Measured live: one named notable matched 1167 listings and two together matched 1. A pair is not
+  // a thin market but an absent one, so without this nearly every instilled amulet stores unpriced.
+  // Taking the dearer is a real floor — an amulet with both is worth at least the pricier half — and
+  // it is the one place this client chooses between rungs by price rather than by strictness.
+  const { fetch } = stubFetch({
+    stats: NOTABLE_STATS,
+    // The pair rung matches nothing, then Doomsayer alone, then Blurred Motion alone.
+    searchIdsSequence: [[], ["id-a"], ["id-b"]],
+    // Blurred Motion is the dearer market, and it is the *second* rung searched — so a ladder taking
+    // the first rung that matched anything would report 6 here. That is the assertion.
+    listingsSequence: [[{ amount: 3, currency: "exalted" }], [{ amount: 10, currency: "exalted" }]]
+  });
+  const client = new Trade2Client(makeSettings({ minListingsForMatch: 1 }), fetch);
+  const estimate = await client.estimateRareValue(WHITE_INSTILLED_AMULET, new Set(), toChaos);
+
+  assert.equal(estimate.notableSplit, true);
+  assert.equal(estimate.chaosValue, 20);
+  // One notable priced it and the other did not, and the row editor reads both lists.
+  assert.deepEqual(estimate.searchedMods, ["Allocates Blurred Motion"]);
+  assert.deepEqual(estimate.autoDroppedMods, ["Allocates Doomsayer"]);
+});
+
+test("the split is skipped when the pair matched, so it costs nothing on a liquid amulet", async () => {
+  const { fetch, calls } = stubFetch({ stats: NOTABLE_STATS, searchIds: ["id-a"], searchTotal: 1 });
+  const estimate = await new Trade2Client(
+    makeSettings({ minListingsForMatch: 1 }),
+    fetch
+  ).estimateRareValue(WHITE_INSTILLED_AMULET, new Set(), toChaos);
+
+  assert.equal(estimate.notableSplit, false);
+  assert.equal(calls.filter((call) => call.url.includes("/search/")).length, 1);
+});
+
+test("useNotableFilters off restores the white-base query exactly", async () => {
+  // The switch has to be a real off, not a softened on: a white instilled amulet goes back to being
+  // priced on item level alone behind `baseItemMinLevel`, which is what shipped before this existed.
+  const { fetch } = stubFetch({ stats: NOTABLE_STATS });
+  const estimate = await new Trade2Client(
+    makeSettings({ useNotableFilters: false, baseItemMinLevel: 81 }),
+    fetch
+  ).estimateRareValue(WHITE_INSTILLED_AMULET, new Set(), toChaos);
+
+  assert.equal(estimate.chaosValue, null);
+  assert.match(estimate.reason ?? "", /baseItemMinLevel/);
+});
+
+test("useNotableFilters off sends the white base's item level and its exact base type", async () => {
+  const { fetch, calls } = stubFetch({ stats: NOTABLE_STATS });
+  await new Trade2Client(
+    makeSettings({ useNotableFilters: false, baseItemMinLevel: 1 }),
+    fetch
+  ).estimateRareValue(WHITE_INSTILLED_AMULET, new Set(), toChaos);
+
+  const body = JSON.parse(searchCall(calls).init.body as string);
+  assert.equal(body.query.type, "Distorted Amulet");
+  assert.equal(body.query.filters.misc_filters.filters.ilvl.min, 79);
+  assert.equal(body.query.filters.type_filters.filters.category, undefined);
 });

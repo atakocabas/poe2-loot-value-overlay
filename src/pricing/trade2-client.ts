@@ -19,6 +19,7 @@ import { elementalDpsOf, isLocalElementalDamageMod, weaponStatsOf } from "../sha
 import { searchFloor } from "../shared/mod-rolls";
 import { mapFilterLabel, mapRowsOf } from "../shared/map-stats";
 import { tradeCategoryOf } from "../shared/item-category";
+import { isInstilledAmulet, isInstilledNotable } from "../shared/instilled-notables";
 import { derivePseudoStatsFromMods, pseudoTotal } from "../shared/pseudo-stats";
 import { TradeStatsMatcher } from "./trade-stats";
 import { TradeSearchBudget } from "./trade-budget";
@@ -289,6 +290,16 @@ export interface TradeEstimate {
    */
   mapDropped: boolean;
   /**
+   * Nothing was listed carrying **both** of an instilled amulet's notables, so each was searched
+   * alone and the price is the dearer of those two markets.
+   *
+   * The floor is still honest — an amulet carrying A and B is worth at least the pricier of what A
+   * alone and B alone sell for — but it is a price for *one* notable, and `autoDroppedMods` names the
+   * one it isn't. Distinct from the three flags above in that all of them drop a whole constraint
+   * group while this one keeps the item's defining constraint and halves it.
+   */
+  notableSplit: boolean;
+  /**
    * How many of the sampled listings carried each of the item's mods.
    *
    * Not "the mods that were used" — a `count` search asks for at least N of M, and different
@@ -345,6 +356,7 @@ function noPrice(reason: string, failure: TradeFailure): TradeEstimate {
     pseudoStats: [],
     pseudoDropped: false,
     mapDropped: false,
+    notableSplit: false,
     statCoverage: [],
     coverageSample: 0,
     autoDroppedMods: [],
@@ -651,6 +663,19 @@ export class Trade2Client {
     return this.budget.cooldownMs();
   }
 
+  /**
+   * Whether this item is searched on its instilled notables — a Twisted or Distorted Amulet, with
+   * `trade2.useNotableFilters` on.
+   *
+   * One place decides it, for the same reason one place decides whether a lookup happens at all:
+   * four separate rules key off it (the white-base gate, the class widening, the item-level filter
+   * and the drop ladder), and they have to agree or an item is searched as two different things
+   * within one query.
+   */
+  private searchesNotables(item: Pick<ParsedItem, "baseType">): boolean {
+    return this.settings.trade2.useNotableFilters && isInstilledAmulet(item);
+  }
+
   /** Which listings were counted, so callers can word "no listings" without contradicting the query. */
   get listingStatus(): ListingStatus {
     return this.settings.trade2.listingStatus;
@@ -707,7 +732,13 @@ export class Trade2Client {
     // that level is high enough to be worth crafting on. The refusal lives here rather than in the
     // resolver for the same reason the budget and enabled checks do: one place decides whether a
     // lookup happens, and one place words why it didn't.
-    if (item.rarity === "Normal") {
+    // **An instilled amulet is not a white base, whatever its rarity line says.** A Twisted or
+    // Distorted Amulet drops with two "Allocates <Notable>" lines already on it, and the pair is the
+    // whole of what it is worth; the item level is a fact about the base. So none of the three
+    // refusals below applies to one — not `useBaseItemSearch`, not `baseItemMinLevel`, and not the
+    // missing-item-level case, which for an ordinary white base means "nothing left to search on"
+    // and here means nothing at all.
+    if (item.rarity === "Normal" && !this.searchesNotables(item)) {
       const { useBaseItemSearch, baseItemMinLevel } = this.settings.trade2;
       if (!useBaseItemSearch) {
         return noPrice(
@@ -865,6 +896,16 @@ export class Trade2Client {
     // Which filters the ladder may shed, worst affix first. Empty whenever the item carries no tier
     // information — i.e. the player isn't running Advanced Item Descriptions — which collapses the
     // whole thing back to the count ladder alone. See `droppableFilters`.
+    // Which stat filters are the item's instilled notables. Derived from the mod lines behind each
+    // filter rather than from the stat id, so it survives GGG renumbering its option ids — and
+    // `modsByStat` is one-to-many, so a filter counts as a notable if *any* line feeding it is one.
+    const notableStatIds = new Set(
+      [...built.modsByStat]
+        .filter(([, mods]) => mods.some(isInstilledNotable))
+        .map(([statId]) => statId)
+    );
+    const searchesNotables = this.searchesNotables(item) && notableStatIds.size > 0;
+
     const dropOrder = trade2.useModDropLadder
       ? droppableFilters(
           statFilters.map((filter) => ({
@@ -873,6 +914,13 @@ export class Trade2Client {
           })),
           trade2.modDropTierThreshold
         )
+          // **A notable is never shed by the ladder.** It is the item's identity in the way a
+          // waystone's reward block is: an amulet's affixes decide how much its notables are worth,
+          // never the other way round, and a rung that kept three suffixes and dropped a notable
+          // would price a different amulet. Removed from the *order* rather than vetoed at the drop
+          // site so `minSurvivingFilters` still counts them — the notables are what a rung shed down
+          // to the floor is left holding, which is exactly right.
+          .filter((statId) => !(searchesNotables && notableStatIds.has(statId)))
       : [];
 
     // Deliberately over `statFilters` alone. The pseudo group is always required rather than being
@@ -1069,6 +1117,30 @@ export class Trade2Client {
       }
     }
 
+    // And a fourth relaxation, for an instilled amulet whose notable *pair* nobody has listed. It
+    // sits last because it is the only one that keeps the constraint it is relaxing: the three above
+    // drop a whole filter group, while this halves the item's defining one and prices from the half.
+    // Returns outright rather than setting `best`, because unlike them it decides between two priced
+    // rungs and has the answer already.
+    if (!best && !budgetStopped && searchesNotables && notableStatIds.size >= 2) {
+      const split = await this.splitNotables(
+        item,
+        statFilters,
+        [...notableStatIds],
+        defenceFilters,
+        pseudoFilters,
+        mapFilters,
+        rungs,
+        built.modsByStat,
+        toChaos
+      );
+      if (split.priced) return split.priced;
+      // Neither half matched, or the window emptied before both could be tried. Fall through to the
+      // messages below, which already word the difference — and carry the budget flag out, or a
+      // half-run split reports "nothing matches this item" for a search that never went out.
+      budgetStopped = budgetStopped || split.budgetStopped;
+    }
+
     // Named in every no-match message: without it the text blames the mods for a miss the armour
     // floor or an aggregate may well have caused, and points the user at unticking mods that were
     // never the problem.
@@ -1155,6 +1227,133 @@ export class Trade2Client {
       droppedMods,
       searchedMods
     );
+  }
+
+  /**
+   * Prices an instilled amulet whose two notables have no shared market by searching **each notable
+   * alone** and keeping the dearer of the two results.
+   *
+   * The measurement this exists for, taken live on `accessory.amulet`: one named notable matched
+   * **1167** listings, and two named notables together matched **1**. A notable pair is not a thin
+   * market, it is an absent one — there are roughly 875 notables, so the pairs outnumber the amulets
+   * anyone has ever listed. Every Twisted and Distorted Amulet has a pair, so without this nearly all
+   * of them store unpriced, which reads as "this item has no market" when the market is hundreds of
+   * listings deep on either half of it.
+   *
+   * **Taking the dearer rather than the first is the whole design, and it is the one place this file
+   * compares prices across rungs instead of taking the strictest rung that matched anything.** An
+   * amulet carrying A and B is worth at least `max(price(A), price(B))` — that is a floor, in exactly
+   * the sense `priceSample` means one, and it holds without knowing which notable the buyer wants.
+   * The ladder cannot express it: its rungs are supersets of one another and it stops at the first
+   * that matched, so folding these two in would report whichever notable happened to come first in
+   * the item's own text. Both markets run to hundreds of listings, so that is not a tie-break, it is
+   * a coin flip on the answer.
+   *
+   * Cost is one budgeted search per notable plus a fetch for each that matched — spent only on an
+   * item that was otherwise about to be stored unpriced, and only after every rung and every other
+   * retry came back empty. Each search still goes through `spendBudgetSlot()`, so a spent window
+   * stops the split exactly as it stops the ladder, and whatever half already priced is kept.
+   *
+   * The defence and aggregate groups stay off here, like the retries above it: those already
+   * established they find nothing alongside the mods, so re-sending them would spend a request on a
+   * query that is a subset of one that just failed.
+   *
+   * `priced` is null when neither half matched; `budgetStopped` says whether a window that emptied
+   * mid-split is why, which the caller needs to tell "nobody lists this" from "nothing was asked".
+   */
+  private async splitNotables(
+    item: ParsedItem,
+    statFilters: StatFilter[],
+    notableStatIds: string[],
+    defenceFilters: DefenceFilter[],
+    pseudoFilters: StatFilter[],
+    mapFilters: MapFilter[],
+    rungs: Array<{ required: number; total: number; filters: number }>,
+    modsByStat: Map<string, string[]>,
+    toChaos: (amount: number, currency: string) => number | null
+  ): Promise<{
+    priced: { estimate: TradeEstimate; transient: boolean } | null;
+    budgetStopped: boolean;
+  }> {
+    console.log(
+      `[trade2] "${item.name}" no ${this.listingsLabel} carry all ${notableStatIds.length} of its ` +
+        "instilled notables - pricing each one alone and taking the dearer market"
+    );
+
+    let dearest: { estimate: TradeEstimate; transient: boolean } | null = null;
+    let budgetStopped = false;
+
+    for (const [index, statId] of notableStatIds.entries()) {
+      if (!(await this.spendBudgetSlot())) {
+        budgetStopped = true;
+        break;
+      }
+
+      const kept = statFilters.filter((filter) => filter.id === statId);
+      const rung = await this.searchRung(
+        item,
+        withDisabled(statFilters, kept),
+        kept.length,
+        [],
+        allDisabled(pseudoFilters),
+        mapFilters,
+        `notable ${index + 1}/${notableStatIds.length} alone`
+      );
+      // A transient failure mid-split is still a failure of the whole lookup: the half already
+      // priced is not the answer, only half of a comparison that never finished.
+      if ("failure" in rung) return { priced: rung.failure, budgetStopped };
+      rungs.push({ required: kept.length, total: rung.total, filters: kept.length });
+      if (rung.total === 0) continue;
+
+      // Everything except this notable's own mod lines left the query, and `searchedMods` /
+      // `autoDroppedMods` have to say so exactly — the row editor ticks the first and unticks the
+      // second, and between them they are the record of what this price rests on.
+      const searchedMods = modsByStat.get(statId) ?? [];
+      const droppedMods = [...modsByStat]
+        .filter(([id]) => id !== statId)
+        .flatMap(([, mods]) => mods);
+
+      const priced = await this.priceFromRung(
+        rung,
+        statFilters.length,
+        rungs,
+        [],
+        // Both groups were sent off, so both are reported dropped whenever the item had any — the
+        // same accounting the defence and aggregate retries do, and what keeps a mod folded into
+        // either of them out of `searchedMods` below. An amulet rarely has a defence filter at all;
+        // deriving the flag rather than hardcoding `false` is what stops the one that does from
+        // claiming a floor the query didn't send.
+        defenceFilters.length > 0,
+        toChaos,
+        [],
+        pseudoFilters.length > 0,
+        false,
+        modsByStat,
+        droppedMods,
+        searchedMods
+      );
+      // A transient fetch failure aborts the whole comparison: half of it is not the answer, and
+      // the caller's retry loop is what should decide whether to try again. A *definitive* one (a
+      // 4xx, or nothing convertible to chaos) only takes this half out of the running.
+      if (priced.transient) return { priced, budgetStopped };
+      if (priced.estimate.chaosValue === null) continue;
+
+      console.log(
+        `[trade2] "${item.name}" ${searchedMods.join(" + ")} alone: ` +
+          `${rung.total} listing(s), floor ${priced.estimate.chaosValue} chaos`
+      );
+      if (dearest === null || priced.estimate.chaosValue > (dearest.estimate.chaosValue ?? -1)) {
+        dearest = priced;
+      }
+    }
+
+    if (dearest === null) return { priced: null, budgetStopped };
+    // Stamped here rather than threaded through `priceFromRung`, which knows nothing about the
+    // comparison and would have grown a fourteenth parameter to carry a constant.
+    return {
+      priced: { ...dearest, estimate: { ...dearest.estimate, notableSplit: true } },
+      budgetStopped
+    };
   }
 
   /**
@@ -1490,7 +1689,17 @@ export class Trade2Client {
     // the very bottom. A wide price is the feature here; a fabricated one is not.
     const asksForSomething =
       required > 0 || defenceFilters.length > 0 || pseudoFilters.some((filter) => !filter.disabled);
-    const category = item.rarity === "Rare" && asksForSomething ? tradeCategoryOf(item) : null;
+    // **An instilled amulet widens to the class at any rarity, where every other item does so only
+    // when it is Rare.** The base decides whether the notable method applies; the class is what the
+    // search then asks on, exactly as for a rare. Measured on `accessory.amulet` with one notable:
+    // the class matched **1167** listings against **490** for `type: "Distorted Amulet"`, and the
+    // half it adds is the other of the two bases plus the ordinary amulets anointed with the same
+    // notable — all genuine comparables for what that notable is worth. The rarity pin below is what
+    // keeps a white two-notable base off the rare listings that carry affixes on top (792 white
+    // against 286 rare, on the same notable).
+    const widensToClass =
+      item.rarity === "Rare" || (item.rarity === "Normal" && this.searchesNotables(item));
+    const category = widensToClass && asksForSomething ? tradeCategoryOf(item) : null;
     // Accumulated rather than assigned, for the same reason the groups below are assembled into one
     // object: corrupted and ilvl are both misc filters, and a second assignment would drop the first.
     const miscFilters: Record<string, unknown> = {};
@@ -1501,7 +1710,11 @@ export class Trade2Client {
     // and it is asked for **exactly**, with no ratio below it. Item level is a discrete breakpoint
     // (81 and 82 are different markets) rather than a continuous stat, so the defenceMinRatio-style
     // widening used everywhere else would land far below the thing giving this base its value.
-    if (item.rarity === "Normal" && item.itemLevel !== null) {
+    //
+    // **Not for an instilled amulet**, whose value is its notables: an ilvl floor there constrains a
+    // stat nobody buys the item for, on a market already thinned to a specific notable. It is the
+    // same argument that keeps `map_tier` off a waystone, one item class over.
+    if (item.rarity === "Normal" && item.itemLevel !== null && !this.searchesNotables(item)) {
       miscFilters.ilvl = { min: item.itemLevel };
     }
     if (Object.keys(miscFilters).length > 0) {
@@ -1516,7 +1729,12 @@ export class Trade2Client {
       // was the only thing keeping the uniques, magics and white bases of this class out of the
       // result set; `category` alone lets every one of them in, and `priceSample()` reads the
       // cheapest five, which is precisely where they sit.
-      typeFilters.rarity = { option: "rare" };
+      //
+      // Set only for a Rare, because a Normal reaching here is an instilled amulet and the branch
+      // below pins it to `normal` instead. One of the two always fires whenever a category is sent,
+      // which is the invariant that matters; writing `rare` here unconditionally and letting the next
+      // branch overwrite it would work by accident and read as a bug.
+      if (item.rarity === "Rare") typeFilters.rarity = { option: "rare" };
     }
     // Without this the search for "Sacred Focus" matches every *rare* on that base as well, and a
     // white item gets priced off rare listings. The base type alone does not separate the two, and
@@ -1773,6 +1991,10 @@ export class Trade2Client {
         pseudoStats,
         pseudoDropped,
         mapDropped,
+        // Always false here. The notable split is the one relaxation this function knows nothing
+        // about: it prices two rungs and picks between them, so it stamps the flag on the winner
+        // rather than passing it down. See `splitNotables`.
+        notableSplit: false,
         // Counted over the fetched listings, not the ones with a convertible price: a listing whose
         // currency this app can't convert still tells you which mods the market carries.
         statCoverage: this.countCoverage(fetchBody.result, modsByStat),

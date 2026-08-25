@@ -236,6 +236,17 @@ export class PriceResolver {
         // A separate reason to distrust the number, and one the mod count doesn't hint at: this is
         // a price for the base with these mods at *any* defences, so a 200-armour and a
         // 1000-armour version of the same item are being averaged together.
+        // The one that most changes what the number means, so it is said before the defence note:
+        // the price is not for this amulet but for an amulet carrying one of its two notables. The
+        // floor is still sound - an amulet with both is worth at least the dearer half - but the
+        // comparables are a different item, and nothing else in the log line says so.
+        if (estimate.notableSplit) {
+          console.warn(
+            `[trade2] "${item.name}" has no ${listingsLabelFor(this.trade2.listingStatus)} carrying ` +
+              "both of its instilled notables, so this is the dearer of the two single-notable " +
+              `markets - priced on ${estimate.searchedMods.join(" + ") || "one notable"}`
+          );
+        }
         if (estimate.defencesDropped) {
           console.warn(
             `[trade2] "${item.name}" had no listings at its own defence totals, so the price ` +
@@ -269,6 +280,7 @@ export class PriceResolver {
           defencesDropped: estimate.defencesDropped,
           pseudoDropped: estimate.pseudoDropped,
           mapDropped: estimate.mapDropped,
+          notableSplit: estimate.notableSplit,
           statCoverage: estimate.statCoverage,
           coverageSample: estimate.coverageSample,
           autoDroppedMods: estimate.autoDroppedMods,

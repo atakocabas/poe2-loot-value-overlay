@@ -108,6 +108,7 @@ export function registerIpcHandlers({
               defencesDropped: estimate.defencesDropped,
               pseudoDropped: estimate.pseudoDropped,
               mapDropped: estimate.mapDropped,
+              notableSplit: estimate.notableSplit,
               statCoverage: estimate.statCoverage,
               coverageSample: estimate.coverageSample,
               // Overwritten wholesale, never merged. The user just repriced with a given set of boxes

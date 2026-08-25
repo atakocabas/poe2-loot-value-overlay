@@ -78,7 +78,7 @@ several rules have been "fixed" back into regressions more than once.
 
 | Editing | Read first | Because |
 |---|---|---|
-| `src/pricing/trade2-client.ts`, `trade-budget.ts`, `rate-limiter.ts`, `ggg-fetch.ts`, `trade-stats.ts`, and the `shared/` stat derivations and `item-category.ts` | [docs/pricing-trade2.md](docs/pricing-trade2.md) | The largest doc, and the one with the most measured-not-guessed rules: the removed count axis, the price floor's missing `option`, the strict-rung rule, the drop ladder, the pseudo aggregates, the class-not-base-type search. Four repeat regressions came from changing these without reading it. |
+| `src/pricing/trade2-client.ts`, `trade-budget.ts`, `rate-limiter.ts`, `ggg-fetch.ts`, `trade-stats.ts`, and the `shared/` stat derivations, `item-category.ts` and `instilled-notables.ts` | [docs/pricing-trade2.md](docs/pricing-trade2.md) | The largest doc, and the one with the most measured-not-guessed rules: the removed count axis, the price floor's missing `option`, the strict-rung rule, the drop ladder, the pseudo aggregates, the class-not-base-type search, the notable split. Four repeat regressions came from changing these without reading it. |
 | `src/renderer/*` | [docs/renderer.md](docs/renderer.md) | The panel's two forms, what `renderList()` must preserve by hand, and why pending captures live outside `allItems`. |
 | `src/main/*` | [docs/main-process.md](docs/main-process.md) | Window rules (a second full-screen overlay swallows every click), hotkey suspension, overlay visibility, the tray, the icon, the release check. |
 | `src/parser/item-text-parser.ts` | [docs/parser.md](docs/parser.md) | Advanced Item Descriptions changes the mod format substantially, and the header gate is authoritative rather than merely tolerated. |
@@ -143,6 +143,12 @@ about. This is the short list of what an unbriefed change most often breaks:
 - Don't reintroduce count relaxation ("at least N of M") to widen a trade search.
 - A rare is searched on its **item class** (`accessory.ring`), not its exact base type
   ("Prismatic Ring"). Reversing that back to base type is what left items on illiquid bases unpriced.
+- An instilled notable resolves to its **enchant** stat id, never the identically-worded explicit
+  one. Measured: 1167 listings against 0. The failure is silent — a dead filter takes the whole `and`
+  group to zero and the row reads as though the item had no market.
+- A Twisted/Distorted Amulet's two notables are never shed by the drop ladder, and when nobody lists
+  the pair each is searched alone and the **dearer** market wins. That is the one place prices are
+  compared across rungs rather than taking the strictest rung that matched.
 - Magic items never go to trade2 — PoE2 glues the affixes onto the base type, so there is nothing
   reliable to search on. The class search makes a query mechanically possible; whether it's worth the
   per-IP budget is an open question needing measurement, not a loose end.

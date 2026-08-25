@@ -78,6 +78,7 @@ function makeDefaults(): Settings {
       pseudoMinRatio: 0.9,
       useMapFilters: true,
       mapMinRatio: 0.9,
+      useNotableFilters: true,
       useBaseItemSearch: true,
       baseItemMinLevel: 81,
       minListingPrice: 1,

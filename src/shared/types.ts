@@ -404,6 +404,14 @@ export interface PricedItem extends ParsedItem {
    */
   mapDropped?: boolean;
   /**
+   * Nothing was listed carrying both of an instilled amulet's notables, so each was searched alone
+   * and `chaosValue` is the dearer of those two markets — a price for **one** of them.
+   * `autoDroppedMods` names the other.
+   *
+   * Optional for the same reason as `defencesDropped`.
+   */
+  notableSplit?: boolean;
+  /**
    * How many of the sampled listings carried each mod, and how many were sampled.
    *
    * This is *not* "the mods the search used". A `count` search asks for at least N of M and different
