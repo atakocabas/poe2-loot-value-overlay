@@ -2,6 +2,7 @@
 // Item Descriptions" option changes the mod format substantially, and this handles both halves of
 // the player base: the header gate is authoritative when headers are present, and `isKnownNonModLine`
 // is the whole guard when they aren't. Neither is optional.
+import { isInstilledNotable } from "../shared/instilled-notables";
 import type {
   ItemDefences,
   ItemMapStats,
@@ -252,10 +253,11 @@ function isIdentified(rawText: string): boolean {
 }
 
 function parseMods(sections: string[], rarity: ItemRarity): ParsedMod[] {
-  // Currency/gem/normal-rarity clipboard text has flavor/description lines with no colon
-  // that would otherwise be mistaken for mod lines, and these rarities never carry
-  // priced affixes, so skip mod parsing entirely.
-  if (rarity === "Currency" || rarity === "Gem" || rarity === "Normal") return [];
+  // Currency/gem clipboard text has flavor/description lines with no colon that would otherwise be
+  // mistaken for mod lines, and neither rarity ever carries a priced affix, so skip mod parsing
+  // entirely. **Normal** sat in this list for the same reason and is now the stated exception — see
+  // the filter at the end of this function.
+  if (rarity === "Currency" || rarity === "Gem") return [];
 
   const mods: ParsedMod[] = [];
 
@@ -321,6 +323,18 @@ function parseMods(sections: string[], rarity: ItemRarity): ParsedMod[] {
       });
     }
   }
+
+  // **A white item keeps its instilled notables and nothing else** — the one exception to "Normal
+  // rarity carries no priced affixes". A Twisted or Distorted Amulet drops white with two
+  // "Allocates <Notable>" lines on it, and those lines *are* what the item is worth; dropping them
+  // left the pricing path with an item level and a base name to work from, which describes the base
+  // rather than the item. See shared/instilled-notables.ts and docs/pricing-trade2.md.
+  //
+  // Filtered by shape rather than by trusting the parse, because the reason Normal was excluded is
+  // still true: a white item's clipboard text is mostly prose, and a capture made without Advanced
+  // Item Descriptions has no headers to believe. Nothing that isn't shaped like a notable can get
+  // through, so no flavour line reaches the row editor as something to untick.
+  if (rarity === "Normal") return mods.filter((mod) => isInstilledNotable(mod.text));
 
   return mods;
 }

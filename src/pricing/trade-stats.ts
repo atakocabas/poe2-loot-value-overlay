@@ -1,3 +1,4 @@
+import { isInstilledNotable } from "../shared/instilled-notables";
 import type { GggFetch } from "./ggg-fetch";
 import type { ModKind, ParsedMod } from "../shared/types";
 
@@ -99,7 +100,7 @@ export class TradeStatsMatcher {
     matched: Map<string, { statId: string; value: number | null }>,
     unmatched: string[]
   ): void {
-    for (const stat of this.searchOrder(mod.kind)) {
+    for (const stat of this.searchOrder(mod.kind, mod.text)) {
       const result = stat.regex.exec(mod.text.trim());
       if (result) {
         // A template with no `#` compiles to a regex with no capture group, so there is no number to
@@ -116,12 +117,30 @@ export class TradeStatsMatcher {
     unmatched.push(mod.text);
   }
 
-  /** The mod's own group first, then the two general ones, each group used at most once. */
-  private searchOrder(kind: ModKind): CompiledStat[] {
+  /**
+   * The mod's own group first, then the two general ones, each group used at most once.
+   *
+   * **An instilled notable is the one line whose own group is overruled**, and the reason is
+   * measured rather than stylistic. GGG pre-expands the notable choice into the stat id itself —
+   * `enchant.stat_2954116742|57190` is "Allocates Doomsayer" — and publishes the identical text under
+   * `explicit`, `crafted` and `fractured` as well. Only the enchant ids are indexed against real
+   * listings. Measured live on `accessory.amulet`: the enchant id returned **1167** listings and the
+   * explicit id **0**.
+   *
+   * Without Advanced Item Descriptions such a line carries no header and no `(enchant)` suffix, so
+   * `kindFromHeader` falls back to `explicit` and this would otherwise pick the dead id. Every rung is
+   * an `and`, so one dead filter takes the whole search to zero — and the row then reads "no listings
+   * match this item", which is a claim about the market rather than about the id. That silence is why
+   * the rule is here and not only in the doc.
+   */
+  private searchOrder(kind: ModKind, text: string): CompiledStat[] {
     const order: CompiledStat[] = [];
     const used = new Set<ModKind>();
 
-    for (const group of [kind, "explicit", "implicit"] as ModKind[]) {
+    const groups: ModKind[] = isInstilledNotable(text)
+      ? ["enchant", kind, "explicit", "implicit"]
+      : [kind, "explicit", "implicit"];
+    for (const group of groups) {
       if (used.has(group)) continue;
       used.add(group);
       order.push(...(this.groups.get(group) ?? []));

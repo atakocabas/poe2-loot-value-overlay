@@ -16,7 +16,11 @@ const FIXTURE_STATS = {
       entries: [
         { id: "explicit.stat_3299347043", text: "# to maximum Life", type: "explicit" },
         { id: "explicit.stat_4220027924", text: "#% to Cold Resistance", type: "explicit" },
-        { id: "explicit.stat_ARMOUR", text: "#% increased Armour", type: "explicit" }
+        { id: "explicit.stat_ARMOUR", text: "#% increased Armour", type: "explicit" },
+        // GGG publishes the identical notable text under explicit, crafted and fractured as well as
+        // enchant, and only the enchant ids are indexed against real listings. This entry is what
+        // makes the routing test below mean something.
+        { id: "explicit.stat_2954116742|57190", text: "Allocates Doomsayer", type: "explicit" }
       ]
     },
     {
@@ -25,7 +29,12 @@ const FIXTURE_STATS = {
     },
     { id: "rune", entries: [{ id: "rune.stat_ARMOUR", text: "#% increased Armour", type: "rune" }] },
     { id: "crafted", entries: [{ id: "crafted.stat_ARMOUR", text: "#% increased Armour", type: "crafted" }] },
-    { id: "enchant", entries: [] },
+    {
+      id: "enchant",
+      entries: [
+        { id: "enchant.stat_2954116742|57190", text: "Allocates Doomsayer", type: "enchant" }
+      ]
+    },
     { id: "fractured", entries: [] },
     { id: "desecrated", entries: [] }
   ]
@@ -51,6 +60,27 @@ test("matches a percentage explicit mod line", async () => {
   const { matched } = await matcher.matchMods([mod("+45% to Cold Resistance")]);
 
   assert.equal(matched.get("+45% to Cold Resistance")?.value, 45);
+});
+
+test("an instilled notable resolves to the enchant id even when parsed as explicit", async () => {
+  // **Measured live on `accessory.amulet`**: `enchant.stat_2954116742|57190` matched 1167 listings
+  // and `explicit.stat_2954116742|57190` matched 0. Without Advanced Item Descriptions the parser
+  // has no header to read and tags the line explicit, so the ordinary "own group first" routing
+  // would pick the dead id — and since every rung is an `and`, one dead filter takes the whole
+  // search to zero and the row reads as though the item had no market.
+  const matcher = new TradeStatsMatcher(stubGggFetch());
+  const { matched } = await matcher.matchMods([mod("Allocates Doomsayer")]);
+
+  assert.equal(matched.get("Allocates Doomsayer")?.statId, "enchant.stat_2954116742|57190");
+  // No `#` in the template, so it is asked for by presence and carries no threshold.
+  assert.equal(matched.get("Allocates Doomsayer")?.value, null);
+});
+
+test("a notable parsed as an enchant lands on the same id", async () => {
+  const matcher = new TradeStatsMatcher(stubGggFetch());
+  const { matched } = await matcher.matchMods([mod("Allocates Doomsayer", "enchant")]);
+
+  assert.equal(matched.get("Allocates Doomsayer")?.statId, "enchant.stat_2954116742|57190");
 });
 
 test("matches an implicit mod line against the implicit stat group", async () => {

@@ -175,6 +175,72 @@ test("parses a normal-rarity waystone without treating flavor text as mods", () 
   assert.deepEqual(item?.explicitMods, []);
 });
 
+const WHITE_TWISTED_AMULET = `Item Class: Amulets
+Rarity: Normal
+Twisted Amulet
+--------
+Item Level: 79
+--------
+-1 Prefix Modifier allowed
+--------
+Allocates Doomsayer
+Allocates Blurred Motion`;
+
+const WHITE_TWISTED_AMULET_ADVANCED = `Item Class: Amulets
+Rarity: Normal
+Distorted Amulet
+--------
+Item Level: 81
+--------
+{ Implicit Modifier }
+-1 Suffix Modifier allowed
+--------
+{ Enchant Modifier }
+Allocates Doomsayer
+{ Enchant Modifier }
+Allocates Well of Power`;
+
+test("a white instilled amulet keeps its notables, which are the only thing it is worth", () => {
+  // The stated exception to "Normal-rarity items carry no priced affixes". Without it the two
+  // `Allocates` lines never exist as mods and the amulet is priced on its item level alone, which
+  // is a fact about the base rather than about the item.
+  const item = parseItemText(WHITE_TWISTED_AMULET);
+  assert.ok(item);
+  assert.equal(item?.rarity, "Normal");
+  assert.equal(item?.baseType, "Twisted Amulet");
+  assert.deepEqual(item?.explicitMods, ["Allocates Doomsayer", "Allocates Blurred Motion"]);
+});
+
+test("a white instilled amulet keeps nothing but its notables", () => {
+  // The reason Normal was excluded in the first place is still true, so the exception is filtered by
+  // shape rather than by trusting the parse: the base's own "-1 Prefix Modifier allowed" implicit is
+  // a real line and still must not become a filter, because every listing the category search
+  // returns already carries it.
+  const item = parseItemText(WHITE_TWISTED_AMULET);
+  assert.deepEqual(item?.implicitMods, []);
+  assert.equal(
+    item?.mods.some((mod) => mod.text.includes("Prefix Modifier allowed")),
+    false
+  );
+});
+
+test("the notables survive Advanced Item Descriptions, which marks them as enchants", () => {
+  const item = parseItemText(WHITE_TWISTED_AMULET_ADVANCED);
+  assert.deepEqual(
+    item?.mods.map((mod) => [mod.text, mod.kind]),
+    [
+      ["Allocates Doomsayer", "enchant"],
+      ["Allocates Well of Power", "enchant"]
+    ]
+  );
+});
+
+test("an ordinary white base still parses to no mods at all", () => {
+  // The exception is exactly one shape wide. A waystone's flavour text, a currency's description and
+  // every other white item go on producing nothing, which is what kept them out of the row editor.
+  assert.deepEqual(parseItemText(WAYSTONE)?.explicitMods, []);
+});
+
 test("flags unidentified items", () => {
   const item = parseItemText(UNIDENTIFIED_RARE);
   assert.ok(item);

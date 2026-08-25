@@ -9,8 +9,27 @@ Part of the [CLAUDE.md](../CLAUDE.md) reference set.
 
 2. `parseItemText()` (`src/parser/item-text-parser.ts`) turns the raw clipboard text into a
    `ParsedItem` (rarity/name/baseType/mods/etc.), splitting on `-{5,}` dashed section separators.
-   Mod parsing is skipped entirely for Currency/Gem/Normal rarity to avoid false-positive matches
-   against flavor text.
+   Mod parsing is skipped entirely for Currency/Gem rarity to avoid false-positive matches against
+   flavor text.
+
+   **Normal rarity is the same rule with one stated exception**, and the exception is what makes a
+   Twisted or Distorted Amulet priceable at all. Those two bases drop white with two
+   `Allocates <Notable>` lines already on them, and the pair is the whole of what the item is worth —
+   dropping them left the pricing path with an item level and a base name, which describes the base
+   rather than the item. So a Normal item is parsed like any other and then filtered down to the
+   lines passing `isInstilledNotable()` (`shared/instilled-notables.ts`).
+
+   **Filtered by shape rather than by trusting the parse**, because the reason Normal was excluded is
+   still true: a white item's clipboard text is mostly prose, and a capture made without Advanced
+   Item Descriptions has no headers to believe. Nothing that isn't shaped like a notable can get
+   through, so no flavour line reaches the row editor as something to untick — and the base's own
+   `-1 Prefix Modifier allowed` implicit stays out too, which is correct: every listing the class
+   search returns already carries it. The search side is in
+   [pricing-trade2.md](pricing-trade2.md).
+
+   One consequence outside the parser: `explicitMods` on such an amulet is no longer empty, so
+   `groupItems()` stops folding it. Two white Distorted Amulets with *different* notables used to
+   collapse into one `×2` row.
 
    **It must handle PoE2's "Advanced Item Descriptions" option**, which many players run with and
    which changes the mod format substantially. Four things it adds, all handled and none optional:

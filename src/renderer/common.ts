@@ -386,6 +386,21 @@ function sourceBadge(item: PricedItem): HTMLElement {
       "No listing matched this waystone's Item Rarity / Pack Size / Monster Rarity / Drop Chance, " +
       "so the price is off every waystone of this tier regardless of what it rolled.";
   }
+
+  // Different in kind from the three above: they drop a whole constraint group, while this keeps the
+  // item's defining one and halves it. Worth its own word because the price is still a real floor -
+  // an amulet with both notables is worth at least the dearer half - but it is a price for an item
+  // carrying one of them, and the mod count alone reads as an ordinary relaxation.
+  if (item.notableSplit) {
+    badge.textContent += " ~1notable";
+    badge.classList.add("badge-partial");
+    badge.title =
+      (badge.title ? `${badge.title}
+
+` : "") +
+      "Nothing is listed carrying both of this amulet's instilled notables, so each was searched " +
+      "alone and this is the dearer of the two markets - a price for one notable, not the pair.";
+  }
   return badge;
 }
 

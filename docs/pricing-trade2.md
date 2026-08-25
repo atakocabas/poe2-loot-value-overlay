@@ -435,6 +435,71 @@ Practically:
     other side. That is why the Reprice readback skips `disabled` rows when building `ignoredMods`:
     a disabled box is not a decision the user made, and without the guard the first Reprice would
     convert every affix on the waystone into a permanent user exclusion.
+- **A Twisted or Distorted Amulet is searched on its instilled notables**
+  (`shared/instilled-notables.ts`, `trade2.useNotableFilters`). Those two bases drop from Delirium's
+  Loathsome Mire with **two random `Allocates <Notable>` lines** already on them, plus a downside
+  implicit (`-1 Prefix Modifier allowed` on the Twisted, `-1 Suffix` on the Distorted). The pair is
+  the whole of what such an amulet is worth; the base itself is a commodity. Measured live on
+  `Runes of Aldur`, all `securable`:
+
+  | query | listings |
+  |---|---|
+  | `type: "Distorted Amulet"`, no stats | 10000 (GGG's cap) |
+  | `category: accessory.amulet` + `enchant.stat_2954116742|57190` ("Allocates Doomsayer") | **1167** |
+  | `category: accessory.amulet` + `explicit.stat_2954116742|57190` (same text) | **0** |
+  | `type: "Distorted Amulet"` + the enchant id | 490 |
+  | `category` + `rarity: normal` + the enchant id | 792 |
+  | `category` + `rarity: rare` + the enchant id | 286 |
+  | `category` + Doomsayer **and** Blurred Motion | **1** |
+
+  Six rules come out of that table, and every one of them is measured rather than reasoned:
+  - **The notable resolves to the `enchant` id, never the `explicit` one.** GGG pre-expands the
+    choice into the stat id itself — there is no `option` object anywhere in the PoE2 reference — and
+    publishes the identical display text under `explicit`, `crafted` and `fractured` as well. Only the
+    enchant ids are indexed: 1167 against **0**. Without Advanced Item Descriptions such a line
+    carries no header and no `(enchant)` suffix, so `kindFromHeader` falls back to `explicit` and
+    `searchOrder()`'s "own group first" rule would pick the dead one. Every rung is an `and`, so one
+    dead filter takes the whole search to zero — and the row then reads "no listings match this item",
+    which is a claim about the market rather than about the id. `TradeStatsMatcher.searchOrder()` puts
+    `enchant` first for a notable for exactly that reason. **The failure is silent; don't "simplify"
+    the special case away.**
+  - **It is the item class, at the item's own rarity.** 1167 against 490 for the base type, and the
+    half the class adds is the other instilled base plus the ordinary amulets anointed with the same
+    notable — all genuine comparables for what that notable is worth. `rarity` is pinned to the
+    capture's own (792 white against 286 rare), because a white two-notable base and a rare one
+    carrying affixes on top are different items.
+  - **No item level is sent, and the `baseItemMinLevel` gate does not apply.** A white instilled
+    amulet is not a white base in the sense the gate means: its value is the notables, and an ilvl
+    floor thins a market already narrowed to one notable on a stat nobody buys it for. Same argument
+    that keeps `map_tier` off a per-tier waystone.
+  - **A notable is never shed by the drop ladder.** It is the item's identity in the way a waystone's
+    reward block is — an amulet's affixes decide how much its notables are worth, never the reverse,
+    and a rung keeping three suffixes over a notable prices a different amulet. Removed from the
+    *drop order* rather than vetoed at the drop site, so `minSurvivingFilters` still counts them: the
+    notables are what a rung shed to the floor is left holding, which is exactly right.
+  - **When nobody lists the pair, each notable is searched alone and the price is the dearer of the
+    two markets** (`splitNotables`). One notable matched 1167 and two matched **1**: a pair is not a
+    thin market, it is an absent one — there are ~875 notables, so the pairs outnumber the amulets
+    anyone has listed. Every one of these bases has a pair, so without this nearly all of them store
+    unpriced.
+
+    **Taking the dearer is the design, and it is the one place this file chooses between rungs by
+    price rather than by strictness.** An amulet carrying A and B is worth at least
+    `max(price(A), price(B))` — a floor in exactly the sense `priceSample` means one, and true without
+    knowing which notable the buyer wants. The ladder cannot express it: its rungs are supersets of
+    one another and it stops at the first that matched, so folding these two in would report whichever
+    notable came first in the item's own text, and both markets run to hundreds of listings. That is
+    a coin flip on the answer, not a tie-break.
+
+    It costs one budgeted search per notable plus a fetch for each that matched, spent only on an item
+    that was about to be stored unpriced and only after every rung and every other retry came back
+    empty. Each search goes through `spendBudgetSlot()`, so a spent window stops it exactly as it
+    stops the ladder. Reported as `TradeEstimate.notableSplit` → `PricedItem.notableSplit` → the row's
+    `~1notable` badge, with the losing notable in `autoDroppedMods`.
+  - **The base gate is the two exact names, and the `-1 Modifier allowed` implicit is never searched.**
+    Every listing the class search returns already carries that implicit if it is one of these bases,
+    so a filter for it constrains nothing and costs query surface — and on a rare it would pin an
+    implicit the parser may not have kinded correctly.
 - **Resistances, life, mana, attributes and global energy shield are searched as GGG's `pseudo`
   aggregates** (`shared/pseudo-stats.ts`, `trade2.usePseudoFilters`). Same argument as the defence
   filters, for the stats with no property line: three rolls pinned at +38 cold, +25 fire and +20
@@ -762,6 +827,15 @@ Practically:
   is not an aggregate. The three single-element resistance totals are the **stated exception** and
   derive from one roll — see the rule above for the measurement behind that, and don't "restore
   consistency" by taking them back to two.
+- **Magic Twisted/Distorted Amulets are out of reach, not overlooked.** PoE2 glues the affixes onto
+  the base on one header line, so `baseType` for one is "Rotund Twisted Amulet of the Bear" and the
+  exact-name gate cannot fire — the same reason Magic never reaches trade2 at all. Don't loosen
+  `isInstilledAmulet` to a substring match to "fix" it: the resolver never sends a Magic item, so the
+  only thing that changes is that the gate starts lying about which items it covers.
+- **Ordinary anointed amulets keep pricing as they always did.** A single-notable amulet is a Rare
+  like any other and its notable is one more stat filter — droppable, because with one notable there
+  is no pair for the split to be about and nothing to protect it from. The scope is the two bases, on
+  purpose.
 - A waystone's affixes never becoming stat filters is the feature, not a gap — see the trade2 notes.
   Don't add an opt-in checkbox for them without first checking the listing count for that base, which
   was measured at zero. `trade2.useMapFilters` is the switch that already exists, and unticking it in

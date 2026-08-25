@@ -102,6 +102,7 @@ second copy of this app, spends the same budget. The defaults leave deliberate h
 | `pseudoMinRatio` | `0.9` | The aggregate floor, as a fraction of the item's own total, for the same reason as `defenceMinRatio`. |
 | `useMapFilters` | `true` | Search a waystone on its printed reward totals rather than its affix text. In the tray's **Settings…**. |
 | `mapMinRatio` | `0.9` | How far to widen those totals: `Item Rarity: +24%` becomes "at least 21". Edited as a percentage in the settings window. |
+| `useNotableFilters` | `true` | Search a Twisted or Distorted Amulet on its two instilled notables, skipping the white-base item-level gate. |
 | `useBaseItemSearch` | `true` | Whether white base items are searched at all. |
 | `baseItemMinLevel` | `81` | The item level a white base must reach to be worth a search — item level is the whole of what a base is worth, and the floor keeps the constant stream of low-level white drops from spending the budget your rares need. |
 | `maxTransientRetries` | `1` | Extra attempts after a GGG 5xx or a dropped socket. Each spends another search from the budget. 4xx and 429 are never retried — the query was rejected, or the budget is already too high for this IP. |

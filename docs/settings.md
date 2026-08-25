@@ -47,6 +47,11 @@ so a save reaches the very next lookup. Most of that block does **not** qualify 
 `mapMinRatio` is stored as a ratio and edited as a percentage: `readNumber` rounds to whole numbers,
 so a ratio typed directly would round 0.9 to 1 and silently mean "no widening at all".
 
+**A new key needs no fold.** `mergeWithDefaults` fills in keys that are *missing*, which is exactly
+what a newly added one is — `trade2.useNotableFilters` reached every existing install the first time
+they loaded settings after the upgrade, with no migration written. It is the *changed* default that
+needs the machinery below.
+
 **A changed default reaches new installs and nobody else**, which is what
 `adoptInstantBuyoutDefault()` (`main/settings.ts`) exists for. `mergeWithDefaults` fills in *missing*
 keys only, so when `trade2.listingStatus` moved from `"online"` to `"securable"` every existing
