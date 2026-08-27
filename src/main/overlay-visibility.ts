@@ -18,6 +18,14 @@ export interface OverlayVisibilityState {
   /** The overlay window itself holds OS focus. */
   overlayFocused: boolean;
   /**
+   * The setup or settings window is open.
+   *
+   * Those windows take the OS foreground and are not PoE2, so without this input the foreground
+   * watcher hides the panel out from under a user who is in the middle of choosing its width and
+   * position — the one place those values can actually be judged, since they apply live on Save.
+   */
+  configWindowOpen: boolean;
+  /**
    * Explicit tray choice, overriding everything below it, and cleared the next time PoE2 takes
    * focus (or when the game exits).
    *
@@ -42,6 +50,11 @@ export function shouldShowOverlay(state: OverlayVisibilityState): boolean {
   // switches itself off on game exit, and treating that the same as "focus detection is broken"
   // is what left the overlay pinned on top of the desktop with no way to dismiss it.
   if (!state.gameRunning) return false;
+
+  // Checked before followFocus: the user is configuring the panel, so it stays up for them to see.
+  // Below `gameRunning` deliberately — a config window opened with the game closed must not pin a
+  // full-screen sheet over the desktop, which is the regression the check above exists for.
+  if (state.configWindowOpen) return true;
 
   if (!state.followFocus) return true;
   return state.gameFocused || state.interactive || state.overlayFocused;

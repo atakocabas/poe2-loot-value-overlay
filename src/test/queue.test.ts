@@ -266,6 +266,75 @@ describe("cancelling the lookup in flight", () => {
     assert.match(priced[0].unpricedDetail!, /Stop was pressed/);
   });
 
+  test("a cancel during a wait lands, with no request in flight to abort", async () => {
+    // The regression this guards. Most of a rare's wall clock is `spendBudgetSlot()` spacing searches
+    // `minSearchIntervalMs` apart, and during those there is nothing on the wire for the injected
+    // `cancelInFlight` to abort — so Stop used to report success, the sleep ran to completion, and
+    // the item priced normally anyway. The per-entry signal is what reaches the wait, so this
+    // resolver ignores `cancelInFlight` entirely and listens only to the signal it was handed.
+    const priced: Array<Omit<PricedItem, "id">> = [];
+    const resolver = {
+      resolve: (_item: ParsedItem, _onTradeSearch?: () => void, signal?: AbortSignal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        })
+    } as unknown as PriceResolver;
+
+    let cancelInFlightCalls = 0;
+    const queue = new PricingQueue(
+      resolver,
+      (item) => priced.push(item),
+      undefined,
+      () => {
+        cancelInFlightCalls += 1;
+      }
+    );
+    queue.enqueue(makeItem("Sekhema's Resolve"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(queue.cancelCurrent(), true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(priced.length, 1, "the entry must retire rather than hanging on the wait");
+    assert.equal(priced[0].unpricedReason, "cancelled");
+    // Still called: the resolver also reaches poe.ninja and the currency exchange, which the signal
+    // is not threaded into, so the fetch-level kill stays as well as the signal rather than instead.
+    assert.equal(cancelInFlightCalls, 1);
+  });
+
+  test("each entry's cancel reaches only its own lookup", async () => {
+    // Per-entry rather than one handle on the queue, so a Stop can't abort a lookup it wasn't aimed
+    // at — the row editor's Reprice runs beside these on the same trade2 fetch instance.
+    const signals: AbortSignal[] = [];
+    const resolver = {
+      resolve: (item: ParsedItem, _onTradeSearch?: () => void, signal?: AbortSignal) => {
+        if (signal) signals.push(signal);
+        if (signals.length === 1) {
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        }
+        return Promise.resolve({
+          ...item, chaosValue: 5, priceSource: "poeninja",
+          ignoredMods: [], manualChaosValue: null
+        });
+      }
+    } as unknown as PriceResolver;
+
+    const queue = new PricingQueue(resolver, () => {});
+    queue.enqueue(makeItem("Stuck"));
+    queue.enqueue(makeItem("Fine"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    queue.cancelCurrent();
+    // Past the queue's own THROTTLE_MS, so the second entry has actually started.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    assert.equal(signals.length, 2, "the backlog must still have been worked through");
+    assert.equal(signals[0].aborted, true);
+    assert.equal(signals[1].aborted, false, "the next entry inherited the cancel");
+  });
+
   test("the queue moves on to the backlog rather than stopping with it", async () => {
     const priced: Array<Omit<PricedItem, "id">> = [];
     let reject: ((error: Error) => void) | null = null;

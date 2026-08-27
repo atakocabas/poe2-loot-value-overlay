@@ -53,7 +53,9 @@ export interface Settings {
   hotkeys: {
     /**
      * Opens the full list and makes the overlay clickable, so Edit can be pressed; again closes both.
-     * The panel is otherwise always its minimal form — see `OverlayStatus.expanded`.
+     * The panel is otherwise always its minimal form — see `OverlayStatus.expanded`. Closing is not
+     * exclusive to this key: a click landing off the panel and the overlay losing focus both do it
+     * too. Opening is.
      *
      * **The only thing that puts the overlay into interactive mode.** A `toggleOverlay` hotkey used
      * to flip click-through on its own without resizing anything; it was removed because the case
@@ -62,6 +64,18 @@ export interface Settings {
     toggleList: string;
     forceCapture: string;
   };
+  /**
+   * Whether `adoptToggleListDefault` has run — see `main/settings.ts`. Ships false.
+   *
+   * **Root-level rather than inside `hotkeys`, and that is not a style choice.** The other markers
+   * sit in the block they migrate (`trade2.listingStatusMigrated`) because `SAVE_SETTINGS_CONFIG`
+   * spreads those blocks from the loaded object and so carries unknown keys through. It does not do
+   * that for this one: it rebuilds `hotkeys` wholesale from the form (`hotkeys: { ...config.hotkeys }`
+   * in `settings-window.ts`), which holds exactly the two accelerators. A marker in there would be
+   * erased the first time anyone pressed Save, and the fold would then run a second time and undo a
+   * deliberate Ctrl+Shift+L.
+   */
+  toggleListDefaultMigrated: boolean;
   display: {
     /**
      * Unit prices are shown in. Values are always *stored* in chaos; this only affects rendering.

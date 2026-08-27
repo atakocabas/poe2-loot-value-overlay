@@ -3,13 +3,20 @@ import path from "node:path";
 import { IPC } from "../shared/ipc-channels";
 import { findDuplicateAccelerators, validateAccelerator } from "../shared/accelerator";
 import { appIcon } from "./icon";
-import { probeAccelerator } from "./hotkeys";
+import { probeAccelerator, unregisterAllHotkeys } from "./hotkeys";
 import { loadDefaultSettings, loadSettings, saveSettings } from "./settings";
 import { pipeRendererLogs } from "./window";
 import type { Settings } from "../shared/settings";
 import type { SettingsConfig, SettingsSaveResult, SettingsState } from "../shared/types";
 
 let settingsWindow: BrowserWindow | null = null;
+/**
+ * The pending "this window has closed" promise, so a second `showSettingsWindow()` call hands back
+ * the *same* one rather than a resolved one. Without it, re-opening an already-open window ran the
+ * caller's `.then()` on the next microtask — reinstating the hotkeys behind the open window's back,
+ * which is the one state this window must never be in.
+ */
+let settingsClosed: Promise<void> | null = null;
 
 /** The settings-window half of `Settings` — see `SettingsConfig` for why it's only this half. */
 function toConfig(settings: Settings): SettingsConfig {
@@ -37,22 +44,27 @@ function toConfig(settings: Settings): SettingsConfig {
  * Framed, opaque, focusable and not always-on-top, exactly like the setup window and for the same
  * reason — it is not the second *overlay* the "one window" non-goal rules out, which is about two
  * full-screen always-on-top sheets fighting over clicks (see `createOverlayWindow`). It shows no loot
- * data and is only open while the user isn't playing.
+ * data, and it never takes clicks away from the overlay — which does stay on screen behind it, so
+ * the panel size and position chosen in here can be seen (`configWindowOpen` in
+ * `overlay-visibility.ts`).
  *
  * Separate from the setup window rather than a fourth field on it, because the two halves of the
  * configuration are applied in opposite ways: everything here takes effect in place, while the
  * league and contact email were captured at construction by three pricing clients and need a
  * relaunch. One window doing both would have to restart for every change or lie about which ones.
  *
- * **The caller must suspend the global hotkeys for as long as this is open** — see `onOpenSettings`
- * in `index.ts`. A registered accelerator is taken by the OS before any renderer sees it, so the key
- * recorder cannot capture a combo that is currently bound, and `probeAccelerator` would report every
- * existing binding as unavailable.
+ * **The global hotkeys are suspended while a key recorder in here is armed**, not for the window's
+ * whole lifetime: the page says so over `SET_HOTKEY_CAPTURE`, and the save handler below drops them
+ * itself around its probe loop. A registered accelerator is taken by the OS before any renderer sees
+ * it, so a recorder cannot capture a combo that is currently bound and `probeAccelerator` would
+ * report every existing binding as unavailable — but neither is a reason to leave them down while
+ * the user is filling in the rest of the form.
  */
 export function showSettingsWindow(): Promise<void> {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.focus();
-    return Promise.resolve();
+    // The promise from the call that opened it, never a fresh resolved one — see `settingsClosed`.
+    return settingsClosed ?? Promise.resolve();
   }
 
   settingsWindow = new BrowserWindow({
@@ -87,12 +99,14 @@ export function showSettingsWindow(): Promise<void> {
   pipeRendererLogs(settingsWindow, "settings");
   settingsWindow.loadFile(path.join(__dirname, "..", "renderer", "settings.html"));
 
-  return new Promise((resolve) => {
+  settingsClosed = new Promise((resolve) => {
     settingsWindow?.on("closed", () => {
       settingsWindow = null;
+      settingsClosed = null;
       resolve();
     });
   });
+  return settingsClosed;
 }
 
 export interface SettingsIpcDeps {
@@ -101,15 +115,31 @@ export interface SettingsIpcDeps {
    * reaching back into `index.ts`, matching `onSetupSaved` and `onHistoryCleared` — but unlike
    * `onSetupSaved` this one really does apply them, since nothing downstream captured any of it.
    *
-   * It deliberately does **not** re-register the hotkeys: the window is still open at this point and
-   * they are suspended for as long as it is.
+   * That includes re-registering the hotkeys, which the save handler below drops around its probe
+   * loop. The window staying open is no longer a reason to leave them down — the suspension is
+   * scoped to an armed recorder now, and `onHotkeyCapture` is what holds it.
    */
   onSettingsSaved: (settings: Settings) => void;
+  /**
+   * A key recorder in the page was armed (true) or disarmed (false), for as long as which the caller
+   * must drop every binding. See `SET_HOTKEY_CAPTURE`.
+   *
+   * The caller is also responsible for clearing it when this window closes: a window shut mid-record
+   * never sends the false, and the hotkeys would stay down for the rest of the session.
+   */
+  onHotkeyCapture: (active: boolean) => void;
 }
 
-export function registerSettingsIpcHandlers({ onSettingsSaved }: SettingsIpcDeps): void {
+export function registerSettingsIpcHandlers({
+  onSettingsSaved,
+  onHotkeyCapture
+}: SettingsIpcDeps): void {
   ipcMain.handle(IPC.GET_SETTINGS_CONFIG, async (): Promise<SettingsState> => {
     return { ...toConfig(loadSettings()), defaults: toConfig(loadDefaultSettings()) };
+  });
+
+  ipcMain.handle(IPC.SET_HOTKEY_CAPTURE, (_event, active: boolean): void => {
+    onHotkeyCapture(active === true);
   });
 
   ipcMain.handle(
@@ -139,7 +169,11 @@ export function registerSettingsIpcHandlers({ onSettingsSaved }: SettingsIpcDeps
         return { invalid, refused: [] };
       }
 
-      // Accurate only because our own hotkeys are unregistered while this window is open.
+      // Dropped here rather than relied on being down already: `probeAccelerator` reports a combo
+      // this app has bound as taken — by itself — so the probe below is only honest with nothing
+      // registered. Doing it inside the handler makes that true whether or not a recorder happens
+      // to be armed; `onSettingsSaved` at the end puts the new bindings back.
+      unregisterAllHotkeys();
       const refused: SettingsSaveResult["refused"] = [];
       for (const [name, accelerator] of Object.entries(hotkeys)) {
         if (!probeAccelerator(accelerator)) refused.push({ name, accelerator });
@@ -187,7 +221,8 @@ export function registerSettingsIpcHandlers({ onSettingsSaved }: SettingsIpcDeps
         );
       }
 
-      // Applied, but the window stays open: this is a live apply, not a wizard step.
+      // Applied — including re-registering the hotkeys dropped above — but the window stays open:
+      // this is a live apply, not a wizard step.
       onSettingsSaved(next);
       return { invalid: [], refused };
     }

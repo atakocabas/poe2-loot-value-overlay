@@ -26,6 +26,14 @@ export interface IpcDeps {
    * panel needs to ask it something.
    */
   queue: PricingQueue;
+  /**
+   * A click landed off the panel, so the full list should close — see `COLLAPSE_PANEL`.
+   *
+   * A callback back into the composition root, like `onSetupSaved`, because the state it moves
+   * (`panelExpanded`, `overlayInteractive`) lives in `index.ts` alongside the hotkey that is the
+   * other way to move it.
+   */
+  onCollapsePanel: () => void;
 }
 
 export function registerIpcHandlers({
@@ -33,11 +41,16 @@ export function registerIpcHandlers({
   trade2,
   settings,
   getStatus,
-  queue
+  queue,
+  onCollapsePanel
 }: IpcDeps): void {
   // Pulled once on load; thereafter the main process pushes OVERLAY_STATUS on change.
   ipcMain.handle(IPC.GET_STATUS, () => getStatus());
   ipcMain.handle(IPC.GET_ALL_ITEMS, () => getAllItems());
+
+  // Answers nothing: the panel learns it collapsed from the OVERLAY_STATUS push that follows, which
+  // is the same thing it learns from when the hotkey does it.
+  ipcMain.handle(IPC.COLLAPSE_PANEL, () => onCollapsePanel());
 
   ipcMain.handle(IPC.CLEAR_HISTORY, async () => {
     await clearHistory();

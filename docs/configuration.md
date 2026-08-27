@@ -26,7 +26,7 @@ once at startup — which is why saving from it restarts the app.
 
 | hotkey | default | does |
 | --- | --- | --- |
-| `toggleList` | `Ctrl+Shift+L` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both. The only thing that changes the panel's size, and the only way into interactive mode. |
+| `toggleList` | `Ctrl+Space` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both — as does clicking anywhere off the panel, or switching to another window. The only thing that *opens* the panel, and the only way into interactive mode. |
 | `forceCapture` | `Ctrl+\`` | Re-reads the clipboard even if it hasn't changed. |
 
 **Rebind them from the tray's Settings…**: click a combination, press the keys you want, and Save —
@@ -58,8 +58,10 @@ save.
 | `panel.position` | `"right"` | Which bottom corner the panel sits in. |
 
 The window itself is a full-screen transparent click-through sheet, so the panel's position is fixed
-— but it only takes clicks at all while the full list is open (`Ctrl+Shift+L`), and passes everything
-straight to the game otherwise.
+— but it only takes clicks at all while the full list is open (`Ctrl+Space`), and passes everything
+straight to the game otherwise. While the list *is* open the sheet takes **every** click on the
+display, including the transparent parts, which is why clicking off the panel closes it: that press
+is spent getting you back to the game, and the next one reaches it.
 
 ## `display`
 

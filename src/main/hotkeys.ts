@@ -59,8 +59,10 @@ export function registerHotkeys(settings: Settings, handlers: HotkeyHandlers): H
  * refusal only through its return value.
  *
  * **Only accurate while our own hotkeys are unregistered.** Probing an accelerator this app has
- * already bound reports it as taken — by itself. The settings window suspends them for exactly as
- * long as it is open, which is also what makes the key recorder able to see a bound combo at all.
+ * already bound reports it as taken — by itself. `SAVE_SETTINGS_CONFIG` therefore calls
+ * `unregisterAllHotkeys()` itself immediately before its probe loop rather than assuming they are
+ * already down; the same suspension is what lets the settings window's key recorder see a bound
+ * combo at all, but that one lasts only as long as a recorder is armed.
  */
 export function probeAccelerator(accelerator: string): boolean {
   if (accelerator === "") return true;

@@ -23,6 +23,7 @@ import { isInstilledAmulet, isInstilledNotable } from "../shared/instilled-notab
 import { derivePseudoStatsFromMods, pseudoTotal } from "../shared/pseudo-stats";
 import { TradeStatsMatcher } from "./trade-stats";
 import { TradeSearchBudget } from "./trade-budget";
+import { sleep } from "./sleep";
 
 const API_BASE = "https://www.pathofexile.com/api/trade2";
 const REALM = "poe2";
@@ -335,10 +336,6 @@ export interface TradeEstimate {
    * That is the distinction the row editor's ticks carry.
    */
   searchedMods: string[];
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function noPrice(reason: string, failure: TradeFailure): TradeEstimate {
@@ -710,7 +707,18 @@ export class Trade2Client {
     toChaos: (amount: number, currency: string) => number | null,
     modFilters: ModFilterMap = new Map(),
     pseudoBounds: ModFilterMap = new Map(),
-    mapBounds: ModFilterMap = new Map()
+    mapBounds: ModFilterMap = new Map(),
+    /**
+     * Abandons the whole lookup — the requests *and* the waits between them.
+     *
+     * Threaded down rather than left to the fetch's own `cancelInFlight`, because that handle only
+     * ever holds the request currently on the wire. Most of a rare's wall clock is `spendBudgetSlot()`
+     * spacing searches `minSearchIntervalMs` apart, and during those there is nothing in flight to
+     * abort: a Stop pressed then used to report success while the ladder carried on and priced the
+     * item anyway. It also scopes a cancel to *this* lookup, where the fetch handle would take
+     * whichever of the queue and the row editor's Reprice happened to be running.
+     */
+    signal?: AbortSignal
   ): Promise<TradeEstimate> {
     if (!this.settings.trade2.enabled) {
       return noPrice(
@@ -786,7 +794,9 @@ export class Trade2Client {
         );
       }
       // Doubles as the retry backoff: the budget already spaces searches by minSearchIntervalMs.
-      if (waitMs > 0) await sleep(waitMs);
+      // The signal rides the backoff too: this is the other place a lookup sits waiting with
+      // nothing on the wire, so a cancel during a transient retry has to land here as well.
+      if (waitMs > 0) await sleep(waitMs, signal);
 
       const { estimate, transient } = await this.attempt(
         item,
@@ -794,7 +804,8 @@ export class Trade2Client {
         toChaos,
         modFilters,
         pseudoBounds,
-        mapBounds
+        mapBounds,
+        signal
       );
       if (!transient) return estimate;
 
@@ -818,11 +829,18 @@ export class Trade2Client {
     toChaos: (amount: number, currency: string) => number | null,
     modFilters: ModFilterMap,
     pseudoBounds: ModFilterMap,
-    mapBounds: ModFilterMap
+    mapBounds: ModFilterMap,
+    signal?: AbortSignal
   ): Promise<{ estimate: TradeEstimate; transient: boolean }> {
     try {
-      return await this.search(item, ignoredMods, toChaos, modFilters, pseudoBounds, mapBounds);
+      return await this.search(item, ignoredMods, toChaos, modFilters, pseudoBounds, mapBounds, signal);
     } catch (error) {
+      // A cancel is not a fault and must not be laundered into one. Reported as transient it would
+      // be handed to the caller's retry loop, which would spend another budget slot re-asking the
+      // question the user just called off — and the row editor, which tells a cancel from a failure
+      // by the throw arriving, would word it as "trade2 request failed" instead.
+      if (signal?.aborted) throw error;
+
       const message = error instanceof Error ? error.message : String(error);
       // A thrown fetch is DNS/socket/TLS — the network, not a rejected query.
       return {
@@ -855,7 +873,8 @@ export class Trade2Client {
     toChaos: (amount: number, currency: string) => number | null,
     modFilters: ModFilterMap,
     pseudoBounds: ModFilterMap,
-    mapBounds: ModFilterMap
+    mapBounds: ModFilterMap,
+    signal?: AbortSignal
   ): Promise<{ estimate: TradeEstimate; transient: boolean }> {
     const defenceFilters = this.buildDefenceFilters(item);
     const mapFilters = this.buildMapFilters(item, mapBounds);
@@ -960,7 +979,7 @@ export class Trade2Client {
     const rungsToTry = ladder;
 
     for (const [step, candidate] of rungsToTry.entries()) {
-      if (step > 0 && !(await this.spendBudgetSlot())) {
+      if (step > 0 && !(await this.spendBudgetSlot(signal))) {
         budgetStopped = true;
         break;
       }
@@ -972,7 +991,8 @@ export class Trade2Client {
         defenceFilters,
         pseudoFilters,
         mapFilters,
-        `rung ${step + 1}/${rungsToTry.length}`
+        `rung ${step + 1}/${rungsToTry.length}`,
+        signal
       );
       if ("failure" in rung) return rung.failure;
       rungs.push({ required: candidate.required, total: rung.total, filters: candidate.filters.length });
@@ -1022,7 +1042,7 @@ export class Trade2Client {
     const looseRung = rungsToTry[rungsToTry.length - 1];
     let pseudoDropped = false;
     if (!best && !budgetStopped && pseudoFilters.length > 0) {
-      if (await this.spendBudgetSlot()) {
+      if (await this.spendBudgetSlot(signal)) {
         console.log(
           `[trade2] "${item.baseType}" no listings with ${describePseudo(pseudoStats, pseudoFilters)} - ` +
             "retrying without the aggregate constraint"
@@ -1034,7 +1054,8 @@ export class Trade2Client {
           defenceFilters,
           allDisabled(pseudoFilters),
           mapFilters,
-          "retry without aggregates"
+          "retry without aggregates",
+          signal
         );
         if ("failure" in rung) return rung.failure;
         if (rung.total > 0) {
@@ -1058,7 +1079,7 @@ export class Trade2Client {
     // query that is a subset of one that just failed.
     let defencesDropped = false;
     if (!best && !budgetStopped && defenceFilters.length > 0) {
-      if (await this.spendBudgetSlot()) {
+      if (await this.spendBudgetSlot(signal)) {
         console.log(
           `[trade2] "${item.baseType}" no listings with ${describeDefences(defenceFilters)} - ` +
             "retrying without the defence constraint"
@@ -1070,7 +1091,8 @@ export class Trade2Client {
           [],
           allDisabled(pseudoFilters),
           mapFilters,
-          "retry without defences"
+          "retry without defences",
+          signal
         );
         if ("failure" in rung) return rung.failure;
         if (rung.total > 0) {
@@ -1091,7 +1113,7 @@ export class Trade2Client {
     // it rolls. Worth doing rather than storing unpriced, but the caller has to be told.
     let mapDropped = false;
     if (!best && !budgetStopped && mapFilters.length > 0) {
-      if (await this.spendBudgetSlot()) {
+      if (await this.spendBudgetSlot(signal)) {
         console.log(
           `[trade2] "${item.baseType}" no listings with ${describeMapFilters(mapFilters)} - ` +
             "retrying on base type alone"
@@ -1103,7 +1125,8 @@ export class Trade2Client {
           defenceFilters,
           allDisabled(pseudoFilters),
           [],
-          "retry on base type"
+          "retry on base type",
+          signal
         );
         if ("failure" in rung) return rung.failure;
         if (rung.total > 0) {
@@ -1132,7 +1155,8 @@ export class Trade2Client {
         mapFilters,
         rungs,
         built.modsByStat,
-        toChaos
+        toChaos,
+        signal
       );
       if (split.priced) return split.priced;
       // Neither half matched, or the window emptied before both could be tried. Fall through to the
@@ -1225,7 +1249,8 @@ export class Trade2Client {
       mapDropped,
       built.modsByStat,
       droppedMods,
-      searchedMods
+      searchedMods,
+      signal
     );
   }
 
@@ -1270,7 +1295,8 @@ export class Trade2Client {
     mapFilters: MapFilter[],
     rungs: Array<{ required: number; total: number; filters: number }>,
     modsByStat: Map<string, string[]>,
-    toChaos: (amount: number, currency: string) => number | null
+    toChaos: (amount: number, currency: string) => number | null,
+    signal?: AbortSignal
   ): Promise<{
     priced: { estimate: TradeEstimate; transient: boolean } | null;
     budgetStopped: boolean;
@@ -1284,7 +1310,7 @@ export class Trade2Client {
     let budgetStopped = false;
 
     for (const [index, statId] of notableStatIds.entries()) {
-      if (!(await this.spendBudgetSlot())) {
+      if (!(await this.spendBudgetSlot(signal))) {
         budgetStopped = true;
         break;
       }
@@ -1297,7 +1323,8 @@ export class Trade2Client {
         [],
         allDisabled(pseudoFilters),
         mapFilters,
-        `notable ${index + 1}/${notableStatIds.length} alone`
+        `notable ${index + 1}/${notableStatIds.length} alone`,
+        signal
       );
       // A transient failure mid-split is still a failure of the whole lookup: the half already
       // priced is not the answer, only half of a comparison that never finished.
@@ -1330,7 +1357,8 @@ export class Trade2Client {
         false,
         modsByStat,
         droppedMods,
-        searchedMods
+        searchedMods,
+        signal
       );
       // A transient fetch failure aborts the whole comparison: half of it is not the answer, and
       // the caller's retry loop is what should decide whether to try again. A *definitive* one (a
@@ -1370,11 +1398,18 @@ export class Trade2Client {
     return minListingPrice > 0 ? ` priced at or above ${minListingPrice}` : "";
   }
 
-  /** Spends one search slot, waiting out the configured spacing. false when the budget is gone. */
-  private async spendBudgetSlot(): Promise<boolean> {
+  /**
+   * Spends one search slot, waiting out the configured spacing. false when the budget is gone.
+   *
+   * The wait takes the signal, and that is the whole reason it is threaded this far: this is where a
+   * rare spends most of its wall clock (`minSearchIntervalMs`, once per rung of the drop ladder), and
+   * nothing is on the wire during it for the fetch's own `cancelInFlight` to abort. A cancel here
+   * throws out of the lookup rather than resolving into the next search.
+   */
+  private async spendBudgetSlot(signal?: AbortSignal): Promise<boolean> {
     const waitMs = this.budget.reserve();
     if (waitMs === null) return false;
-    if (waitMs > 0) await sleep(waitMs);
+    if (waitMs > 0) await sleep(waitMs, signal);
     return true;
   }
 
@@ -1671,7 +1706,8 @@ export class Trade2Client {
      * one lookup walking two rungs, which is exactly the confusion that prompted it: an automatic
      * price and a later Reprice print adjacent lines that read as one descending ladder.
      */
-    stage: string
+    stage: string,
+    signal?: AbortSignal
   ): Promise<RungResult | { failure: { estimate: TradeEstimate; transient: boolean } }> {
     // Both filter groups live under one `query.filters` key, so they have to be assembled together
     // rather than each conditionally spreading its own — the second would replace the first.
@@ -1826,6 +1862,9 @@ export class Trade2Client {
       `${API_BASE}/search/${REALM}/${encodeURIComponent(this.settings.league)}`,
       {
         method: "POST",
+        // `createThrottledFetch` folds this into the request's own signal rather than replacing it,
+        // which is what makes a cancel reach the wire without any change to `ggg-fetch.ts`.
+        signal,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           query: {
@@ -1908,12 +1947,14 @@ export class Trade2Client {
     mapDropped: boolean,
     modsByStat: Map<string, string[]>,
     autoDroppedMods: string[],
-    searchedMods: string[]
+    searchedMods: string[],
+    signal?: AbortSignal
   ): Promise<{ estimate: TradeEstimate; transient: boolean }> {
     const ids = priceSample(rung.ids, Math.min(this.settings.trade2.maxListings, MAX_FETCH_IDS));
 
     const fetchResponse = await this.gggFetch(
-      `${API_BASE}/fetch/${ids.join(",")}?query=${encodeURIComponent(rung.searchId)}&realm=${REALM}`
+      `${API_BASE}/fetch/${ids.join(",")}?query=${encodeURIComponent(rung.searchId)}&realm=${REALM}`,
+      { signal }
     );
     if (!fetchResponse.ok) {
       return this.describeHttpFailure(fetchResponse, "fetch");

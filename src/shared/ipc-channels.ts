@@ -66,6 +66,28 @@ export const IPC = {
    * the entry retires, and the cancelled item arrives on PRICED_ITEM like any other.
    */
   CANCEL_PRICING: "cancel-pricing",
+  /**
+   * Abandons the search the row editor's Reprice button started, for the Cancel beside it.
+   *
+   * Its own channel rather than a second job for `CANCEL_PRICING`, because the two address different
+   * work: that one names the pricing queue's current entry, and a Reprice never enters the queue —
+   * it produces no pending row, so the footer's Stop answers "Nothing to stop" while a reprice is
+   * running. One channel doing both would abort whichever happened to be in flight, which is the
+   * opposite of what a button sitting next to the search it started should mean.
+   *
+   * Answers whether there was a reprice to abandon.
+   */
+  CANCEL_REPRICE: "cancel-reprice",
+  /**
+   * The panel reporting a click that landed off it, so main can put it back into its heads-up form.
+   *
+   * A report rather than a decision: `panelExpanded` and `overlayInteractive` live in the main
+   * process because `toggleList` is a global shortcut whose keypress only ever reaches that side,
+   * and a second copy of the panel's form over here would drift from it the first time the two
+   * disagreed. The collapse arrives back on `OVERLAY_STATUS` exactly as the hotkey's does, so both
+   * routes land in the same place.
+   */
+  COLLAPSE_PANEL: "collapse-panel",
 
   // The setup window's two channels. Registered separately from the overlay's, because on first
   // run setup runs to completion *before* the pricing clients and watchers those handlers need
@@ -74,11 +96,21 @@ export const IPC = {
   GET_SETUP_CONFIG: "get-setup-config",
   SAVE_SETUP_CONFIG: "save-setup-config",
 
-  // The settings window's two channels — the half of the configuration that applies without a
+  // The settings window's three channels — the half of the configuration that applies without a
   // restart. Registered alongside the overlay's rather than with setup's, since unlike setup they
   // gate nothing during boot.
   /** Current hotkeys/overlay/display values, plus the shipped defaults behind the Reset buttons. */
   GET_SETTINGS_CONFIG: "get-settings-config",
   /** Validates, probes the accelerators, writes, and applies live. Returns what didn't take. */
-  SAVE_SETTINGS_CONFIG: "save-settings-config"
+  SAVE_SETTINGS_CONFIG: "save-settings-config",
+  /**
+   * The settings window arming and disarming its key recorder.
+   *
+   * Main drops every binding for exactly as long as one is armed: `globalShortcut` takes a combo
+   * from the OS before any renderer sees it — the same mechanism that rules out Ctrl+C as a capture
+   * hotkey — so a currently-bound accelerator could otherwise never be recorded. Scoped to the
+   * recorder rather than to the window's lifetime, so the hotkeys keep working while the rest of
+   * the form is being filled in.
+   */
+  SET_HOTKEY_CAPTURE: "set-hotkey-capture"
 } as const;

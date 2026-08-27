@@ -8,6 +8,15 @@ interface QueueEntry {
   id: string;
   item: ParsedItem;
   stage: PendingStage;
+  /**
+   * Abandons this entry's lookup, and only this entry's.
+   *
+   * Per-entry rather than one handle on the queue, because it is what the resolver is handed: a
+   * cancel addressed to the entry cannot touch a Reprice the row editor is running beside it, which
+   * the fetch-level `cancelInFlight` below cannot promise — both ride the one trade2 fetch instance.
+   * It also reaches the waits between requests, where nothing is in flight at all.
+   */
+  abort: AbortController;
 }
 
 /** FIFO queue so rapid hotkey presses don't fire concurrent, unthrottled pricing requests. */
@@ -62,12 +71,17 @@ export class PricingQueue {
   cancelCurrent(): boolean {
     if (!this.current) return false;
     this.cancellingId = this.current.id;
+    // Both, and in this order. The signal is what interrupts a wait — most of a rare's wall clock is
+    // `spendBudgetSlot()` spacing searches out, and a press during one used to report success while
+    // the ladder carried on and priced the item anyway. `cancelInFlight` stays because the resolver
+    // also reaches poe.ninja and the currency exchange, which the signal is not threaded into.
+    this.current.abort.abort(new Error("the lookup was cancelled from the overlay"));
     this.cancelInFlight?.();
     return true;
   }
 
   enqueue(item: ParsedItem): void {
-    this.queue.push({ id: randomUUID(), item, stage: "queued" });
+    this.queue.push({ id: randomUUID(), item, stage: "queued", abort: new AbortController() });
     this.emitPending();
     void this.drain();
   }
@@ -91,10 +105,14 @@ export class PricingQueue {
 
       let priced: Omit<PricedItem, "id">;
       try {
-        priced = await this.resolver.resolve(entry.item, () => {
-          entry.stage = "trade2";
-          this.emitPending();
-        });
+        priced = await this.resolver.resolve(
+          entry.item,
+          () => {
+            entry.stage = "trade2";
+            this.emitPending();
+          },
+          entry.abort.signal
+        );
       } catch (error) {
         // A cancel arrives here as a thrown abort, and it is the one throw that isn't a fault: the
         // user decided this lookup wasn't worth the wait. Recording it as `searchFailed` would send

@@ -71,8 +71,10 @@ Part of the [CLAUDE.md](../CLAUDE.md) reference set.
    It also **owns the pending list** — everything captured but not yet priced — and pushes it whole
    on `PRICING_STATUS` at every transition, because until this existed the renderer had no idea an
    item existed until it was fully priced. That gap is long and silent: most of a rare's wall clock
-   is `spendBudgetSlot()`'s bare `await sleep()` inside `TradeSearchBudget` spacing, which logs
-   nothing and can run five times at `minSearchIntervalMs`. The stage comes from two places — the
+   is `spendBudgetSlot()`'s `await sleep()` inside `TradeSearchBudget` spacing, which logs nothing
+   and can run five times at `minSearchIntervalMs`. That sleep is **abortable** (`pricing/sleep.ts`)
+   and it did not used to be, which is what made Stop a lie for most of a lookup's duration — see
+   the cancel rules below. The stage comes from two places — the
    queue itself for `queued`/`pricing`, and the optional `onTradeSearch` callback on
    `PriceResolver.resolve()` for `trade2`, fired at the one point the work stops being a cache
    lookup. Retiring an entry happens **before** `onPriced`, so an item is never on screen twice, and
@@ -90,10 +92,29 @@ Part of the [CLAUDE.md](../CLAUDE.md) reference set.
    - **A cancel is stored as `unpricedReason: "cancelled"`, never `searchFailed`.** Nothing broke.
      The row says "stopped" and is marked recoverable, which is what points at Reprice.
 
-   The interrupt itself is injected as `cancelInFlight` rather than reached for — see
-   `CancellableGggFetch` in [pricing-trade2.md](pricing-trade2.md). Without it the queue still marks
-   the entry, it just has nothing to interrupt and the lookup finishes on its own, which is exactly
-   what the two-argument constructions in the tests do.
+   **The interrupt is two things, and it needs both.** Each entry carries its own `AbortController`,
+   whose signal is passed to `PriceResolver.resolve()` and threaded down through `estimateRareValue`;
+   `cancelInFlight` is injected on top of it, as before.
+   - The **signal** is what reaches the *waits*. Before it existed, cancellation was addressed only
+     to whatever request the fetch had in `inFlight` — and during `spendBudgetSlot()`'s spacing there
+     is nothing in flight at all. The abort was a no-op, the sleep ran to completion, the next rung
+     got a fresh un-aborted controller, and **the button said "Stopped" while the item priced
+     normally**. Since that is where most of the wall clock goes, this was the common case.
+   - It is also **per entry**, so a Stop cannot abort a lookup it was not aimed at. The row editor's
+     Reprice runs on the same `trade2Fetch` instance, which is why the fetch-level handle alone
+     cannot promise that.
+   - **`cancelInFlight` stays** rather than being replaced: `resolve()` also reaches poe.ninja and the
+     currency exchange, which the signal is not threaded into. Without it the queue still marks the
+     entry, it just has less to interrupt — which is exactly what the two-argument constructions in
+     the tests do.
+   - `Trade2Client.attempt()` **rethrows an abort instead of reporting it transient.** Laundered into
+     a transient failure it would go round the caller's retry loop and spend another budget slot
+     re-asking the question the user just called off.
+
+   **A cancelled search still spends its budget slot.** `TradeSearchBudget.reserve()` has no release
+   path and should not grow one: it is called before the request goes out, GGG's per-IP counter
+   counted anything that actually left, and a refund would make cancel-spam a way to blow the real
+   limit. See [pricing-trade2.md](pricing-trade2.md).
 
 **`CurrencyExchangeClient`** (`src/pricing/currency-exchange-client.ts`) reads GGG's public,
 unauthenticated PoE2 Currency Exchange feed. Three things about it are measured behaviour, not

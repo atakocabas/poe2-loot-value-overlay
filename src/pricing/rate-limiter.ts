@@ -1,3 +1,5 @@
+import { sleep } from "./sleep";
+
 interface SubLimit {
   max: number;
   periodSec: number;
@@ -14,38 +16,6 @@ function parseTriples(header: string): [number, number, number][] {
   return header.split(",").map((part) => {
     const [a, b, c] = part.trim().split(":").map(Number);
     return [a, b, c];
-  });
-}
-
-/**
- * A sleep the caller can cut short.
- *
- * The waits below are deliberately long — `restrictedSec` on a tripped bucket is 30 minutes for
- * the 5-minute rule and an hour for the 6-hour one — and until this took a signal there was no way
- * to stop serving one out. That is most of what "the app is stuck querying" actually was: not a
- * hung socket but a lockout being waited out correctly, with nothing on screen saying so and no way
- * to abandon the item and move on.
- *
- * Rejects with the signal's reason rather than resolving early, so an abandoned wait can never be
- * mistaken for a wait that finished and fall through into the request it was throttling.
- */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    // Named rather than inline so the resolve path above can remove it: these listeners outlive a
-    // completed sleep otherwise, and one accumulates per request on a long-lived signal.
-    function onAbort(): void {
-      clearTimeout(timer);
-      reject(signal!.reason);
-    }
-    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

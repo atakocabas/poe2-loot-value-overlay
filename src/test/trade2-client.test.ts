@@ -3120,3 +3120,49 @@ test("useNotableFilters off sends the white base's item level and its exact base
   assert.equal(body.query.filters.misc_filters.filters.ilvl.min, 79);
   assert.equal(body.query.filters.type_filters.filters.category, undefined);
 });
+
+test("a cancel during the budget spacing wait stops the lookup, with nothing on the wire", async () => {
+  // The regression this exists for. `minSearchIntervalMs` spaces every search out, the drop ladder
+  // spends one such wait per rung, and that is where most of a rare's wall clock goes — so a Stop
+  // pressed then is the common case, not the edge one. It used to be silently lost: nothing was in
+  // the fetch's `inFlight` to abort, the bare `sleep()` took no signal and ran to completion, and
+  // the next rung got a fresh un-aborted controller. The press reported success and the item priced
+  // anyway. A real interval is needed here for the same reason — with the tests' usual 0 there is no
+  // wait to cancel during.
+  // The five-mod rare, so there is a ladder with a second rung to be waiting for. An empty first
+  // rung is what sends it down to one.
+  const { fetch, calls } = stubFetch({
+    stats: STATS_5,
+    searchIdsSequence: [[], [], ["id-a"]]
+  });
+  const client = new Trade2Client(
+    makeSettings({ minSearchIntervalMs: 5_000 }),
+    fetch
+  );
+  const controller = new AbortController();
+
+  const lookup = client.estimateRareValue(
+    FIVE_MOD_RARE_TIERED,
+    new Set(),
+    toChaos,
+    undefined,
+    undefined,
+    undefined,
+    controller.signal
+  );
+  // Long enough for the first rung's search to have gone out and the ladder to be sitting in the
+  // spacing wait before the second — which is the moment being tested.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const callsBeforeCancel = calls.length;
+  const reason = new Error("cancelled from the overlay");
+  controller.abort(reason);
+
+  // Rejects rather than resolving with a price: the wait must not fall through into the next search.
+  await assert.rejects(lookup, (error) => error === reason);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+    calls.length,
+    callsBeforeCancel,
+    "the ladder walked on to another rung after the cancel"
+  );
+});

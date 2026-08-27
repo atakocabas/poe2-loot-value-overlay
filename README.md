@@ -65,14 +65,14 @@ through to the game:
   <img src="docs/images/panel-minimal.png" alt="The resting panel: one row showing the last item copied, its price and its source" width="416">
 </p>
 
-**`Ctrl+Shift+L` opens the full list** — the panel at the top of this page — and makes it clickable
-in the same keypress, so the per-row **Edit** button works straight away. Press it again to go back.
-**Nothing else ever changes the panel's size**: it stays exactly as you left it until you press the
-key again.
+**`Ctrl+Space` opens the full list** — the panel at the top of this page — and makes it clickable
+in the same keypress, so the per-row **Edit** button works straight away. Press it again to go back,
+or just **click anywhere off the panel**; switching to another window closes it too. **Nothing ever
+opens it for you**: it stays out of the way until you press the key.
 
 | hotkey | default | does |
 | --- | --- | --- |
-| `toggleList` | `Ctrl+Shift+L` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both. |
+| `toggleList` | `Ctrl+Space` | Opens the full list *and* makes the overlay clickable, so Edit works. Again closes both — so does clicking off the panel, or switching windows. |
 | `forceCapture` | `Ctrl+\`` | Re-reads the clipboard even if it hasn't changed. |
 
 In the full list:

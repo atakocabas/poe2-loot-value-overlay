@@ -162,8 +162,16 @@ export class PriceResolver {
    * `onTradeSearch` fires at the moment this stops being a cache lookup and becomes a network call —
    * the only branch here that takes long enough to be worth telling the user about. Optional, since
    * nothing but the pending indicator cares.
+   *
+   * `signal` abandons that call — the requests and the waits between them alike. It reaches only the
+   * trade2 branch, which is the one worth abandoning: everything above it is a cache lookup that has
+   * already returned by the time anyone could press Stop.
    */
-  async resolve(item: ParsedItem, onTradeSearch?: () => void): Promise<Omit<PricedItem, "id">> {
+  async resolve(
+    item: ParsedItem,
+    onTradeSearch?: () => void,
+    signal?: AbortSignal
+  ): Promise<Omit<PricedItem, "id">> {
     const base = { ...item, ignoredMods: [], manualChaosValue: null };
 
     const direct = this.poeNinja.getChaosValueForItem(item);
@@ -205,8 +213,14 @@ export class PriceResolver {
     if (item.rarity === "Rare" || item.rarity === "Normal") {
       console.log(`[pricing] "${item.name}" not in poe.ninja — querying trade2...`);
       onTradeSearch?.();
-      const estimate = await this.trade2.estimateRareValue(item, new Set(), (amount, currency) =>
-        toChaos(this.poeNinja, amount, currency)
+      const estimate = await this.trade2.estimateRareValue(
+        item,
+        new Set(),
+        (amount, currency) => toChaos(this.poeNinja, amount, currency),
+        undefined,
+        undefined,
+        undefined,
+        signal
       );
       if (estimate.chaosValue !== null) {
         const modMatch = { matched: estimate.matchedMods, total: estimate.totalMods };

@@ -19,9 +19,10 @@
     }
   },
   "hotkeys": {
-    "toggleList": "CommandOrControl+Shift+L",
+    "toggleList": "CommandOrControl+Space",
     "forceCapture": "CommandOrControl+`"
   },
+  "toggleListDefaultMigrated": false,
   "display": {
     "currency": "auto"
   },

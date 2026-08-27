@@ -516,8 +516,10 @@ export interface OverlayStatus {
    * Whether the panel is showing the full list rather than its minimal form.
    *
    * The panel rests as a heads-up display — the last capture and nothing else — and this is the only
-   * thing that opens it. Driven purely by the `toggleList` hotkey, so unlike the map total it needs
-   * no grace period: a keypress is deliberate and should apply the instant it arrives.
+   * thing that opens it. Set by `setPanelExpanded` in `main/index.ts`, which the `toggleList` hotkey,
+   * an outside click (`COLLAPSE_PANEL`) and the overlay losing focus all go through — the first being
+   * the only one that can turn it *on*. No grace period on any of them: all three are the user's own
+   * deliberate act and should apply the instant they arrive.
    */
   expanded: boolean;
   /**

@@ -7,6 +7,13 @@ import { pipeRendererLogs } from "./window";
 import type { SetupConfig, SetupState } from "../shared/types";
 
 let setupWindow: BrowserWindow | null = null;
+/**
+ * The pending "this window has closed" promise, handed back to a second `showSetupWindow()` call so
+ * re-opening an already-open window doesn't resolve the caller's `.then()` immediately. Same reason
+ * as `settingsClosed` in settings-window.ts, where getting it wrong reinstated the hotkeys behind an
+ * open window; here it would drop `configWindowOpen` while the window is still up.
+ */
+let setupClosed: Promise<void> | null = null;
 
 /**
  * The first-run setup window: the league, and an optional contact email.
@@ -24,7 +31,8 @@ let setupWindow: BrowserWindow | null = null;
 export function showSetupWindow(): Promise<void> {
   if (setupWindow && !setupWindow.isDestroyed()) {
     setupWindow.focus();
-    return Promise.resolve();
+    // The promise from the call that opened it, never a fresh resolved one — see `setupClosed`.
+    return setupClosed ?? Promise.resolve();
   }
 
   setupWindow = new BrowserWindow({
@@ -62,12 +70,14 @@ export function showSetupWindow(): Promise<void> {
   pipeRendererLogs(setupWindow, "setup");
   setupWindow.loadFile(path.join(__dirname, "..", "renderer", "setup.html"));
 
-  return new Promise((resolve) => {
+  setupClosed = new Promise((resolve) => {
     setupWindow?.on("closed", () => {
       setupWindow = null;
+      setupClosed = null;
       resolve();
     });
   });
+  return setupClosed;
 }
 
 export interface SetupIpcDeps {

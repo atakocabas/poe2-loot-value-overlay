@@ -21,6 +21,7 @@ declare global {
   type PseudoStat = import("../shared/types").PseudoStat;
   type MapRow = import("../shared/types").MapRow;
   type EditorRowsResult = import("../preload/index").EditorRowsResult;
+  type RepriceResult = import("../preload/index").RepriceResult;
 
   interface Window {
     poe2Overlay: {
@@ -43,6 +44,8 @@ declare global {
       setManualPrice: (itemId: string, value: number | null) => Promise<SetManualPriceResult>;
       refreshPrices: () => Promise<RefreshPricesResult>;
       cancelPricing: () => Promise<boolean>;
+      cancelReprice: () => Promise<boolean>;
+      collapsePanel: () => Promise<void>;
     };
     /** Exposed by the same preload, but only ever called from setup.html. */
     poe2Setup: {
@@ -53,6 +56,7 @@ declare global {
     poe2Settings: {
       getConfig: () => Promise<SettingsState>;
       save: (config: SettingsConfig) => Promise<SettingsSaveResult>;
+      setHotkeyCapture: (active: boolean) => Promise<void>;
     };
   }
 }
