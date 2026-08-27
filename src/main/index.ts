@@ -8,6 +8,7 @@ import {
   createOverlayWindow,
   hideOverlay,
   isOverlayFocused,
+  onOverlayBlur,
   sendToOverlay,
   setOverlayInteractive,
   showOverlay
@@ -64,6 +65,12 @@ let updateChecker: UpdateChecker | null = null;
 let availableUpdate: AvailableUpdate | null = null;
 /** False while first-run setup is still deciding what to boot with. See `onSetupSaved`. */
 let bootCompleted = false;
+/**
+ * A key recorder in the settings window is armed, so nothing may be registered — `globalShortcut`
+ * takes a combo from the OS before any renderer sees it, and a bound accelerator is therefore
+ * invisible to the page trying to record it. Read by `applyHotkeys`; see `SET_HOTKEY_CAPTURE`.
+ */
+let hotkeyCaptureActive = false;
 
 // Overlay visibility inputs — see overlay-visibility.ts for the rule that combines them.
 let foregroundWatcher: ForegroundWatcher | null = null;
@@ -71,6 +78,8 @@ let gameRunning = false;
 let followFocus = false;
 let gameFocused = false;
 let trayOverride: "show" | "hide" | null = null;
+/** The setup or settings window is open — see `configWindowOpen` on `OverlayVisibilityState`. */
+let configWindowOpen = false;
 let hideDelayMs = 0;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 /**
@@ -92,6 +101,7 @@ function applyOverlayVisibility(): void {
     gameFocused,
     interactive: overlayInteractive,
     overlayFocused: isOverlayFocused(),
+    configWindowOpen,
     trayOverride
   });
 
@@ -109,6 +119,26 @@ function applyOverlayVisibility(): void {
     hideTimer = null;
     if (!desiredOverlay) hideOverlay();
   }, hideDelayMs);
+}
+
+/**
+ * The one place the panel's form is set, and with it whether the overlay takes clicks.
+ *
+ * Three routes reach it now — the `toggleList` hotkey, a click that landed off the panel
+ * (`COLLAPSE_PANEL`), and the overlay losing OS focus — so the coupling between the two flags lives
+ * here rather than being restated at each. Expanding and unlocking clicks are one action because the
+ * point of opening the list is pressing the Edit buttons in it; see `onToggleList`.
+ *
+ * The unchanged early return is load-bearing twice: it makes a redundant collapse free, and it stops
+ * the `setFocusable(false)` inside `setOverlayInteractive` from re-entering through a second blur.
+ */
+function setPanelExpanded(expanded: boolean): void {
+  if (expanded === panelExpanded) return;
+  panelExpanded = expanded;
+  overlayInteractive = expanded;
+  setOverlayInteractive(overlayInteractive);
+  applyOverlayVisibility();
+  broadcastStatus();
 }
 
 /**
@@ -240,6 +270,22 @@ app.whenReady().then(async () => {
   hideDelayMs = settings.overlay.hideDelayMs;
 
   createOverlayWindow();
+  // Alt-tab, the taskbar, a second display: the panel follows you out of the game otherwise. An
+  // expanded panel is interactive, and interactive both pins the sheet on screen (`shouldShowOverlay`)
+  // and keeps it swallowing every click across the display — so leaving it open over whatever you
+  // switched to is the one state this must not sit in. Only fires while interactive, since that is
+  // the only time this window is focusable at all.
+  onOverlayBlur(() => {
+    // The config windows take the foreground and blur us, and the panel deliberately stays up behind
+    // them (`configWindowOpen`) — it is what the width and position fields in there are judged
+    // against, so it must not collapse out from under the person setting them.
+    if (configWindowOpen) return;
+    setPanelExpanded(false);
+    // Called even when the line above was a no-op: `overlayFocused` is itself one of the rule's
+    // inputs and it has just changed, and nothing else re-evaluates on it. Without this a sheet
+    // being held up by that branch alone would stay up after the focus that justified it was gone.
+    applyOverlayVisibility();
+  });
   const tray = createTray({
     // A tray choice has to survive focus-following, otherwise the overlay would flip back a
     // fraction of a second later; it's cleared once PoE2 next takes focus, and on game exit.
@@ -252,14 +298,28 @@ app.whenReady().then(async () => {
       applyOverlayVisibility();
     },
     onOpenSettings: () => {
-      // Suspended for as long as the window is up. A registered accelerator is taken by the OS
-      // before it reaches any renderer, so the key recorder could never capture a combo that is
-      // currently bound — the same mechanism that rules out Ctrl+C as a capture hotkey. It also
-      // makes `probeAccelerator` honest, which would otherwise report our own bindings as taken.
-      unregisterAllHotkeys();
-      void showSettingsWindow().then(() => applyHotkeys());
+      // The overlay stays up behind it: the panel's width, position and currency all apply live on
+      // Save, and this window is not PoE2 as far as the foreground watcher is concerned — so
+      // without this the one thing the user is looking at vanishes half a second after they open it.
+      configWindowOpen = true;
+      applyOverlayVisibility();
+      void showSettingsWindow().then(() => {
+        configWindowOpen = false;
+        // A window closed while a recorder was armed never sent the matching `false`, so the flag
+        // is cleared here rather than trusted — otherwise the hotkeys stay down for good.
+        hotkeyCaptureActive = false;
+        applyHotkeys();
+        applyOverlayVisibility();
+      });
     },
-    onOpenSetup: () => void showSetupWindow(),
+    onOpenSetup: () => {
+      configWindowOpen = true;
+      applyOverlayVisibility();
+      void showSetupWindow().then(() => {
+        configWindowOpen = false;
+        applyOverlayVisibility();
+      });
+    },
     // The URL is opened here rather than in tray.ts, so this process has exactly one place that
     // hands a link to the browser — see the `onOpenReleases` note on `TrayActions`.
     onOpenReleases: () => {
@@ -315,10 +375,16 @@ app.whenReady().then(async () => {
     trade2,
     settings,
     getStatus: buildStatus,
-    queue
+    queue,
+    // The renderer only reports the click; the form it collapses is this process's to hold.
+    onCollapsePanel: () => setPanelExpanded(false)
   });
 
   registerSettingsIpcHandlers({
+    onHotkeyCapture: (active) => {
+      hotkeyCaptureActive = active;
+      applyHotkeys();
+    },
     onSettingsSaved: (next) => {
       // Mutated in place, not rebound: `statusDeps`, `registerIpcHandlers` and the clipboard
       // closure all hold *this* object, so assigning a new one would leave every one of them
@@ -342,8 +408,11 @@ app.whenReady().then(async () => {
       // Panel size and display currency both ride OVERLAY_STATUS, and the renderer reapplies them
       // on every one — so this is the whole of applying them.
       broadcastStatus();
-      // The hotkeys are deliberately *not* re-registered here: they stay suspended until the
-      // settings window closes. See `onOpenSettings` above.
+      // Re-registered here rather than at window close: the save handler drops every binding around
+      // its probe loop, so this is what puts the just-saved accelerators back — and they bind while
+      // the window is still open, which is the point. `applyHotkeys` still declines to register
+      // anything while a recorder is armed.
+      applyHotkeys();
     }
   });
 
@@ -363,23 +432,24 @@ app.whenReady().then(async () => {
   // Held in a const rather than written inline, because the settings window rebinds these and the
   // re-registration has to attach the same handlers the boot path did.
   const hotkeyHandlers: HotkeyHandlers = {
-    // The only thing that ever changes the panel's form — the panel's size is the user's business —
-    // and, since `toggleOverlay` was removed, the only thing that unlocks clicks either.
-    onToggleList: () => {
-      panelExpanded = !panelExpanded;
-      // Opening unlocks clicks and closing locks them again, because the point of this key is to
-      // reach the rows' Edit buttons — with the two separate that is two keypresses every time.
-      overlayInteractive = panelExpanded;
-      setOverlayInteractive(overlayInteractive);
-      applyOverlayVisibility();
-      broadcastStatus();
-    },
+    // The only thing that ever *opens* the panel — a click or a game event must never do that, and
+    // both have been tried and removed. Closing it is no longer exclusive to this key: see
+    // `setPanelExpanded`, which the outside-click and blur routes share with it.
+    onToggleList: () => setPanelExpanded(!panelExpanded),
     onForceCapture: () => clipboardWatcher.forceCapture()
   };
 
-  /** Drops every binding and reinstates them from the current `settings`. */
+  /**
+   * Drops every binding and reinstates them from the current `settings` — except while the settings
+   * window's key recorder is armed, when there must be nothing registered for it to record over.
+   *
+   * A flag consulted here rather than an unregister/register pair at each call site, so the order
+   * the settings window's messages arrive in cannot leave the hotkeys down: whatever happens, the
+   * next `applyHotkeys()` lands on the right state.
+   */
   const applyHotkeys = (): void => {
     unregisterAllHotkeys();
+    if (hotkeyCaptureActive) return;
     registerHotkeys(settings, hotkeyHandlers);
   };
 

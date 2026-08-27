@@ -52,12 +52,11 @@ Practically:
     instead is an `AbortSignal`, so it can be abandoned on purpose without being cut short by a
     clock.
 - **`createCancellableGggFetch()` is `createPublicGggFetch()` plus a handle on the request in
-  flight**, and it is how the panel's Stop button reaches a lookup already under way. Cancellation
-  lives in the fetch wrapper rather than being threaded as an `AbortSignal` through
-  `PriceResolver`, `Trade2Client` and `TradeStatsMatcher`, each of which would have grown a
-  parameter it has no other use for — and `estimateRareValue` already carries six. The queue is
-  serial, so "the request in flight" is unambiguous, and the one caller that cancels is the one
-  that owns the queue. Three details:
+  flight.** It is one half of how a lookup already under way is called off; the other is the
+  `AbortSignal` threaded through `PriceResolver.resolve()` and `estimateRareValue()`, described under
+  **Cancelling a lookup** below. This handle covers what the signal is not threaded into (poe.ninja,
+  the currency exchange) and nothing else should be built on it — it names *a* request, not a
+  lookup. Three details:
   - **Each client that wants to be cancellable independently needs its own instance.** The limiter
     state and the in-flight handle are both per-instance, which is what stops a cancelled rare from
     killing a currency-exchange refresh that happens to overlap it. `main/index.ts` holds the
@@ -65,9 +64,33 @@ Practically:
   - **The handle is cleared in a `finally`, and only if it is still ours.** A request that already
     answered must not be cancellable retroactively, and a second request that started first owns
     the handle now — clearing it blind would leave that one uncancellable.
-  - **A caller's own `signal` is combined, not overridden.** Nothing passes one today, but `...init`
-    used to carry it through to `fetch`, and silently dropping it is the kind of regression that
-    surfaces only as a request that will not die.
+  - **A caller's own `signal` is combined, not overridden.** `Trade2Client` passes one at both of
+    its call sites, which is the whole of the wire-level plumbing for a cancel: nothing in this file
+    had to change for it. Keep it that way — silently dropping a caller's signal is the kind of
+    regression that surfaces only as a request that will not die.
+
+**Cancelling a lookup.** `estimateRareValue()` takes an optional trailing `signal`, threaded down
+through `attempt` → `search` → `searchRung` / `splitNotables` / `priceFromRung` to both `gggFetch`
+calls and, just as importantly, to every `sleep()`. Four rules:
+
+- **It exists because of the sleeps, not the requests.** The fetch handle above only ever names the
+  request currently on the wire, and most of a rare's wall clock is `spendBudgetSlot()` spacing
+  searches `minSearchIntervalMs` apart, once per rung of the drop ladder. During those there is
+  nothing in flight, so an abort was a no-op: the sleep ran to completion, the next rung got a fresh
+  un-aborted controller, and **the panel reported "Stopped" while the item priced normally**. Regression
+  test: "a cancel during the budget spacing wait stops the lookup" in `trade2-client.test.ts`.
+- **The sleep rejects, it does not resolve early** (`pricing/sleep.ts`, shared with `GggRateLimiter`
+  rather than copied). A sleep that resolved on abort hands its caller the same answer a finished
+  wait does, and the caller falls straight through into the request it was throttling. That is the
+  bug above, in one line. There is one of these and there must not be two.
+- **`attempt()` rethrows an abort rather than reporting it transient.** Otherwise the cancel is
+  laundered into a network failure, goes round the retry loop, and spends another budget slot
+  re-asking the question the user just called off — and the row editor, which tells a cancel from a
+  failure by the throw arriving, words it as "trade2 request failed".
+- **A cancelled search still spends its budget slot, and `TradeSearchBudget` must not grow a refund.**
+  `reserve()` is called before the request goes out, GGG's per-IP counter counted anything that
+  actually left, and a release path would make cancel-spam a way to blow the real limit — the one
+  thing the budget exists to prevent.
 
   What happens to the cancelled item is `PricingQueue`'s business — see
   [pricing-sources.md](pricing-sources.md).

@@ -39,10 +39,21 @@ single biggest thing to know about the renderer:
   in style.css — the whole header, filters, the footer buttons, the disclaimer, the per-row Edit
   button. Roughly 70-90px tall against ~390px expanded. `#panel` **ships with the class**, because
   this is the resting state and `setMinimalMode` starts from `true` and early-returns when unchanged.
-- **Expanded — the `toggleList` hotkey, and nothing else.** The whole scrolling history, filters,
-  footer, Edit. The handler in `index.ts` also flips `overlayInteractive`, because the point of the
-  key is reaching those Edit buttons and leaving the two separate made it two keypresses every time.
-  **Nothing else in the app changes the panel's form.** The size is the user's business.
+- **Expanded — the `toggleList` hotkey opens it, three things close it.** The whole scrolling
+  history, filters, footer, Edit. The handler in `index.ts` also flips `overlayInteractive`, because
+  the point of the key is reaching those Edit buttons and leaving the two separate made it two
+  keypresses every time. **Only the hotkey ever opens it.** It closes on the hotkey again, on a
+  `mousedown` that lands outside `#panel` (the listener next to `setMinimalMode`, which reports it
+  over `COLLAPSE_PANEL` rather than deciding anything itself), and on the overlay window losing OS
+  focus (`onOverlayBlur` in main). All three go through one `setPanelExpanded()` in `main/index.ts`.
+  The size is still the user's business.
+
+  The outside-click route exists because interactive mode turns off `ignoreMouseEvents` for the
+  **whole** full-screen sheet — `body` is transparent but still hit-testable — so an open list eats
+  every click on the display, and the hotkey was the only way back out. The dismissing press is spent
+  on the overlay and does not reach the game; the one after it passes straight through. The blur
+  route exists because `shouldShowOverlay()` returns true whenever `interactive` is set, so an open
+  list also followed you out of the game and sat on top of whatever you alt-tabbed to.
 
 `setMinimalMode()` is called from `applyStatus()` off `OverlayStatus.expanded`, with **no grace and
 no re-check** — a keypress is deliberate and should land immediately.
@@ -79,6 +90,26 @@ rather than on the answer and never re-enables itself; the `PRICING_STATUS` push
 cancelled item is what decides, since only it knows whether the queue is now idle or already on the
 next item. "Nothing to stop" is a real outcome worth printing, because the lookup can finish between
 the button lighting up and the press landing.
+
+**The row editor's Reprice has its own Cancel, and the footer's Stop cannot serve for it.** A reprice
+goes straight to `Trade2Client` and never enters the pricing queue, so it raises no pending row,
+`syncStopButton()` never lights up for it, and Stop answers "Nothing to stop" while a search is
+plainly running. The Cancel sits beside Reprice in the editor's reprice row, `hidden` until a search
+is actually running, and reaches main over `CANCEL_REPRICE` — its own channel, since `CANCEL_PRICING`
+names the queue's current entry. Three things about it:
+- **A button here, where the minimal panel would need a hotkey.** The editor is only reachable once
+  `toggleList` has made the overlay interactive, so unlike the panel's resting form there is no
+  click-through problem: the footer buttons are `display:none` in minimal mode precisely because a
+  click-through sheet cannot take a press.
+- **Reprice goes disabled for the duration, and both are restored in a `finally`.** A second press
+  mid-search used to start a second lookup against the same rate-limit budget — a slot spent
+  re-asking a question already asked. The `finally` is what stops a thrown lookup leaving the row
+  with no way to try again.
+- **A cancel is handled ahead of the no-price branch**, on its own `cancelled` field rather than by
+  matching on `reason`. It means something the other empty results do not: nothing about the market
+  was established, so the row keeps the price, badge and detail it already had, and only the edited
+  ticks and bounds were written. Worded as "No matching listings found." it would read as a fact
+  about the item.
 
 Two numbers there are load-bearing. A **300ms grace period** before a row is drawn, because
 poe.ninja and the currency exchange are synchronous cache lookups and without it every currency drop
@@ -186,11 +217,14 @@ Anything with no ASCII reading at all becomes a single `?` instead of a run of m
   which is exactly the grey wall the colours exist to break up. One known limitation, pinned by a
   test: a mod shaped like `Grants Skill: Level 1 Fireball` takes the property shade, because the
   alternative is a hardcoded list of PoE2's property labels that would drift every league.
-- **The panel's form is the hotkey's business and nothing else's.** It is never opened *or* closed
-  for you: leaving a map doesn't expand it, and entering one doesn't collapse it. Both of those
-  existed and were removed in turn — auto-expanding in the hideout first, then `collapsePanel()` on
-  map entry. Don't reintroduce either; a panel that resizes itself while you play is the thing this
-  arrived at.
+- **The panel is never *opened* for you, and that half has not moved.** Leaving a map doesn't expand
+  it; a capture doesn't expand it. Auto-expanding in the hideout existed and was removed. Don't
+  reintroduce it — a panel that grows itself while you play is the thing this arrived at.
+
+  Closing it for you is a different matter and is now the feature: an outside click or a focus loss
+  collapses it (see the two forms above). The `collapsePanel()` that was removed is not this — that
+  one fired on **map entry**, a game event, and shut the list mid-read while you were playing. These
+  two fire on the user's own click. Keep the distinction if either is ever revisited.
 - **`toggleList` flipping `overlayInteractive` too is the feature.** Expanding the list to press Edit
   is useless while the panel still passes clicks through, so the one key does both. It is now the
   **only** way into interactive mode: a `toggleOverlay` hotkey used to flip click-through without

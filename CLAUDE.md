@@ -78,7 +78,7 @@ several rules have been "fixed" back into regressions more than once.
 
 | Editing | Read first | Because |
 |---|---|---|
-| `src/pricing/trade2-client.ts`, `trade-budget.ts`, `rate-limiter.ts`, `ggg-fetch.ts`, `trade-stats.ts`, and the `shared/` stat derivations, `item-category.ts` and `instilled-notables.ts` | [docs/pricing-trade2.md](docs/pricing-trade2.md) | The largest doc, and the one with the most measured-not-guessed rules: the removed count axis, the price floor's missing `option`, the strict-rung rule, the drop ladder, the pseudo aggregates, the class-not-base-type search, the notable split. Four repeat regressions came from changing these without reading it. |
+| `src/pricing/trade2-client.ts`, `trade-budget.ts`, `rate-limiter.ts`, `ggg-fetch.ts`, `sleep.ts`, `trade-stats.ts`, and the `shared/` stat derivations, `item-category.ts` and `instilled-notables.ts` | [docs/pricing-trade2.md](docs/pricing-trade2.md) | The largest doc, and the one with the most measured-not-guessed rules: the removed count axis, the price floor's missing `option`, the strict-rung rule, the drop ladder, the pseudo aggregates, the class-not-base-type search, the notable split. Four repeat regressions came from changing these without reading it. |
 | `src/renderer/*` | [docs/renderer.md](docs/renderer.md) | The panel's two forms, what `renderList()` must preserve by hand, and why pending captures live outside `allItems`. |
 | `src/main/*` | [docs/main-process.md](docs/main-process.md) | Window rules (a second full-screen overlay swallows every click), hotkey suspension, overlay visibility, the tray, the icon, the release check. |
 | `src/parser/item-text-parser.ts` | [docs/parser.md](docs/parser.md) | Advanced Item Descriptions changes the mod format substantially, and the header gate is authoritative rather than merely tolerated. |
@@ -136,10 +136,18 @@ about. This is the short list of what an unbriefed change most often breaks:
   small change here.
 - Pending rows living outside `#item-list` *and* outside `allItems` is not a layout accident.
 - The list spans everything ever captured and grows unbounded until the user presses Clear.
-- The panel's form is the `toggleList` hotkey's business and nothing else's — it is never opened or
-  closed for the user.
+- The panel is never *opened* for the user — not by a game event, not by a capture. It **is** closed
+  for them: a click that lands off the panel, or the overlay losing focus, collapses it. The removed
+  `collapsePanel()` this replaces fired off a *map entry* while you were playing; this one fires off
+  your own click, which is the whole difference.
 - `TradeSearchBudget` declining a lookup rather than waiting out the rate limit is deliberate, and so
-  is the resulting "some rares in a big map go unpriced".
+  is the resulting "some rares in a big map go unpriced". It has no refund path either: a cancelled
+  search keeps its slot, because `reserve()` runs before the request and GGG counted anything that
+  left.
+- **`pricing/sleep.ts` rejects on abort rather than resolving early, and there is exactly one copy.**
+  A sleep that resolved would hand its caller the same answer a finished wait does, and the caller
+  would fall through into the request it was throttling — which is how a pressed Stop came to report
+  success while the lookup carried on and priced the item anyway.
 - Don't reintroduce count relaxation ("at least N of M") to widen a trade search.
 - A rare is searched on its **item class** (`accessory.ring`), not its exact base type
   ("Prismatic Ring"). Reversing that back to base type is what left items on illiquid bases unpriced.

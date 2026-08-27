@@ -79,6 +79,21 @@ export function isOverlayFocused(): boolean {
 }
 
 /**
+ * The overlay losing OS focus — someone alt-tabbed, or clicked the taskbar or a second display.
+ *
+ * Only ever fires while the panel is interactive, since that is the only time this window is
+ * focusable at all (`setFocusable` below), which is exactly when it matters: an expanded panel
+ * pins the sheet on screen through `shouldShowOverlay`'s `interactive` branch *and* keeps
+ * swallowing every click on the display, so without this it follows you out of the game.
+ *
+ * Must be called after `createOverlayWindow()`. Registered once at boot rather than added and
+ * removed with interactive mode — the handler is a no-op when there is nothing to collapse.
+ */
+export function onOverlayBlur(callback: () => void): void {
+  overlayWindow?.on("blur", callback);
+}
+
+/**
  * Toggles between click-through overlay mode and interactive mode — scrolling the item list,
  * pressing the buttons, editing a price.
  */

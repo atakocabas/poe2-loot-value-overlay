@@ -8,6 +8,7 @@ const hidden: OverlayVisibilityState = {
   gameFocused: false,
   interactive: false,
   overlayFocused: false,
+  configWindowOpen: false,
   trayOverride: null
 };
 
@@ -61,5 +62,25 @@ test("the tray override still works with the game closed, for reading the list",
   assert.equal(
     shouldShowOverlay({ ...hidden, gameRunning: false, followFocus: false, trayOverride: "show" }),
     true
+  );
+});
+
+test("stays visible while a config window is open, so the panel can be seen being configured", () => {
+  // The settings window takes the OS foreground and is not PoE2, so the foreground watcher reports
+  // the game unfocused the moment it opens. Panel width, position and currency all apply live on
+  // Save — onto a window the user could otherwise no longer see.
+  assert.equal(shouldShowOverlay({ ...hidden, configWindowOpen: true }), true);
+});
+
+test("a config window doesn't outrank tray Hide or the game being closed", () => {
+  // Both checks sit above it in the rule, and for reasons that have already been regressions once:
+  // tray Hide must never be a no-op, and nothing may pin a full-screen sheet over the bare desktop.
+  assert.equal(
+    shouldShowOverlay({ ...hidden, configWindowOpen: true, trayOverride: "hide" }),
+    false
+  );
+  assert.equal(
+    shouldShowOverlay({ ...hidden, configWindowOpen: true, gameRunning: false, followFocus: false }),
+    false
   );
 });

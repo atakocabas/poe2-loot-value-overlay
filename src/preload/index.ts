@@ -16,6 +16,15 @@ import type {
 
 export interface RepriceResult {
   item: PricedItem | null;
+  /**
+   * The user pressed Cancel while this search was running.
+   *
+   * Its own field rather than a `reason` the panel matches on, because it means something different
+   * from every other way a reprice comes back without a price: nothing was disproved. The item's
+   * price, badge and detail are all left exactly as they were, and only the edited filters were
+   * written — so the status line has to say so instead of "No matching listings found."
+   */
+  cancelled: boolean;
   /** Why no price came back, already worded for display. null when the reprice succeeded. */
   reason: string | null;
   /** Listings the price was taken from — the sample, not every listing that matched. */
@@ -110,7 +119,20 @@ contextBridge.exposeInMainWorld("poe2Overlay", {
    * on `onPricedItem` like any other, and waiting for it here would hold the button through the
    * stall it exists to end.
    */
-  cancelPricing: (): Promise<boolean> => ipcRenderer.invoke(IPC.CANCEL_PRICING)
+  cancelPricing: (): Promise<boolean> => ipcRenderer.invoke(IPC.CANCEL_PRICING),
+  /**
+   * Abandons the reprice the row editor started. Resolves with whether there was one to abandon.
+   *
+   * Separate from `cancelPricing` because a reprice never enters the pricing queue — see
+   * `CANCEL_REPRICE`. The cancelled call itself resolves normally, with `cancelled: true`.
+   */
+  cancelReprice: (): Promise<boolean> => ipcRenderer.invoke(IPC.CANCEL_REPRICE),
+  /**
+   * Reports a click that landed off the panel, so the full list closes when you click away from it.
+   * Takes nothing and answers nothing — main holds the panel's form and pushes the result back on
+   * `OVERLAY_STATUS`, the same way the toggle hotkey's does.
+   */
+  collapsePanel: (): Promise<void> => ipcRenderer.invoke(IPC.COLLAPSE_PANEL)
 });
 
 // The setup window loads this same preload — a second one would duplicate the wiring to expose
@@ -126,5 +148,12 @@ contextBridge.exposeInMainWorld("poe2Setup", {
 contextBridge.exposeInMainWorld("poe2Settings", {
   getConfig: (): Promise<SettingsState> => ipcRenderer.invoke(IPC.GET_SETTINGS_CONFIG),
   save: (config: SettingsConfig): Promise<SettingsSaveResult> =>
-    ipcRenderer.invoke(IPC.SAVE_SETTINGS_CONFIG, config)
+    ipcRenderer.invoke(IPC.SAVE_SETTINGS_CONFIG, config),
+  /**
+   * Tells main a key recorder is armed, so it drops every binding until this is called with false.
+   * Without it the recorder could not see a combo this app has already bound — the OS takes a
+   * registered accelerator before the page does.
+   */
+  setHotkeyCapture: (active: boolean): Promise<void> =>
+    ipcRenderer.invoke(IPC.SET_HOTKEY_CAPTURE, active)
 });

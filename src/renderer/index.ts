@@ -157,6 +157,33 @@ function setMinimalMode(minimal: boolean): void {
   scheduleRender();
 }
 
+/**
+ * Clicking away from the panel closes it, the way any other transient surface closes.
+ *
+ * This window is a full-screen transparent sheet, and interactive mode turns off `ignoreMouseEvents`
+ * for the whole of it — `body` is see-through but still hit-testable — so while the list is open
+ * every click on the display lands here rather than in the game. A click that isn't on `#panel` is
+ * therefore someone trying to get back to playing, and this is what lets them.
+ *
+ * Three things this deliberately does not do:
+ *
+ * - It doesn't touch `minimalMode` itself. Main owns the panel's form (the hotkey is a global
+ *   shortcut, so its keypress never reaches this page) and pushes the collapse back on
+ *   `OVERLAY_STATUS`, so this route and the hotkey's end in the same `setMinimalMode` call.
+ * - It doesn't forward the click on to the game. A sheet that has taken a click cannot un-take it;
+ *   the dismissing press is spent, and the one after it passes straight through.
+ * - It doesn't check the target against `#item-tooltip`, the only other element outside the panel:
+ *   that is `pointer-events: none` (style.css), so it can never be one.
+ *
+ * The `minimalMode` guard makes this inert in the resting state, where the window is click-through
+ * and nothing reaches the page at all.
+ */
+document.addEventListener("mousedown", (event) => {
+  if (minimalMode) return;
+  if (panel.contains(event.target as Node)) return;
+  void window.poe2Overlay.collapsePanel();
+});
+
 function applyStatus(status: OverlayStatus): void {
   rates = status.rates;
   displayCurrency = status.displayCurrency;
@@ -1040,6 +1067,29 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
     const repriceButton = document.createElement("button");
     repriceButton.type = "button";
     repriceButton.textContent = "Reprice via trade";
+
+    // Hidden until a search is actually running, so the row reads as one action until there is
+    // something to call off. The footer's Stop cannot serve here: a reprice never enters the pricing
+    // queue, so it raises no pending row and that button answers "Nothing to stop".
+    //
+    // A button rather than the hotkey the minimal panel would need — the editor is only reachable
+    // once `toggleList` has made the overlay interactive, so unlike the panel's resting form there
+    // is no click-through problem to design around.
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel";
+    cancelButton.hidden = true;
+    cancelButton.title =
+      "Abandons this search, including the waits between its requests. The item keeps the price and " +
+      "badge it already has; the ticks and bounds you set are still saved.";
+    cancelButton.addEventListener("click", async () => {
+      // Disabled rather than hidden on press: the search is still unwinding, and a row that lost its
+      // button would read as though the cancel hadn't registered.
+      cancelButton.disabled = true;
+      status.textContent = "Cancelling…";
+      await window.poe2Overlay.cancelReprice();
+    });
+
     const status = document.createElement("span");
     status.className = "status-note";
 
@@ -1092,13 +1142,33 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
           .filter((filter) => !skipUntouched || filter.min !== null || filter.max !== null);
 
       status.textContent = "Searching…";
-      const result = await window.poe2Overlay.repriceItem(
-        item.id,
-        ignoredMods,
-        boundsOf(modRows, false),
-        boundsOf(pseudoRows, true),
-        boundsOf(mapFilterRows, true)
-      );
+      // Reprice goes down for the duration too. A second press mid-search used to start a second
+      // lookup against the same rate-limit budget, which is a slot spent on a question already asked.
+      repriceButton.disabled = true;
+      cancelButton.disabled = false;
+      cancelButton.hidden = false;
+      let result: RepriceResult;
+      try {
+        result = await window.poe2Overlay.repriceItem(
+          item.id,
+          ignoredMods,
+          boundsOf(modRows, false),
+          boundsOf(pseudoRows, true),
+          boundsOf(mapFilterRows, true)
+        );
+      } finally {
+        // In a finally, so a thrown lookup can't leave the row with no way to try again.
+        repriceButton.disabled = false;
+        cancelButton.hidden = true;
+      }
+
+      // Ahead of the no-price branch below, which words its message as a fact about the market. A
+      // cancel established nothing about the market — the row keeps the price and badge it had.
+      if (result.cancelled) {
+        status.textContent = result.reason ?? "Search cancelled.";
+        status.classList.remove("reprice-warning");
+        return;
+      }
 
       if (!result.item || result.item.chaosValue === null) {
         // The main process words this: a spent rate-limit budget, no listings for these mods, and
@@ -1154,7 +1224,7 @@ function renderItemEditor(item: PricedItem, rows: EditorRowsResult): HTMLElement
       applyUpdatedItem(result.item);
     });
 
-    repriceRow.append(repriceButton, viewButton, status);
+    repriceRow.append(repriceButton, cancelButton, viewButton, status);
     container.append(repriceRow);
   }
 

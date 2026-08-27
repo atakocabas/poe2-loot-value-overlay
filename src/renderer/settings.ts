@@ -158,12 +158,19 @@
   function stopRecording(): void {
     const was = recording;
     recording = null;
-    if (was) renderHotkey(was);
+    if (!was) return;
+    renderHotkey(was);
+    // Only on a real disarm, since this is called from every exit path and most of them are no-ops.
+    void window.poe2Settings.setHotkeyCapture(false);
   }
 
   function startRecording(name: HotkeyName): void {
     stopRecording();
     recording = name;
+    // Main drops every binding while this is armed, and puts them back on the `false` above. Without
+    // it the OS would take an already-bound combination before this page ever saw the keydown, so
+    // the one hotkey a user most wants to change would be the one they couldn't press.
+    void window.poe2Settings.setHotkeyCapture(true);
     // Whatever the last save said is about the old bindings, and is now misleading.
     setStatus("", "");
     renderHotkey(name);

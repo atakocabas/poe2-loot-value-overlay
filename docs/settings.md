@@ -80,8 +80,27 @@ over and the whole IP is locked out for half an hour. Each of the three keys is 
 it holds exactly its own old shipped value, so someone who raised the short window by hand keeps that
 and still gets the other two.
 
+**`adoptToggleListDefault()` is the fourth, the first outside `trade2`, and the one whose marker
+could not live beside the key it migrates.** `hotkeys.toggleList` shipped as `Ctrl+Shift+L` and moved
+to `Ctrl+Space` when the panel learned to close on an outside click. Unfolded, that leaves the
+README, [configuration.md](configuration.md) and the settings window all naming a chord that does
+nothing on every machine the app has ever run on, with no way to tell which of the two you have short
+of opening settings.json. Two details are worth knowing:
+
+- **The marker is root-level (`toggleListDefaultMigrated`), not `hotkeys.toggleListMigrated`.** The
+  three folds above put theirs in the block they migrate, which works because `SAVE_SETTINGS_CONFIG`
+  spreads `overlay` and `trade2` from the loaded object and carries unknown keys through. It does
+  **not** do that for `hotkeys` — it rebuilds the block from the form (`hotkeys: { ...config.hotkeys }`),
+  which holds exactly the two accelerators. A marker in there would be erased by the first Save, and
+  the fold would then run again and overwrite a deliberate Ctrl+Shift+L.
+- **It compares through `normalizeAccelerator()` rather than by string equality**, which is a wider
+  net than the other three cast. `Control+Shift+L` and `CommandOrControl+Shift+L` are one chord on
+  Windows — that is what the modifier aliases in `shared/accelerator.ts` exist to say — and the
+  recorder writes one spelling while a hand-edited settings.json may hold the other. Migrating one
+  and not the other would split users on a difference neither of them can see.
+
 **A default this shape needs a fold like this one, not just an edit to
-`settings.default.json`.** Three have needed one now; assume the next will.
+`settings.default.json`.** Four have needed one now; assume the next will.
 `loadDefaultSettings()` backs the per-field
 Reset buttons, so "default" in the window means the same thing it means to `mergeWithDefaults`
 rather than a second set of constants in the renderer.
@@ -102,3 +121,8 @@ rather than a second set of constants in the renderer.
 - A refused accelerator being **saved anyway** is deliberate. `globalShortcut.register` returning
   false means the combo is unavailable *right now*, usually because another app is running; refusing
   to store it would make the user's choice depend on what happened to be open at the time.
+
+- The hotkeys being **live while this window is open** is not a bug in the recorder. They are dropped
+  only while a recorder is actually armed (`SET_HOTKEY_CAPTURE`) and around the save-time probe, and
+  a save re-registers immediately rather than waiting for the window to close — see the hotkey
+  section of [main-process.md](main-process.md) for why that scope is the right one.

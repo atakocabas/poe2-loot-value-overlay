@@ -6,6 +6,7 @@ import {
   adoptInstantBuyoutDefault,
   adoptListingThresholdDefault,
   adoptSearchBudgetDefaults,
+  adoptToggleListDefault,
   foldLegacyProcessName,
   mergeWithDefaults,
   unionPoeNinjaCategories
@@ -27,6 +28,7 @@ function makeDefaults(): Settings {
       toggleList: "CommandOrControl+Shift+L",
       forceCapture: "CommandOrControl+`"
     },
+    toggleListDefaultMigrated: false,
     display: {
       currency: "auto"
     },
@@ -514,6 +516,106 @@ test("a settings.json predating the budget marker migrates on the next load", ()
   assert.equal(migrated.trade2.maxSearchesPerLongWindow, 160);
   assert.equal(migrated.trade2.minSearchIntervalMs, 15000);
   assert.equal(migrated.trade2.searchBudgetMigrated, true);
+});
+
+test("the shipped toggle-list combination is the one the docs and the README name", () => {
+  // Read from the file, like the listing status and threshold above and for the same reason: this is
+  // the value `adoptToggleListDefault` migrates existing installs *to*, and it is quoted verbatim in
+  // README.md and docs/configuration.md.
+  const defaults = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "..", "config", "settings.default.json"), "utf-8")
+  ) as { hotkeys: { toggleList: string }; toggleListDefaultMigrated: boolean };
+
+  assert.equal(defaults.hotkeys.toggleList, "CommandOrControl+Space");
+  assert.equal(defaults.toggleListDefaultMigrated, false);
+});
+
+test("an install still on the old toggle-list combination is moved to the shipped one", () => {
+  // Ctrl+Shift+L was the shipped binding until the panel learned to close on an outside click and
+  // the key moved to Ctrl+Space. Without the fold every existing install keeps the old chord while
+  // every piece of documentation names the new one.
+  const settings = makeDefaults();
+  const defaults = makeDefaults();
+  defaults.hotkeys.toggleList = "CommandOrControl+Space";
+
+  const migrated = adoptToggleListDefault(settings, defaults);
+
+  assert.equal(migrated.hotkeys.toggleList, "CommandOrControl+Space");
+  assert.equal(migrated.toggleListDefaultMigrated, true);
+  // The other binding is untouched — this fold judges one key, not the block.
+  assert.equal(migrated.hotkeys.forceCapture, settings.hotkeys.forceCapture);
+});
+
+test("the other spelling of the old combination migrates too", () => {
+  // `Control+Shift+L` and `CommandOrControl+Shift+L` are one chord on Windows, which is what the
+  // modifier aliases exist to say. Migrating one and not the other would split users on a difference
+  // neither of them can see from inside the app.
+  for (const spelling of ["Control+Shift+L", "Ctrl+Shift+L", "CmdOrCtrl+Shift+L", "Shift+Control+L"]) {
+    const settings = makeDefaults();
+    settings.hotkeys.toggleList = spelling;
+    const defaults = makeDefaults();
+    defaults.hotkeys.toggleList = "CommandOrControl+Space";
+
+    assert.equal(adoptToggleListDefault(settings, defaults).hotkeys.toggleList, "CommandOrControl+Space");
+  }
+});
+
+test("the toggle-list fold adopts whatever the defaults file currently says", () => {
+  // A literal target here would drift the moment the binding was retuned again, and this fold
+  // rewrites every existing install.
+  const settings = makeDefaults();
+  const defaults = makeDefaults();
+  defaults.hotkeys.toggleList = "Alt+Q";
+
+  assert.equal(adoptToggleListDefault(settings, defaults).hotkeys.toggleList, "Alt+Q");
+});
+
+test("a toggle-list combination the user chose survives the migration", () => {
+  // Anything that isn't the old shipped chord was picked in the settings window or typed into
+  // settings.json by hand. An empty string is the Clear button's "disabled" and is a choice too.
+  for (const chosen of ["CommandOrControl+Shift+X", "Alt+D", "Shift+F9", ""]) {
+    const settings = makeDefaults();
+    settings.hotkeys.toggleList = chosen;
+    const defaults = makeDefaults();
+    defaults.hotkeys.toggleList = "CommandOrControl+Space";
+
+    const migrated = adoptToggleListDefault(settings, defaults);
+
+    assert.equal(migrated.hotkeys.toggleList, chosen);
+    // Stamped anyway, so the migration is spent and can never revisit this install.
+    assert.equal(migrated.toggleListDefaultMigrated, true);
+  }
+});
+
+test("Ctrl+Shift+L picked after the migration ran is left alone", () => {
+  // Why the marker exists: once the fold has run, the old chord is a choice like any other, and a
+  // fold that kept correcting it would make the settings window's recorder silently not work.
+  const settings = makeDefaults();
+  settings.toggleListDefaultMigrated = true;
+  const defaults = makeDefaults();
+  defaults.hotkeys.toggleList = "CommandOrControl+Space";
+
+  const migrated = adoptToggleListDefault(settings, defaults);
+
+  assert.equal(migrated.hotkeys.toggleList, "CommandOrControl+Shift+L");
+  assert.equal(migrated, settings);
+});
+
+test("a settings.json predating the toggle-list marker migrates on the next load", () => {
+  // The real upgrade path, composed the way `loadSettings` composes it: the marker is absent, so
+  // `mergeWithDefaults` supplies the false that lets the fold fire, while leaving the stale
+  // `toggleList` exactly as it found it because that key *is* present.
+  const defaults = makeDefaults();
+  defaults.hotkeys.toggleList = "CommandOrControl+Space";
+  const { toggleListDefaultMigrated, ...loadedWithoutMarker } = makeDefaults();
+
+  const merged = mergeWithDefaults(defaults, loadedWithoutMarker);
+  assert.equal(merged.hotkeys.toggleList, "CommandOrControl+Shift+L", "the stale chord survives the merge");
+
+  const migrated = adoptToggleListDefault(merged, defaults);
+
+  assert.equal(migrated.hotkeys.toggleList, "CommandOrControl+Space");
+  assert.equal(migrated.toggleListDefaultMigrated, true);
 });
 
 test("preserves a user's customized value instead of overwriting it with the default", () => {

@@ -23,9 +23,11 @@ reading that.
 
 **The setup and settings windows** (`src/main/setup-window.ts`, `src/main/settings-window.ts`) are
 the exception, and they are not the thing that rule forbids. Both are ordinary framed, opaque,
-focusable, *not* always-on-top windows, open only while the user is configuring the app and never
-while they're playing, showing none of the loot data — so neither can shadow the overlay's clicks
-the way a second full-screen sheet would.
+focusable, *not* always-on-top windows showing none of the loot data — so neither can shadow the
+overlay's clicks the way a second full-screen sheet would. They are open while the user is
+configuring the app, which is often mid-session and **not** only between them: the overlay
+deliberately stays on screen behind them (`configWindowOpen` below), since the settings window's
+panel size, position and currency are judged by looking at the panel they apply to.
 
 **They are two windows because the two halves of the configuration are applied in opposite ways**,
 and that line is the whole reason for the split:
@@ -129,13 +131,32 @@ order to work. Five things:
   this app assembles itself, while this one comes from GitHub's API, so letting it round-trip through
   a page would be the only place `shell.openExternal` is reached with a string a renderer touched.
 
-**The global hotkeys are suspended for as long as the settings window is open** — `onOpenSettings`
-in `index.ts` calls `unregisterAllHotkeys()` before opening it and `applyHotkeys()` when it closes.
-This is not tidiness. `globalShortcut` takes a combo from the OS system-wide, so a *bound*
-accelerator never reaches any renderer and the key recorder simply cannot see it — the same
-mechanism that rules out Ctrl+C as a capture hotkey. It also makes `probeAccelerator()` honest,
-which would otherwise report every one of this app's own bindings as already taken. `onSettingsSaved`
-therefore deliberately does **not** re-register: the window is still open at that point.
+**The global hotkeys are suspended while the settings window's key recorder is armed** — not for the
+window's whole lifetime. This is not tidiness. `globalShortcut` takes a combo from the OS
+system-wide, so a *bound* accelerator never reaches any renderer and the key recorder simply cannot
+see it — the same mechanism that rules out Ctrl+C as a capture hotkey. It also makes
+`probeAccelerator()` honest, which would otherwise report every one of this app's own bindings as
+already taken.
+
+Both of those last exactly as long as the thing that needs them, and the scope follows:
+
+- The page sends `SET_HOTKEY_CAPTURE` true when a recorder is armed and false when it disarms
+  (`startRecording` / `stopRecording` in `src/renderer/settings.ts`, which every exit path already
+  goes through, including the `window.blur` handler).
+- `index.ts` holds that in `hotkeyCaptureActive` and **`applyHotkeys()` consults it** rather than the
+  call sites doing their own unregister/register pairs. A flag read at one point cannot be left
+  inconsistent by the order two messages arrive in; a pair of calls at each site can.
+- `SAVE_SETTINGS_CONFIG` calls `unregisterAllHotkeys()` itself immediately before its probe loop, so
+  the probe is honest whether or not a recorder happens to be armed, and `onSettingsSaved` **does**
+  re-register — the just-saved accelerators bind while the window is still open, which is the point.
+- The `closed` handler clears `hotkeyCaptureActive` and calls `applyHotkeys()`, because a window shut
+  mid-record never sends the matching `false`.
+
+The earlier design suspended them for the window's whole lifetime, which was correct and far too
+broad: `toggleList` and `forceCapture` were dead for as long as anyone had Settings open, and a
+second tray → Settings… on an already-open window reinstated them behind its back (the old
+`showSettingsWindow()` returned a fresh resolved promise on that path). Both windows now hold their
+`closed` promise in a module-level `settingsClosed` / `setupClosed` and hand back *that*.
 
 Two things in `index.ts` are restartable units for this, both shaped like `startLogWatcher()` (stop
 first, take the fresh `settings`, tolerate the not-configured case): `applyHotkeys()` and
@@ -144,12 +165,39 @@ switched on while PoE2 is already running, `ProcessWatcher`'s `started` event ha
 and won't start the new watcher for it.
 
 **Overlay visibility** has several inputs (is PoE2 running, is PoE2 the foreground window, is the
-overlay in interactive mode, did the user force it up from the tray), so the decision is factored out
+overlay in interactive mode, is a config window open, did the user force it up from the tray), so the decision is factored out
 into the pure `shouldShowOverlay()` in `src/main/overlay-visibility.ts`; `index.ts` holds the state
 and calls `applyOverlayVisibility()` after mutating any of it. Add new inputs to the state object,
 not as ad-hoc `show()`/`hide()` calls at the call site.
 `applyOverlayVisibility()` keeps the latest decision in `desiredOverlay` and the deferred hide reads
 it back, so a hide armed half a second ago can't take down a window that has since become wanted.
+
+`configWindowOpen` is the input the tray's Settings… and Setup… callbacks set, and it is there
+because the two config windows are **not PoE2** as far as `ForegroundWatcher` is concerned: opening
+one reads as an alt-tab, and the panel used to vanish `hideDelayMs` later. That is precisely wrong
+for the settings window, whose panel width, position and display currency apply live on Save — onto
+a window the user can then no longer see. Its position in the rule is deliberate on both sides: below
+`trayOverride` so an explicit tray Hide is never a no-op, and below `gameRunning` so a config window
+opened with the game closed can't pin a full-screen sheet over the bare desktop. Note the overlay is
+`alwaysOnTop("screen-saver")` and the config windows are not, so they sit *under* the transparent
+sheet — harmless, since it forwards mouse events, but that is why they look layered.
+
+**`interactive` is the input that also has to be taken away again**, and `onOverlayBlur`
+(`window.ts`) is what does it. An expanded panel sets it, and it wins over `gameFocused` in the rule
+above — which is right while you are using the list and wrong the moment you aren't, because the
+sheet is `alwaysOnTop` *and* has `ignoreMouseEvents` off across the whole display. Left alone, an
+open list followed you out of the game and sat over whatever you alt-tabbed to, still swallowing
+every click. The blur handler in `index.ts` calls `setPanelExpanded(false)`, which drops
+`interactive` and lets the ordinary `hideDelayMs` path take the window down. It is guarded by
+`configWindowOpen` for the reason directly above: the config windows blur us on purpose and the
+panel is what their width and position fields are judged against. The blur only ever fires while the
+panel is interactive anyway — that is the only state in which this window is `setFocusable(true)`.
+
+**`setPanelExpanded()` is the one place the panel's form is set**, and there are three routes into
+it: the `toggleList` hotkey, the `COLLAPSE_PANEL` message the renderer sends when a click lands off
+the panel, and that blur. Only the first can *open* it. Its unchanged-value early return is
+load-bearing — `setOverlayInteractive` calls `setFocusable(false)`, which can emit a second blur,
+and without the guard that would re-enter.
 `ForegroundWatcher`
 (`src/main/foreground-watch.ts`) supplies the foreground signal by spawning **one long-lived**
 PowerShell helper that polls `GetForegroundWindow` internally and prints only on change — a per-poll
@@ -197,7 +245,10 @@ through 4 are in [parser.md](parser.md), [pricing-sources.md](pricing-sources.md
   second way of looking at a list that already spans everything. Don't reintroduce `sessionId`,
   a `sessions` array, or a running per-map total.
 
-- **Hotkeys are suspended while the settings window is open, and re-registered when it closes.** Not
-  an oversight in the live-apply path: a bound accelerator is taken by the OS before any renderer
-  sees it, so the recorder could not otherwise capture a combo that is already in use. Don't
-  "improve" this by re-registering on save.
+- **Hotkeys are suspended while the settings window's key recorder is armed, and only then.** A bound
+  accelerator is taken by the OS before any renderer sees it, so the recorder could not otherwise
+  capture a combo that is already in use — but that is a reason to drop them for the seconds a
+  recorder is up, not for as long as the window is. Don't widen it back to the window's lifetime
+  (`toggleList` and `forceCapture` go dead for the whole session in that window), and don't narrow it
+  further by dropping the explicit `unregisterAllHotkeys()` in `SAVE_SETTINGS_CONFIG` — without it
+  `probeAccelerator` reports this app's own bindings as taken and every hotkey saves as "refused".

@@ -1,6 +1,7 @@
 import { app } from "electron";
 import fs from "node:fs";
 import path from "node:path";
+import { normalizeAccelerator } from "../shared/accelerator";
 import type { Settings } from "../shared/settings";
 
 let cachedSettings: Settings | null = null;
@@ -167,6 +168,50 @@ export function adoptSearchBudgetDefaults(settings: Settings, defaults: Settings
 }
 
 /**
+ * The old shipped `hotkeys.toggleList`. See `adoptToggleListDefault`.
+ *
+ * A literal, named here rather than buried in the condition, for the reason
+ * `LEGACY_LISTING_THRESHOLD` is: it is the only value that fold may touch.
+ */
+const LEGACY_TOGGLE_LIST = "CommandOrControl+Shift+L";
+
+/**
+ * Takes an install still carrying the old shipped `toggleList` combination to the current one, once.
+ *
+ * The fourth fold of this shape, and the first outside `trade2`. `mergeWithDefaults` fills in
+ * *missing* keys only, so moving the shipped binding from Ctrl+Shift+L to Ctrl+Space reaches new
+ * installs and nobody else — leaving the README, the docs and the settings window all describing a
+ * key that does nothing on most machines, with no way for the user to tell which of the two they
+ * have short of opening settings.json.
+ *
+ * **Compared through `normalizeAccelerator` rather than by string equality**, which is a slightly
+ * wider net than the three folds above cast and deliberately so. `Control+Shift+L` and
+ * `CommandOrControl+Shift+L` are one combination on Windows — that is exactly what the modifier
+ * aliases exist for — and the recorder writes one spelling while a settings.json edited by hand may
+ * hold the other. Migrating one and not the other would split users on a difference neither of them
+ * can see.
+ *
+ * The marker is stamped either way, so this runs exactly once and a Ctrl+Shift+L chosen deliberately
+ * afterwards is never overridden. The target comes from `defaults` rather than a second literal, so
+ * the fold cannot drift from the file it exists to adopt.
+ */
+export function adoptToggleListDefault(settings: Settings, defaults: Settings): Settings {
+  if (settings.toggleListDefaultMigrated) return settings;
+
+  const isLegacy =
+    normalizeAccelerator(settings.hotkeys.toggleList) === normalizeAccelerator(LEGACY_TOGGLE_LIST);
+
+  return {
+    ...settings,
+    hotkeys: {
+      ...settings.hotkeys,
+      toggleList: isLegacy ? defaults.hotkeys.toggleList : settings.hotkeys.toggleList
+    },
+    toggleListDefaultMigrated: true
+  };
+}
+
+/**
  * Unions the poe.ninja category lists with the defaults. `mergeWithDefaults` treats arrays as
  * leaves, so an install whose settings.json predates a newly added category would never fetch it
  * and every item in that category would stay silently unpriced — the same failure mode that hid
@@ -215,9 +260,14 @@ export function loadSettings(): Settings {
   const defaults = JSON.parse(fs.readFileSync(defaultSettingsPath(), "utf-8")) as Settings;
   const loaded = JSON.parse(fs.readFileSync(userPath, "utf-8")) as unknown;
   cachedSettings = unionPoeNinjaCategories(
-    adoptSearchBudgetDefaults(
-      adoptListingThresholdDefault(
-        adoptInstantBuyoutDefault(foldLegacyProcessName(mergeWithDefaults(defaults, loaded), loaded)),
+    adoptToggleListDefault(
+      adoptSearchBudgetDefaults(
+        adoptListingThresholdDefault(
+          adoptInstantBuyoutDefault(
+            foldLegacyProcessName(mergeWithDefaults(defaults, loaded), loaded)
+          ),
+          defaults
+        ),
         defaults
       ),
       defaults
